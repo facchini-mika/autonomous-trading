@@ -22,11 +22,11 @@ The team then **arbitrates between exploit and explore proposals** before passin
 | Read `predictions`, `decisions`, `trades`, `positions`, `agent_performance`, `lessons`, `notes`, `beliefs`, `cycle_plan`, `operating_doctrine` | Yes | — |
 | Write `lessons`, `patterns`, `proposals` | Yes | — |
 | Open Git PRs on feature branches | Yes | — |
-| Self-merge a PR | — | Forbidden, mechanically enforced by branch protection (`infrastructure.md §8.3`) |
+| Self-merge a PR | — | Forbidden, mechanically enforced by branch protection (`engineering.md §5`) |
 | Modify live-trading state in any in-process way | — | Forbidden — no credentials for production CLOB endpoints |
-| Edit `risk/` directly | — | Forbidden — `infrastructure.md §8.4` hook blocks it |
+| Edit `risk/` directly | — | Forbidden — `engineering.md §6` hook blocks it |
 | Bypass the §7 review counts | — | Forbidden — branch protection on `main` enforces them |
-| Change `MAX_CAPITAL_EUR` (`infrastructure.md §8.8`) | Propose only | Two-human approval required to merge |
+| Change `MAX_CAPITAL_EUR` (`engineering.md §10`) | Propose only | Two-human approval required to merge |
 
 The PR is the contract. Code change + rationale + paper-validation reference (when quantitative) lands in the operator's review queue. The operator is the merge gate.
 
@@ -43,13 +43,13 @@ The PR is the contract. Code change + rationale + paper-validation reference (wh
 | `prior-art-scout` | Enforce §8 — search GitHub/PyPI/papers before custom builds; **proactively feeds candidate ideas to `strategy-explorer`**. | On every new-component PR open + weekly explore-batch | Prior-art note posted to PR + idea-list to `strategy-explorer` |
 | `meta-reviewer` | **Arbitrate exploit vs. explore.** Aggregate, dedupe, prioritize all proposals from both tracks; rank by expected PnL impact × confidence × paper-test feasibility; apply the explore-budget rule (§3) so neither track starves the other; route top-K queue to operator. | Weekly | Decision queue (Slack/email) — the operator's review queue, with each item labeled **`[exploit]`** or **`[explore]`** |
 
-**Team structure.** Code-evaluation agents form their own **Code Evaluation Team** — a *separate* Claude Code Agent Team session, distinct from both the Trading Team (`trading.md`, `infrastructure.md §8.22`) and the Trade Evaluation Team (`trading_feedback.md §2`). The "one team per session" Cloud-doc constraint is respected because each Code-Evaluation batch runs in **its own Claude Code process**, on schedule, never simultaneously with another team's session.
+**Team structure.** Code-evaluation agents form their own **Code Evaluation Team** — a *separate* Claude Code Agent Team session, distinct from both the Trading Team (`trading.md`, `orchestration.md §2`) and the Trade Evaluation Team (`trading_feedback.md §2`). The "one team per session" Cloud-doc constraint is respected because each Code-Evaluation batch runs in **its own Claude Code process**, on schedule, never simultaneously with another team's session.
 
 - A dedicated **Code-Evaluation Team Lead** orchestrates each scheduled batch (daily, weekly, monthly per §5). The Lead session is started by cron / scheduler (`schedule` skill or k8s `CronJob`), runs the batch, and cleans up (`clean up the team` per Cloud-doc) before exiting.
 - Members above are spawned per batch and tear down with the team at end of run; their short-term coordination uses the standard task-list + mailbox primitives.
 - `pattern-miner`, `strategy-optimizer`, and `strategy-explorer` may spawn subagents for fan-out (one subagent per lesson cluster, per existing strategy under review, per candidate new-strategy idea, per category being analyzed).
 - The Code Evaluation Team is **isolated from both the Trading Team and the Trade Evaluation Team** — separate Lead, separate task list, no shared mailbox. The only coupling is the long-term memory layer: Code-Evaluation agents *read* episodic + reflective + agent-performance tables and *write* `lessons` / `patterns` / `proposals` / Git PRs.
-- Permission mode: standard (no `--dangerously-skip-permissions`). The Code Evaluation Team has no live-trading endpoint access by design (`infrastructure.md §6` safety boundary), so blocking on permission prompts for unexpected tool use is acceptable behavior. If a batch hangs on a prompt, the scheduler kills it after a timeout and pages the operator.
+- Permission mode: standard (no `--dangerously-skip-permissions`). The Code Evaluation Team has no live-trading endpoint access by design (`engineering.md §2` safety boundary), so blocking on permission prompts for unexpected tool use is acceptable behavior. If a batch hangs on a prompt, the scheduler kills it after a timeout and pages the operator.
 
 **Implementation flow for a code change.** When either `strategy-optimizer` (exploit) or `strategy-explorer` (explore) proposes a non-trivial change (parameter tweak, prompt rewrite, sizing delta, new strategy, new trading agent), it:
 1. Writes the `proposals` row with rationale and supporting `lessons` references.
@@ -75,7 +75,7 @@ proposals(id pk, time, source_agent_id,
           paper_validation_uri, pr_url?, status, decided_by, decided_at)
 ```
 
-(Schemas owned by `infrastructure.md §3`.)
+(Schemas owned by `data_infrastructure.md §1`.)
 
 - `lessons` append-only; supersedence via `status`, never deletion. Replay always possible.
 - `patterns` curated by `pattern-miner`; references the lessons that built it.
@@ -83,7 +83,7 @@ proposals(id pk, time, source_agent_id,
 - A `proposal` with `target_kind='operating_doctrine'` and an accepted `decided_by` writes a new `operating_doctrine` row (`trading.md §2`) and supersedes the prior active row. The trading layer reads the new doctrine on the next cycle's boot.
 - A `proposal` with `target_kind='agent_roster'` proposes adding a new trading agent to the `trading.md §2` ensemble (with full prompt + tool allow-list + persona definition in the PR), or retiring an existing one. Merge updates `.claude/agents/` and `.claude/teams/trading-team.spec.json`; effective at the next Trading-Team boot.
 
-All members are defined as Claude Code subagent definitions (`infrastructure.md §8.5`), reusable as both delegated subagents and Code-Evaluation-Team teammates.
+All members are defined as Claude Code subagent definitions (`engineering.md §7`), reusable as both delegated subagents and Code-Evaluation-Team teammates.
 
 ---
 
@@ -94,9 +94,9 @@ The Code Evaluation Team must run **both tracks every batch** so the operator's 
 - **At least 1 explore proposal** in the top-K (when `strategy-explorer` produced any).
 - **At least 2 exploit proposals** in the top-K (when `strategy-optimizer` produced any).
 - Remaining slots filled by raw expected-PnL × confidence ranking across both tracks.
-- Counter-rule: if the live system is in active drawdown (>10% from peak per `infrastructure.md §5` alerts) **or** has had ≥ 3 consecutive losing weeks, exploit is up-weighted — the queue tilts toward stabilizing what exists before chasing new edges. Inverse case (5+ green weeks, low capacity utilization): explore up-weighted.
+- Counter-rule: if the live system is in active drawdown (>10% from peak per `data_infrastructure.md §1` alerts) **or** has had ≥ 3 consecutive losing weeks, exploit is up-weighted — the queue tilts toward stabilizing what exists before chasing new edges. Inverse case (5+ green weeks, low capacity utilization): explore up-weighted.
 
-These ratios are tunables in the central settings file (`infrastructure.md §8.21`). The point is that the team is **structurally biased to do both**, not to drift into one mode and stay there.
+These ratios are tunables in the central settings file (`engineering.md §21`). The point is that the team is **structurally biased to do both**, not to drift into one mode and stay there.
 
 **Decision-record.** Each weekly batch closes with `meta-reviewer` writing a short markdown decision-record in `docs/code-eval/YYYY-WW.md` to the same feature branch as the proposals: how many proposals each track produced, how many made the top-K, why, and the explore/exploit weights applied. Audit trail for the operator.
 
@@ -183,7 +183,7 @@ This is the **technical feedback loop** in the user's architecture diagram — t
 | New strategy added | Tuning Loop (PR + merge + ≥ 30d paper) | weeks |
 | Skill added to library (`trading.md §8`) | Tuning Loop (PR + merge) | days–weeks |
 | `operating_doctrine` revision | Tuning Loop (proposal merge writes new active row) | days |
-| Risk-limit value change (`infrastructure.md §2`) | Tuning Loop with §7 stricter review counts | days–weeks |
+| Risk-limit value change (`engineering.md §1`) | Tuning Loop with §7 stricter review counts | days–weeks |
 
 **Critical property: the Tuning Loop never bypasses the operator.** Every change flows through a Git PR. The operator's review queue is the system's commit log of "what the autonomous team thinks should change."
 
@@ -193,7 +193,7 @@ This is the **technical feedback loop** in the user's architecture diagram — t
 
 ## 7. Checks and Balances
 
-Every Code-Evaluation-agent change goes through the standard merge pipeline. **No Code-Evaluation agent may self-merge**; none may write to `risk/` (`infrastructure.md §8.4` hook). The PR is the contract: code change + rationale + paper-validation reference (when quantitative). The operator is the merge gate.
+Every Code-Evaluation-agent change goes through the standard merge pipeline. **No Code-Evaluation agent may self-merge**; none may write to `risk/` (`engineering.md §6` hook). The PR is the contract: code change + rationale + paper-validation reference (when quantitative). The operator is the merge gate.
 
 | Target of change | Required reviewers | Required tests/gates |
 |---|---|---|
@@ -205,7 +205,7 @@ Every Code-Evaluation-agent change goes through the standard merge pipeline. **N
 | **Explore:** new trading agent (`agent_roster` add) | `meta-reviewer` + 2 humans | ≥ 30d in paper mode + persona / tool-allow-list review; pairwise correlation against existing roster measured; explicit kill-criterion |
 | Code in `execution/` | `security-reviewer` + 2 humans | Tests + integration tests |
 | Risk limit (`risk/`) | **2 humans only** — no agent override | Property-based tests pass |
-| Hard cap `MAX_CAPITAL_EUR` | 2 humans + audit-log entry (`infrastructure.md §8.8`) | n/a |
+| Hard cap `MAX_CAPITAL_EUR` | 2 humans + audit-log entry (`engineering.md §10`) | n/a |
 
 Branch protection on `main` enforces these counts mechanically.
 
@@ -217,13 +217,13 @@ Branch protection on `main` enforces these counts mechanically.
 
 Before any new component, do a prior-art search; prefer reuse over rewriting.
 
-- Search GitHub, PyPI/crates.io, recent papers (with code). `strategy-researcher` (`infrastructure.md §8.5`) + `prior-art-scout` (§2) lead.
+- Search GitHub, PyPI/crates.io, recent papers (with code). `strategy-researcher` (`engineering.md §7`) + `prior-art-scout` (§2) lead.
 - Every PR introducing a non-trivial new component must include a `prior-art` note: what considered, what selected, and — if rewriting — explicit reason.
 - Bias: fork + minimal patches > rewrite. Forks declare upstream + sync cadence in `docs/forks.md`.
 - Examples to evaluate: Polymarket SDK clients (Python/TS), agent orchestration (`langgraph`, `dspy`, `pydantic-ai`), order management (`ccxt`).
 - License: production may depend only on MIT/BSD/Apache-2/MPL-2. Copyleft (GPL/AGPL) requires legal review + PR sign-off.
 
-**Concrete prior-art adopted.** From a survey of *Prediction Arena* (Arcada Labs, `predictionarena.ai`): the four-stage cycle spine Receive → Review → Analyze → Decide (`trading.md §5`); per-cycle prompt assembly with recent settlements/recent trades/previous-cycle reasoning/critical-learning section (`trading.md §2`); the **dual knowledge management** pattern from PA's Polymarket implementation — per-agent `manage_notes` scratchpad (~50 × ~200 words, LRU) for ad-hoc memory + structured `manage_beliefs` store typed by domain for first-class market views with revision history (`trading.md §2`, `infrastructure.md §3`); bid-based mark-to-market valuation (`trading_feedback.md §5`); the three-gate risk model — 15% per-market concentration + solvency + per-cycle spending cap (`infrastructure.md §2`); model-determined sizing within the gates (`trading.md §6`); marketable-limit immediate execution (`infrastructure.md §4`); the lean two-mode operation (paper / real-capital) replacing the deeper backtest harness (`infrastructure.md §8.9`).
+**Concrete prior-art adopted.** From a survey of *Prediction Arena* (Arcada Labs, `predictionarena.ai`): the four-stage cycle spine Receive → Review → Analyze → Decide (`trading.md §5`); per-cycle prompt assembly with recent settlements/recent trades/previous-cycle reasoning/critical-learning section (`trading.md §2`); the **dual knowledge management** pattern from PA's Polymarket implementation — per-agent `manage_notes` scratchpad (~50 × ~200 words, LRU) for ad-hoc memory + structured `manage_beliefs` store typed by domain for first-class market views with revision history (`trading.md §2`, `data_infrastructure.md §1`); bid-based mark-to-market valuation (`trading_feedback.md §5`); the three-gate risk model — 15% per-market concentration + solvency + per-cycle spending cap (`engineering.md §1`); model-determined sizing within the gates (`trading.md §6`); marketable-limit immediate execution (`data_infrastructure.md §1`); the lean two-mode operation (paper / real-capital) replacing the deeper backtest harness (`engineering.md §11`).
 
 From other prior art:
 - **TradingAgents** (Tauric Research, arXiv:2412.20138, v0.2.0 Feb 2026) — the 7-role financial-LLM ensemble structure (Fundamentals/Sentiment/News/Technical Analyst, Researcher, Trader, Risk Manager) is direct prior art for our 7-persona ensemble in `trading.md §2`. We adapt the role taxonomy to prediction-market specifics; the structural pattern is confirmed.
@@ -231,7 +231,7 @@ From other prior art:
 - **Reflexion** (Shinn et al., NeurIPS 2023) and **Multi-Agent Reflexion** (MAR, 2025) — natural-language-reflections-as-episodic-memory is the basis for the `lessons` → `patterns` flow (`trading_feedback.md §4`, this file §2). Cross-agent critique is `meta-reviewer`'s role.
 - **Self-Improving Coding Agent** (Robeyns et al., arXiv:2504.15228, ICLR 2025 SSI-FM) — external validation that an agent editing its own code through PRs can yield substantial performance gains (17→53% on SWE Bench Verified). We adopt the loop, replace auto-merge with operator-merge.
 
-Rejected or independently re-derived: single-OpenAI-web-search tooling (we keep cloud-only Anthropic per `trading.md §2` with Tavily/Brave for search), pooled real-capital structure, single-model-per-cycle competition (we run a 7-persona ensemble of one model). The fresh-team-per-cycle process model (`infrastructure.md §1`), `cycle_plan` + `operating_doctrine` memory layers (`trading.md §2`), and cloud-only rule are independently designed.
+Rejected or independently re-derived: single-OpenAI-web-search tooling (we keep cloud-only Anthropic per `trading.md §2` with Tavily/Brave for search), pooled real-capital structure, single-model-per-cycle competition (we run a 7-persona ensemble of one model). The fresh-team-per-cycle process model (`orchestration.md §1`), `cycle_plan` + `operating_doctrine` memory layers (`trading.md §2`), and cloud-only rule are independently designed.
 
 ---
 
@@ -243,7 +243,7 @@ Rejected or independently re-derived: single-OpenAI-web-search tooling (we keep 
 
 **Multi-model cloud ensemble (v2):** add Claude-family models (Sonnet, Haiku) as supplementary backbones — only if performance shows uncorrelated errors with Opus. Cross-vendor cloud only if same test passes *and* audit/data-residency review approves; Claude family preferred. **`trading.md §2` cloud-only rule is non-negotiable** — no local/on-prem in any v2+. Each new model goes through 30d shadow (`trading_feedback.md §7`).
 
-**Cross-venue arbitrage:** Kalshi + sportsbook integration; statistical arb engine across venues. (Adapter pattern already in place — `infrastructure.md §4`.)
+**Cross-venue arbitrage:** Kalshi + sportsbook integration; statistical arb engine across venues. (Adapter pattern already in place — `data_infrastructure.md §1`.)
 
 **Real-time event-driven:** sub-second news → trade pipeline (lightweight classifier + dedicated agent); direct microstructure stream for thinner markets.
 
@@ -268,10 +268,10 @@ Rejected or independently re-derived: single-OpenAI-web-search tooling (we keep 
 | Code-Evaluation agents converge on bad direction | Mandatory human-in-the-loop; 2-human rule on risk/strategy/explore |
 | `lessons` table self-contradicts | `status` field tracks supersession; `meta-reviewer` reconciles in monthly retro |
 | Anthropic outage stalls weekly batch | Batch is non-realtime; defer to next cycle, no live impact |
-| Code-Evaluation agent suggests bypassing `risk/` | `infrastructure.md §8.4` hook + import-linter prevent the diff existing |
+| Code-Evaluation agent suggests bypassing `risk/` | `engineering.md §6` hook + import-linter prevent the diff existing |
 | Whipsaw violations (rapid strategy churn) | §4 enforces minimum strategy lifetime; `meta-reviewer` defers offending proposals; operator override available |
 | Explore proposals with no kill-criterion slip through | PR template enforces kill-criterion field; `meta-reviewer` auto-rejects PRs missing it |
-| Capital-allocation feedback (`infrastructure.md §7`) rewards luck not skill | Adaptation-quality bonus capped at +10%; primary signal is rolling 30d hit rate + PnL with adequate `n_samples` |
+| Capital-allocation feedback (`orchestration.md §3`) rewards luck not skill | Adaptation-quality bonus capped at +10%; primary signal is rolling 30d hit rate + PnL with adequate `n_samples` |
 
 ---
 
@@ -279,5 +279,7 @@ Rejected or independently re-derived: single-OpenAI-web-search tooling (we keep 
 
 - `trading.md` — the trading runtime that the Tuning Loop targets.
 - `trading_feedback.md` — Tier 1 evaluation that produces the `lessons` this team consumes.
-- `infrastructure.md` — schemas, central settings, hooks, branch protection, all infrastructure mechanics.
+- `orchestration.md` — runtime topology and team mechanics.
+- `data_infrastructure.md` — schemas, prediction-market adapter, observability.
+- `engineering.md` — central settings, hooks, branch protection, review counts implementation.
 - `specs.md` — architecture diagram and entry point.

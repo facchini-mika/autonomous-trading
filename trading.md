@@ -2,7 +2,7 @@
 
 The runtime that decides what to trade and places orders. One block of the four-block architecture (see `specs.md`).
 
-**What lives here:** the per-cycle Trading Team, the 7-persona agent ensemble, the strategy layer, the decision logic, and the per-trade gates as the trading layer sees them. **What does not live here:** schemas, risk limit values, execution mechanics, and observability — those are owned by `infrastructure.md`. Evaluation and learning loops are in `trading_feedback.md` (Tier 1) and `optimization.md` (Tier 2).
+**What lives here:** the per-cycle Trading Team, the 7-persona agent ensemble, the strategy layer, the decision logic, and the per-trade gates as the trading layer sees them. **What does not live here:** runtime topology (`orchestration.md`), schemas + adapters + observability (`data_infrastructure.md`), risk limit values + safety controls + repo conventions (`engineering.md`). Evaluation and learning loops are in `trading_feedback.md` (Tier 1) and `optimization.md` (Tier 2).
 
 ---
 
@@ -39,7 +39,7 @@ class Agent:
         Returns Prediction(p_yes, reasoning_trace_uri, sub_questions, key_evidence)."""
 ```
 
-**Model.** All agents run on **Anthropic Claude Opus exclusively** (latest, pinned per release). Diversity comes from prompt × tool × persona, not from model heterogeneity. Trade-off: simpler ops/pinning/audit; no cross-provider drift; an Anthropic outage is a system-wide constraint (see `infrastructure.md §4`).
+**Model.** All agents run on **Anthropic Claude Opus exclusively** (latest, pinned per release). Diversity comes from prompt × tool × persona, not from model heterogeneity. Trade-off: simpler ops/pinning/audit; no cross-provider drift; an Anthropic outage is a system-wide constraint (see `data_infrastructure.md §1`).
 
 **Hard rule — cloud inference only (binding for all current and future versions).** Inference exclusively against managed cloud LLM endpoints. **No self-hosted, on-prem, locally-run, or edge-deployed inference** — not in v1, v2+, sub-component, research, shadow, or paper mode. Rationale: deterministic model-version provenance for replay, capability/safety tracking, vendor-managed eval pipelines, ops simplicity, no self-managed weight integrity risk. Future model additions (see `optimization.md §9`) must be cloud-hosted.
 
@@ -57,7 +57,7 @@ class Agent:
 
 **External validation of the 7-role pattern.** TradingAgents (Tauric Research, arXiv:2412.20138) experimentally validates a 7-role financial-LLM ensemble (Fundamentals/Sentiment/News/Technical Analyst, Researcher, Trader, Risk Manager) with measurable gains in cumulative return, Sharpe, and max drawdown over baselines. We adapt the role taxonomy to prediction-market specifics; the structural pattern of seven specialized roles is confirmed prior art.
 
-**Per-agent state:** predictions log (joined to outcome on resolution); capital allocation (`meta-allocator`, see `infrastructure.md §7`); internal portfolio (subset of global); performance history (rolling 30d hit rate, PnL — see `trading_feedback.md §5`).
+**Per-agent state:** predictions log (joined to outcome on resolution); capital allocation (`meta-allocator`, see `orchestration.md §3`); internal portfolio (subset of global); performance history (rolling 30d hit rate, PnL — see `trading_feedback.md §5`).
 
 **Independence guarantees:**
 - Agents do not see each other's outputs before producing their own.
@@ -67,7 +67,7 @@ class Agent:
 **Per-cycle prompt context** (assembled deterministically, on top of system prompt with role/philosophy/risk/tools/protocol). Most fields are sourced from the upstream `PortfolioState` artifact built in §5 step 2 (Review) — the prompt does not re-query state, it consumes the already-snapshotted view, so all agents in a cycle see consistent numbers:
 - Current timestamp + cycle metadata
 - Market data: orderbook snapshot, settlement criteria, depth at ±1% of mid
-- **Account state** (from `PortfolioState`): cash, positions, unrealized + realized PnL, gross exposure, remaining capacity under per-trade gates (see `infrastructure.md §2`)
+- **Account state** (from `PortfolioState`): cash, positions, unrealized + realized PnL, gross exposure, remaining capacity under per-trade gates (see `engineering.md §1`)
 - **Recent settlements** (from `PortfolioState`) — last 10 resolved markets with realized PnL
 - **Recent closed trades** (from `PortfolioState`) — last 10 trades with realized PnL
 - **Previous-cycle reasoning** — agent's own prior reasoning on same market/category
@@ -80,7 +80,7 @@ class Agent:
 
 This is the explicit bridge between Tier-1 working memory and Tier-2 reflective memory. Every decision is conditioned on a defined, audit-inspectable slice of past experience.
 
-**Agent notes (per-agent scratchpad).** Private `notes` store via `manage_notes` tool (read/write/search/edit). Bounded: max 50 × ~200 words, LRU. Used by the agent itself for patterns spotted during reasoning, reminders for next cycle, tentative hypotheses too provisional for `lessons`. Private to one agent (no cross-agent leakage during prediction — preserves §2 independence) but readable by Code-Evaluation agents (see `optimization.md §2`) for pattern mining. **Schema:** `infrastructure.md §3`.
+**Agent notes (per-agent scratchpad).** Private `notes` store via `manage_notes` tool (read/write/search/edit). Bounded: max 50 × ~200 words, LRU. Used by the agent itself for patterns spotted during reasoning, reminders for next cycle, tentative hypotheses too provisional for `lessons`. Private to one agent (no cross-agent leakage during prediction — preserves §2 independence) but readable by Code-Evaluation agents (see `optimization.md §2`) for pattern mining. **Schema:** `data_infrastructure.md §1`.
 
 **Agent beliefs (structured market views).** Typed `beliefs` store via `manage_beliefs` tool (`create`, `revise`, `retire`, `search`). A belief is a structured statement the agent currently holds. Fields:
 - `domain` — `market_structure` / `strategy` / `event` / `risk` / `sentiment`
@@ -93,9 +93,9 @@ This is the explicit bridge between Tier-1 working memory and Tier-2 reflective 
 - `supersedes_id` — id of prior belief revised (lineage preserved; nothing deleted)
 - `status` — `active` / `superseded` / `retired`
 
-Schema: `infrastructure.md §3`.
+Schema: `data_infrastructure.md §1`.
 
-**Position-thesis beliefs (special case).** When a trading agent's prediction directly drives a position open, the execution-engine writes a `scope=position` belief alongside the `decisions` row, copying the agent's reasoning summary as the `statement` and the entry edge as `p_estimate`. On every subsequent cycle while the position is open, the per-cycle prompt for the originating agent injects this belief automatically; if the market price has moved > X% (default 15%, central settings — see `infrastructure.md §8`) against the entry, the belief is auto-flagged for `revise` or `retire`. This closes the loop "why am I still holding this?" — every open position has a tracked thesis with full revision lineage.
+**Position-thesis beliefs (special case).** When a trading agent's prediction directly drives a position open, the execution-engine writes a `scope=position` belief alongside the `decisions` row, copying the agent's reasoning summary as the `statement` and the entry edge as `p_estimate`. On every subsequent cycle while the position is open, the per-cycle prompt for the originating agent injects this belief automatically; if the market price has moved > X% (default 15%, central settings — see `engineering.md`) against the entry, the belief is auto-flagged for `revise` or `retire`. This closes the loop "why am I still holding this?" — every open position has a tracked thesis with full revision lineage.
 
 **Beliefs vs notes vs lessons vs predictions vs cycle_plan vs operating_doctrine:**
 
@@ -135,7 +135,7 @@ The Lead synthesizes the plan from in-flight artifacts at step 9 of §5; it is n
 - `revised_at` / `revised_by` — author and timestamp; lineage via `supersedes_id`
 - `approved_by` — human approver (mandatory; revisions follow `optimization.md §7` review counts)
 
-Revision authored exclusively by `strategy-optimizer` (see `optimization.md §2`, exploit track) as a `proposal`; merging a doctrine `proposal` writes a new active `operating_doctrine` row and supersedes the prior. Trading agents and the Lead read but never write. Schemas in `infrastructure.md §3`.
+Revision authored exclusively by `strategy-optimizer` (see `optimization.md §2`, exploit track) as a `proposal`; merging a doctrine `proposal` writes a new active `operating_doctrine` row and supersedes the prior. Trading agents and the Lead read but never write. Schemas in `data_infrastructure.md §1`.
 
 ---
 
@@ -147,7 +147,7 @@ Strategies are concerns *across* agents — not separate agents. PnL tracked per
 |---|---|---|---|
 | **Mispricing (core)** | edge ≥ 3%, ensemble agrees | Model-proposed, clipped by per-trade gates | The only active strategy in v1; receives 100% of allocated capital |
 
-Sizing is the model's call, clipped by per-trade gates (see `infrastructure.md §2`).
+Sizing is the model's call, clipped by per-trade gates (see `engineering.md §1`).
 
 ### 3.1 Anti-whipsaw rule
 
@@ -159,7 +159,7 @@ New strategies enter via `optimization.md §3` (explore track) → ≥ 30 days i
 
 ## 4. Daten-Inputs für den Cycle
 
-The trading agents consume a specific slice of data per cycle, all sourced through the infrastructure layer. Full source list, schemas, and ingestion mechanics in `infrastructure.md §3`.
+The trading agents consume a specific slice of data per cycle, all sourced through the infrastructure layer. Full source list, schemas, and ingestion mechanics in `data_infrastructure.md §1`.
 
 What an agent receives per cycle:
 - **Universe snapshot** — all currently-tradable Polymarket binary markets (orderbook, bid/ask, settlement rules). No filter applied: agent triages itself during inference.
@@ -173,7 +173,7 @@ Agents do not directly read `market_snapshots` time-series, raw news feeds, or p
 
 ## 5. Trading Loop
 
-**Cycle period:** 12 min (configurable, central settings). Multiple time scales (managed by infrastructure, see `infrastructure.md §1`):
+**Cycle period:** 12 min (configurable, central settings). Multiple time scales (managed by infrastructure, see `orchestration.md §1`):
 
 | Loop | Period | Function |
 |---|---|---|
@@ -186,20 +186,20 @@ Agents do not directly read `market_snapshots` time-series, raw news feeds, or p
 
 **Decision cycle (T = scheduler fire time, i.e. a fresh `claude` process started).** The four-stage spine is **Receive → Review → Analyze → Decide** (Prediction-Arena pattern); a Boot phase runs first, and Cycle-close tears the team down. Steps below are the concrete sub-stages.
 
-0. **T+0–15s — Boot.** Scheduler starts a fresh Claude Code process with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and `--dangerously-skip-permissions`. A janitor first sweeps stale `~/.claude/teams/{team-name}/` directories left by a previous cycle that crashed without cleanup. Lead loads CLAUDE.md, MCP servers, hooks, the team-spec from `.claude/teams/trading-team.spec.json` (see `infrastructure.md §8`), then spawns members per the spec — each loads its subagent definitions and waits idle for tasks. Long-term memory pointers (current `MAX_CAPITAL_EUR`, current `TRADING_MODE`, recent settlement IDs) are read from Postgres and exposed to the Lead. The Lead also reads the **previous cycle's `cycle_plan`** (forward-looking handoff: priorities, holds, blockers) and the **active `operating_doctrine`** row (current phase + target date) from Postgres — both are propagated to members via the §2 prompt context. Boot completes when every member reports idle.
+0. **T+0–15s — Boot.** Scheduler starts a fresh Claude Code process with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and `--dangerously-skip-permissions`. A janitor first sweeps stale `~/.claude/teams/{team-name}/` directories left by a previous cycle that crashed without cleanup. Lead loads CLAUDE.md, MCP servers, hooks, the team-spec from `.claude/teams/trading-team.spec.json` (see `engineering.md`), then spawns members per the spec — each loads its subagent definitions and waits idle for tasks. Long-term memory pointers (current `MAX_CAPITAL_EUR`, current `TRADING_MODE`, recent settlement IDs) are read from Postgres and exposed to the Lead. The Lead also reads the **previous cycle's `cycle_plan`** (forward-looking handoff: priorities, holds, blockers) and the **active `operating_doctrine`** row (current phase + target date) from Postgres — both are propagated to members via the §2 prompt context. Boot completes when every member reports idle.
 1. **T+15s — Receive: Universe snapshot.** All currently-tradable Polymarket binary markets are pulled — orderbook prices, bid/ask spreads, settlement rules. **No filter applied** (PA-style): the agent ensemble sees the full universe and triages itself during inference (step 3). The only exclusion is markets with structurally undefined data (no orderbook, no settlement criteria parseable).
 2. **T+25s — Review: Portfolio.** `portfolio-reviewer` builds `PortfolioState`: cash balance, current positions, unrealized + realized PnL, **last 10 settlements with realized PnL**, **last 10 closed trades with realized PnL**. Mark-to-market against current best **bid** (PA convention, `trading_feedback.md §5`). The artifact is consumed by the risk-engine (for solvency + per-cycle-cap checks) and injected into agent prompts (§2).
 3. **T+45s – T+5m — Analyze: Agent inference (with model-driven research).** Each agent gets the full universe + `PortfolioState` + memory context (§2) and runs inference. Research is **agent-driven**, not pre-dispatched (PA-style): each agent has tool access to `web_search`, `news_fetch`, `historical_analogue_lookup`, and `related_market_scan`, and calls them on the markets it chooses to focus on. The Member's own reasoning loop decides which markets are worth scoring and which to pass on. Output per scored market: `P(YES)`, reasoning trace URI, list of research-tool calls made (persisted to S3 for audit). Parallel across agents; per-agent timeout 90s. Failed agents excluded from this market only.
 4. **T+5m — Analyze: Aggregation.** Simple mean of `p_raw_i` across active agents per market: `p_consensus = mean(p_raw_i)`. Disagreement metric retained as `std(p_raw_i)` for visibility, but no calibration step.
-5. **T+6m — Analyze: Edge computation.** `q = best_ask` (for buying YES) or `1 − best_bid` (for buying NO). `edge = p_consensus − q`. Trade only if `|edge| ≥ 0.03` (central setting — see `infrastructure.md §8`).
-6. **T+7m — Decide: Risk gates** (PA-style, three checks in fixed order, full enforcement in `infrastructure.md §2`):
+5. **T+6m — Analyze: Edge computation.** `q = best_ask` (for buying YES) or `1 − best_bid` (for buying NO). `edge = p_consensus − q`. Trade only if `|edge| ≥ 0.03` (central setting — see `engineering.md`).
+6. **T+7m — Decide: Risk gates** (PA-style, three checks in fixed order, full enforcement in `engineering.md §1`):
    1. **Concentration** — proposed notional ≤ 15% of equity in any single market.
    2. **Solvency** — cash ≥ proposed notional + estimated fees + open-order reservations.
    3. **Per-cycle spending cap** — total notional opened this cycle ≤ cycle cap (central setting).
-   Reject any trade that fails any gate. Plus the constitutional `MAX_CAPITAL_EUR` hard cap (see `infrastructure.md §8`).
+   Reject any trade that fails any gate. Plus the constitutional `MAX_CAPITAL_EUR` hard cap (see `engineering.md`).
 7. **T+8m — Decide: Sizing.** Agent proposes notional. Risk-engine clips to the smaller of: concentration cap remaining, solvency headroom, per-cycle-cap remaining. No Kelly formula — sizing is the model's call within hard limits.
-8. **T+9m — Decide: Order placement.** Orders execute **immediately** (PA-style) as marketable limit orders at the current best ask (buy) or best bid (sell). No post-only default, no iceberg slicing, no TWAP. Internal idempotency key on every order. In paper mode (see `infrastructure.md §8`) the order is written to the paper-trading ledger instead.
-9. **T+11m45s — Persist & emit.** Lead persists in-flight artifacts (decisions, fills, reasoning links) to long-term stores (`infrastructure.md §3`); writes any agent-initiated `notes` / `beliefs` / `lessons` updates; **writes a fresh `cycle_plan` row** (forward-looking handoff for the next cycle: top priorities, holds-with-rationale, pending settlements, identified-but-deferred opportunities, blockers) — synthesized by the Lead from the cycle's artifacts; emits cycle metrics. `operating_doctrine` is read-only here (only `strategy-optimizer` revises it, see `optimization.md §2`).
+8. **T+9m — Decide: Order placement.** Orders execute **immediately** (PA-style) as marketable limit orders at the current best ask (buy) or best bid (sell). No post-only default, no iceberg slicing, no TWAP. Internal idempotency key on every order. In paper mode (see `engineering.md`) the order is written to the paper-trading ledger instead.
+9. **T+11m45s — Persist & emit.** Lead persists in-flight artifacts (decisions, fills, reasoning links) to long-term stores (`data_infrastructure.md §1`); writes any agent-initiated `notes` / `beliefs` / `lessons` updates; **writes a fresh `cycle_plan` row** (forward-looking handoff for the next cycle: top priorities, holds-with-rationale, pending settlements, identified-but-deferred opportunities, blockers) — synthesized by the Lead from the cycle's artifacts; emits cycle metrics. `operating_doctrine` is read-only here (only `strategy-optimizer` revises it, see `optimization.md §2`).
 10. **T+11m55s — Cycle close.** Lead calls `clean up the team` (Cloud-doc warning: never let a member run cleanup), shutting down all members and the team config. Lead process exits. The next cycle is a brand-new `claude` process started by the scheduler at the next fire time — no shared in-process state with this cycle. All short-term memory (mailbox, task list, member context windows) dies with the process; only what was persisted in step 9 survives.
 
 ---
@@ -221,19 +221,19 @@ PA-aligned, deliberately lean. No calibration layer, no Kelly sizing, no multi-l
 **Trade trigger (must hold):**
 - `|edge| ≥ 0.03` (central setting)
 
-**Sizing.** Agent proposes notional. Risk-engine clips to the smallest of: concentration cap (15% of equity), solvency headroom, per-cycle-cap remaining (see `infrastructure.md §2`). No Kelly formula — the model owns sizing within hard limits.
+**Sizing.** Agent proposes notional. Risk-engine clips to the smallest of: concentration cap (15% of equity), solvency headroom, per-cycle-cap remaining (see `engineering.md §1`). No Kelly formula — the model owns sizing within hard limits.
 
 ---
 
 ## 7. Per-Trade Gates (consumer view)
 
-The trading layer **consumes** the gates defined in `infrastructure.md §2`. Three gates, applied in fixed order before any order submission:
+The trading layer **consumes** the gates defined in `engineering.md §1`. Three gates, applied in fixed order before any order submission:
 
 1. **Concentration** — proposed notional ≤ 15% of equity in any single market.
 2. **Solvency** — cash ≥ proposed notional + estimated fees + open-order reservations.
 3. **Per-cycle spending cap** — total notional opened this cycle ≤ cycle cap.
 
-Plus the constitutional `MAX_CAPITAL_EUR` hard cap. Limits are plain constants in `risk/`, never AI outputs. The trading layer is forbidden from defining its own limits or bypassing the gate path — enforced by import-linter in CI (see `infrastructure.md §8`).
+Plus the constitutional `MAX_CAPITAL_EUR` hard cap. Limits are plain constants in `risk/`, never AI outputs. The trading layer is forbidden from defining its own limits or bypassing the gate path — enforced by import-linter in CI (see `engineering.md`).
 
 ---
 
@@ -264,7 +264,9 @@ This gives a concrete inspectable artifact between abstract `lessons`/`patterns`
 
 ## See also
 
-- `infrastructure.md` — schemas, data layer, execution engine, risk-limit values, central settings, ops, safety controls.
+- `orchestration.md` — runtime topology, team mechanics, capital allocation.
+- `data_infrastructure.md` — schemas, prediction-market adapter, execution engine, observability.
+- `engineering.md` — risk-limit values, safety controls, central settings, repo conventions, hooks.
 - `trading_feedback.md` — Tier 1 evaluation, results, learnings, paper-mode promotion, the Strategy Update Loop that flows back into agent prompts.
 - `optimization.md` — Tier 2 code evaluation, exploit/explore tracks, anti-whipsaw rule (§3.1 above is the trading-side reference), the Tuning Loop that produces the Git PRs the operator merges.
 - `specs.md` — architecture diagram and entry point.

@@ -43,6 +43,8 @@ Two feedback loops, two cadences:
 | File | Owns |
 |---|---|
 | [trading.md](./trading.md) | Per-cycle Trading Team, 7-persona ensemble, strategy layer, decision logic, per-trade gates, Strategy Skill Library |
-| [infrastructure.md](./infrastructure.md) | Prediction-market interface (Polymarket/Kalshi adapter), data layer + all schemas, execution, observability, safety controls, central settings, hooks |
+| [orchestration.md](./orchestration.md) | Three-team architecture, memory split, agent-team production runtime (bootstrap, scheduler, cleanup, hooks), capital-allocation feedback |
+| [data_infrastructure.md](./data_infrastructure.md) | Data sources, storage, all long-term-memory schemas, prediction-market interface (Polymarket/Kalshi adapter), order placement mechanics, observability stack |
+| [engineering.md](./engineering.md) | Risk management, safety controls, repository layout, CLAUDE.md, GitHub, hooks, secrets, operational modes, central settings, tech stack |
 | [trading_feedback.md](./trading_feedback.md) | Tier 1 — Trade Evaluation Team (1-min cron), result computation, learning generation, evaluation metrics, paper-mode promotion |
 | [optimization.md](./optimization.md) | Tier 2 — Code Evaluation Team (daily/weekly), exploit + explore tracks, anti-whipsaw rule, review counts, prior-art reuse |

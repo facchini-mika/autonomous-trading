@@ -22,7 +22,7 @@ The Trading Team (`trading.md`) decides what to trade. The Trade Evaluation Team
 
 This separation is deliberate. Tier 1 is **deterministic-with-agent-shell** — the work is mostly resolution lookup, PnL math, and threshold-flagging — and runs frequently (every minute). Tier 2 is **prescriptive** and runs in slower, deliberate batches. Mixing the two would couple a fast cron job to slow code-change reasoning, and would dilute the audit trail by interleaving "what happened" with "what to do about it."
 
-**Position in the architecture (see `infrastructure.md §1`):**
+**Position in the architecture (see `orchestration.md §1`):**
 
 ```
 Trading Team           Trade Evaluation Team        Code Evaluation Team
@@ -33,7 +33,7 @@ trades, predictions    →   outcomes, PnL, lessons   →   patterns, proposals,
                                                        Operator review and merge
 ```
 
-**Safety boundary (also in `infrastructure.md §6`):** read-only access to Polymarket Gamma API for resolution lookup; **no signing keys, no order endpoints, no CLOB write access**. Writes only ground-truth fields on existing rows in the long-term tables.
+**Safety boundary (also in `engineering.md §2`):** read-only access to Polymarket Gamma API for resolution lookup; **no signing keys, no order endpoints, no CLOB write access**. Writes only ground-truth fields on existing rows in the long-term tables.
 
 ---
 
@@ -60,7 +60,7 @@ A single-member team scheduled by cron / k8s `CronJob` every 1 minute. The Team 
 
 **Permission mode:** standard (no `--dangerously-skip-permissions`). The team has read access to Polymarket Gamma API but no signing keys and no order-placement endpoints. A hung prompt halts the team — the next 1-min run picks up where it left off.
 
-**Team-mechanic specifics** (Lead lifecycle, cleanup discipline, scheduler) follow the same pattern as the Trading Team — see `infrastructure.md §8.22` "Off-cycle teams."
+**Team-mechanic specifics** (Lead lifecycle, cleanup discipline, scheduler) follow the same pattern as the Trading Team — see `orchestration.md §2` "Off-cycle teams."
 
 ---
 
@@ -83,11 +83,11 @@ Aggregated to position-level realized PnL across all entry trades on the same `m
 - `pnl_30d` = sum of `realized_pnl` on `decisions` driven by this agent's prediction (proportionally if multi-agent ensemble drove the trade).
 - `n_samples` updated.
 
-These feed the `meta-allocator` (`infrastructure.md §7`) on its next 24h rebalance.
+These feed the `meta-allocator` (`orchestration.md §3`) on its next 24h rebalance.
 
 **Mark-to-market for open positions** (every minute, even when no markets resolve in the window): `unrealized_pnl = (current_best_bid - avg_entry_price) · size` for each open position. Conservative (bid-based) by design — see §5 "Valuation convention" below.
 
-**Reconciliation step.** Before writing, the Trade Evaluation Team compares its computed realized PnL against Polymarket's reported settlement values for the same `market_id` × `side`. Diff > $0.50 per trade flags the row for manual operator review and pages — the deterministic `position-manager` reconciler (`infrastructure.md §4`) is the authoritative source on disputes; the evaluation team does not auto-overwrite.
+**Reconciliation step.** Before writing, the Trade Evaluation Team compares its computed realized PnL against Polymarket's reported settlement values for the same `market_id` × `side`. Diff > $0.50 per trade flags the row for manual operator review and pages — the deterministic `position-manager` reconciler (`data_infrastructure.md §1`) is the authoritative source on disputes; the evaluation team does not auto-overwrite.
 
 ---
 
@@ -143,7 +143,7 @@ The Trade Evaluation Team is involved only in step 1.
 
 **Per-agent attribution:** Capital ROI; Sharpe contribution; Hit rate; Pairwise correlation (low desired). Source: `agent_performance` table written by §3 above. Pairwise correlation is informational — when two agents drift toward 100% correlation, it's a signal for `optimization.md §2` `strategy-optimizer` to consider retiring one.
 
-**Operational:** Cycle latency (P50/P95/P99); per-stage breakdown; fill rate; slippage realized vs expected (Δ over time); error rates per service. These are emitted by the live services (`infrastructure.md §5`), not computed by the Trade Evaluation Team.
+**Operational:** Cycle latency (P50/P95/P99); per-stage breakdown; fill rate; slippage realized vs expected (Δ over time); error rates per service. These are emitted by the live services (`data_infrastructure.md §1`), not computed by the Trade Evaluation Team.
 
 **Reporting cadence:** Real-time Grafana; daily PnL email; weekly performance + attribution; monthly deep dive + strategy/roster review (the monthly review is the input to `optimization.md §5` monthly retrospective).
 
@@ -182,7 +182,7 @@ This separation — **semantic feedback as data, code feedback as PRs** — is t
 
 ## 7. Paper-Mode Promotion (informal guidance)
 
-Before flipping `TRADING_MODE` from `paper` → `real_capital` (see `infrastructure.md §8.9`), the operator should review at minimum:
+Before flipping `TRADING_MODE` from `paper` → `real_capital` (see `engineering.md §11`), the operator should review at minimum:
 
 - ≥ **30 days** continuous run in paper mode
 - Hit rate, realized PnL, max paper drawdown — judged against the operator's own thresholds (no hard gate)
@@ -206,7 +206,7 @@ Refinements to existing strategies via `strategy-optimizer` go through the same 
 | Failure | Mitigation |
 |---|---|
 | Trade Evaluation Team falls behind (resolutions not picked up for hours) | Alert at queue-depth > N; operator can manually trigger a catch-up run; 1-min cron means natural recovery on next tick |
-| Polymarket Gamma API returns inconsistent settlement data | Reconciliation diff > $0.50 per trade flags the row for manual review; Trade Eval Team does not auto-overwrite (`infrastructure.md §4` reconciler is authoritative) |
+| Polymarket Gamma API returns inconsistent settlement data | Reconciliation diff > $0.50 per trade flags the row for manual review; Trade Eval Team does not auto-overwrite (`data_infrastructure.md §1` reconciler is authoritative) |
 | Surprise threshold flags too many lessons (noise) | Threshold tunable in central settings; weekly `meta-reviewer` (Tier 2) reviews lesson volume and proposes adjustment if signal-to-noise drops |
 | Surprise threshold flags too few lessons (missed signal) | Same path — `meta-reviewer` review; counter-rule for low lesson volume on weeks with significant PnL movement |
 | Hung Anthropic API call freezes the team | Standard `--dangerously-skip-permissions` not used here; a hung prompt times out the run; next 1-min tick recovers cleanly. No state corruption because writes are idempotent on `prediction_id` and `market_id`. |
@@ -218,6 +218,8 @@ The Tier 1 team is the simpler of the two evaluation teams — it has narrow sco
 ## See also
 
 - `trading.md` — the trading runtime that produces what is evaluated here.
-- `infrastructure.md` — schemas, scheduler mechanics, observability, safety boundary specifics.
+- `orchestration.md` — scheduler mechanics, off-cycle team patterns.
+- `data_infrastructure.md` — schemas, observability.
+- `engineering.md` — safety boundary specifics, central settings.
 - `optimization.md` — Tier 2 evaluation, where lessons are turned into patterns, proposals, and Git PRs.
 - `specs.md` — architecture diagram and entry point.
