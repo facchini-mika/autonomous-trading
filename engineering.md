@@ -1,360 +1,238 @@
 # Engineering — Risk, Safety, Repository Conventions, AI-Coding Workflow
 
-How humans + AI build, modify, and operate the system. Owns: the deterministic risk gates (values), the safety-controls layer (kill-switch, sanity gates, audit trail), the repository conventions, CI hooks, secret management, mode flags, permissions, central settings, and the reference tech stack.
+How humans + AI build, modify, and operate the **Self-Improving Agentic Trading Bot**. Owns the deterministic risk gates, kill-switch, audit trail, repository conventions, secrets, mode flags, central settings, and the reference tech stack — all scaled to an MVP whose **only strategy is uncovering mispricings via OpenAI web research**.
 
-**What lives here:** values, governance, deterministic guard rails. **What does not live here:** runtime topology (`orchestration.md`), schemas + adapters + observability (`data_infrastructure.md`), agent behavior (`trading.md`).
+**What lives here:** values, governance, deterministic guard rails. **What does not live here:** runtime topology (`orchestration.md`), schemas + adapters (`data_infrastructure.md`), agent behavior (`trading.md`).
+
+---
+
+## MVP scope (this version of the doc)
+
+The bot is **one self-improving agent** that, every cycle:
+1. Picks a Polymarket market.
+2. Does OpenAI web-research (`research/skills/web_search.py`) on the market's question.
+3. Forms a probability estimate `p_agent`.
+4. Compares to the market price `q_market`; if `|p_agent − q_market|` ≥ edge threshold, places a paper-trade.
+5. After resolution: records outcome, appends a `lesson` to memory; the lesson feeds the next cycle's prompt.
+
+Mispricing detection is the entire strategy. Research is the entire information intake. There is no other agent, no ensemble, no multi-strategy layer.
+
+**Aggressively deferred (post-MVP), even if mentioned in the other specs:** multi-agent ensembles, the full three-team architecture, Agent-Teams production runtime, Cloud KMS / Vault / AWS Secrets Manager, hardware wallets, k8s, weekly meta-allocator, MCP servers in dev sessions, parallel-worktree workflows, smart order routing, automatic drawdown trip-wires.
+
+Anything below that contradicts this scope is post-MVP.
 
 ---
 
 ## 1. Risk Management
 
-PA-aligned: three deterministic gates plus the constitutional capital cap. All limits are plain constants in `risk/` (§9), never AI outputs.
+Three deterministic gates plus the constitutional capital cap. All limits are plain constants in `risk/`, never AI outputs.
 
 **Per-trade gates** (applied in order; trade rejected on first failure):
+1. **Concentration** — proposed notional ≤ **15% of equity** in any single market.
+2. **Solvency** — paper-cash ≥ proposed notional + estimated fees + open-order reservations.
+3. **Per-cycle spending cap** — total notional opened this cycle ≤ cycle cap (default 25% of equity, central setting §10).
 
-1. **Concentration** — proposed notional ≤ **15% of equity** in any single market (PA standard).
-2. **Solvency** — cash ≥ proposed notional + estimated fees + open-order reservations. Estimate uses Polymarket-API fee data when available, conservative fallback otherwise.
-3. **Per-cycle spending cap** — total notional opened this cycle ≤ cycle cap (default 25% of equity, central setting §21).
+**Constitutional cap (§3).** `MAX_CAPITAL_EUR` is a hard, two-human-approval-only ceiling on gross deployed capital. Independent of all other gates. In MVP this is the paper-cash budget; on the `paper → real_capital` switch it becomes the real-USDC ceiling.
 
-**Constitutional cap (§10):**
-- `MAX_CAPITAL_EUR` is a hard, two-human-approval-only ceiling on gross deployed capital. Independent of all other gates.
+**Manual kill-switch (§2).** Operator halts all new orders by flipping a row in `system_state` (`data_infrastructure.md §1`). No automatic drawdown trip-wires in MVP — drawdown is monitored, the operator decides whether to flip.
 
-**Per-agent allocation:**
-- Initial: equal weight (1/N).
-- Rebalanced weekly by `meta-allocator` on rolling 30d hit rate + PnL (softmax, T=0.5). Full mechanics: `orchestration.md §3`.
-- An agent that the operator manually flags as broken can be disabled; no automatic suspend rule.
-
-**Manual kill-switch (§2).**
-- Operator can halt all new orders via the kill-switch flag in Redis. Existing positions remain open; the safety-watchdog respects the flag at the gate. There are no automatic drawdown trip-wires — drawdown is monitored (`trading_feedback.md §5`) and surfaced via alerts (`data_infrastructure.md §3`), but action is the operator's call.
-
-**Resolution risk (Polymarket-specific, deterministic):**
-- Polymarket resolves via UMA optimistic oracle (~2–7 day delay, dispute possible). Surfaced in agent prompts as market metadata; no automatic position reduction.
+**Resolution risk.** Polymarket UMA oracle (~2–7d delay, dispute possible). Surfaced in agent prompts as market metadata; no automatic position reduction.
 
 ---
 
 ## 2. Safety & Controls
 
 **Kill switch:**
-- Global Redis flag `system:kill_switch`.
-- HTTP `POST /admin/kill` (auth: signed token + 2FA in prod).
-- Order-placing services poll every 1s; on activation halt new orders. Existing positions remain open unless the operator explicitly closes them via `/manual override`.
-- **Manual trigger only** (PA-aligned lean model): no automatic trip-wires. Alerts (`data_infrastructure.md §3`) page the operator on drawdown / reconciliation diff / sustained errors; the operator decides whether to flip the switch. The only fully-automatic guard is the constitutional `MAX_CAPITAL_EUR` cap (§10), enforced inside every order-submit path.
+- A row in `system_state(key='kill_switch', value=true)` (Postgres).
+- The execution-engine reads it before every order; `true` halts new orders. Existing positions stay open.
+- **Manual trigger only** — no automatic trip-wires in MVP. The constitutional `MAX_CAPITAL_EUR` (§3) is the only fully-automatic guard.
 
-**Manual override (CLI + minimal web UI):**
-- Pause/resume agent; close specific position (immediate market); edit per-agent allocation; adjust limits without restart (config in Postgres, hot-reloaded); force kill switch on/off.
+**Manual override (CLI):** pause/resume the agent, close a paper-position, edit allocation, flip the kill switch.
 
-**Sanity gates (block before submission):**
+**Sanity gates** (block before submission, in addition to §1):
 - Order size > 50% of equity → block.
 - Order price ∉ (0.005, 0.995) → block.
-- > 100 orders / hour → throttle to queue.
-- > 50 simultaneous open positions → require manual approval for new.
+- > 100 orders / hour → throttle.
+- > 50 simultaneous open positions → require manual approval.
 
-**Audit trail:** all admin actions logged immutably (append-only table + S3 with object lock). 90d minimum retention.
+**Audit trail.** Every cycle is replayable from Postgres alone:
+- `decisions` row records the gate evaluations and the chosen action.
+- `predictions.inference_log` JSONB carries the full prompt, Claude output, tool calls, and `web_search` results.
+- Append-only by convention; in `real_capital` mode, DB role permissions forbid deletes.
 
-**Secrets:**
-- Private keys in cloud KMS or hardware key (YubiHSM solo).
-- API tokens in vault (HashiCorp Vault or AWS Secrets Manager).
-- No secrets in committed env files.
-
-**Evaluation-tier safety boundary** (also see `trading_feedback.md §1` and `optimization.md §1`):
-- **Trade Evaluation Team:** read-only access to Polymarket Gamma API for resolution lookup; **no signing keys, no order endpoints**. Writes only ground-truth fields on existing rows (`outcome`, `realized_pnl`, `agent_performance`).
-- **Code Evaluation Team:** **no credentials** for production CLOB endpoints. Its proposals materialize as Git PRs + `proposals` rows — never direct in-process state changes. Reads all observational data; writes only `lessons`, `patterns`, `proposals`, PR commits on feature branches.
-- §2 kill switch + §1 risk limits unaffected by any evaluation-team action.
-
-Result: no runaway self-modification. Human in loop on every merge that affects live behavior.
+**Self-improvement safety boundary.**
+- The trading agent writes `predictions`, `decisions`, `paper_trades` (and reads everything).
+- Resolution-time evaluation writes only ground-truth fields on existing rows (`outcome`, `realized_pnl`).
+- Any code, prompt, or limit change proposed by the system materializes as a Git PR for human review — never an in-process state change. §1 limits + the §2 kill switch are unaffected by any agent action.
 
 ---
 
-## 3. Repository Layout
+## 3. Risk Layer Protection + Capital Gate
 
-```
-autonomous_trading/
-├── research/        # strategies, agent prompts, skill library
-│   ├── agents/      # per-agent persona + prompt + tools
-│   └── skills/      # executable skill snippets (trading.md §8)
-├── execution/       # order routing, CLOB client, position management
-├── risk/            # limits, kill switches, sanity gates, capital gate
-├── shared/          # data models, schemas, common utilities
-│   └── config/      # central settings (§21)
-├── infra/           # Docker, k8s, migrations, deployment
-├── tests/           # mirrors src layout
-├── docs/            # ADRs, runbooks, risk rules, code-eval decision records
-├── .claude/         # project-scoped Claude Code config (committed)
-├── CLAUDE.md        # AI-coding guard rails (committed)
-├── CLAUDE.local.md  # personal notes (gitignored)
-├── trading.md       # the trading runtime spec
-├── orchestration.md # how the teams run
-├── data_infrastructure.md # data + adapters + observability
-├── engineering.md   # this document
-├── trading_feedback.md
-├── optimization.md
-└── specs.md         # entry point with architecture diagram
-```
+`risk/` owns the *deterministic* guard rails. The AI decides *what* to trade; the risk layer decides *whether and how much*.
 
-`risk/` is *protected code* — see §9.
-
----
-
-## 4. CLAUDE.md (project)
-
-Short, high-signal, < 200 lines. Every line must answer *yes* to: "Would Claude make a mistake without this line?" Initial scaffold via `/init`, then manually pruned.
-
-Mandatory:
-- Build/test/lint commands (`pytest`, `ruff`, `mypy --strict`)
-- No-go list:
-  - **NEVER** commit real API keys, private keys, mnemonics, `.env*`
-  - **NEVER** trigger live trades without explicit user confirmation in this session
-  - **NEVER** modify code under `risk/` outside Plan Mode with explicit approval
-  - **NEVER** push directly to `main` or `--force` push
-- Repo conventions (commit format, branch naming, PR template ref)
-- Pointer to `specs.md` as architectural overview, plus the four component spec files
-- `@docs/risk-rules.md` import for hard risk rules
-
-Personal/transient → `CLAUDE.local.md` (gitignored). Global → `~/.claude/CLAUDE.md`.
-
----
-
-## 5. GitHub Integration
-
-- **Claude Code GitHub App** (`/install-github-app`): auto PR reviews, `@claude` mentions, fix pushes.
-- **`gh` CLI** required locally — token-cheaper for AI use.
-- **`/ultrareview`** before every merge into `main` touching `execution/` or `risk/`.
-- **`/security-review`** on every PR touching auth, signing, or secrets.
-- **GitHub Actions** with `claude -p` (headless): AI-code lint, regression detection on tests.
-- **Branch protection on `main`**: required PR reviews (≥ 2 for `risk/`), required status checks (`tests`, `security-review`, `mypy-strict`, `gitleaks`), no direct pushes, no force-push.
-
----
-
-## 6. Hooks (`.claude/settings.json`)
-
-Hooks are *deterministic* guarantees — CLAUDE.md is a request, hooks are enforcement.
-
-| Hook | Trigger | Action |
-|---|---|---|
-| `PostToolUse` Edit/Write | After code edit | `ruff` + `mypy --strict` + relevant `pytest` subset; block on failure |
-| `PreToolUse` Bash | Before bash | Block `rm -rf`, `git push --force`, `git reset --hard`; block writes to `migrations/`, `secrets/`, `.env*` |
-| `PreToolUse` Edit/Write on `risk/**` | Before risk-code edit | Block unless session in Plan Mode with prior user approval |
-| `Stop` | Before turn end | `gitleaks`/`trufflehog` on staged diff; abort on any secret hit |
-| `UserPromptSubmit` | On user prompt | If contains "live trade"/"echtes Kapital"/"real money", inject confirmation banner |
-| `SessionStart` (production trading-cycle only) | Lead boots | Janitor: sweep stale `~/.claude/teams/{team-name}/` directories from prior cycles that crashed without cleanup; assert team-spec source-of-truth at `.claude/teams/trading-team.spec.json` exists and parses; check Claude Code version pin; abort cycle if any check fails (next scheduled cycle retries) |
-| `TeammateIdle` (production trading-cycle only) | Member goes idle | If task incomplete or no artifact written, exit 2 to keep member working; if member idles 3× in a row on the same task, abort cycle and emit alert (no kill-switch trip — a single bad cycle is non-fatal) |
-| `TaskCreated` (production trading-cycle only) | Lead creates task | Validate task schema matches `trading.md §5` cycle; reject malformed tasks before members claim |
-| `TaskCompleted` (production trading-cycle only) | Member marks task done | Validate output artifact against §13 Pydantic schema; exit 2 to force retry on schema mismatch; exit 0 only on clean artifact |
-| `Stop` (production trading-cycle only) | Lead about to exit | Assert `clean up the team` was called; if not, force cleanup before allowing exit (Cloud-doc warning: avoid orphaned `~/.claude/teams/` entries) |
-
----
-
-## 7. Subagents (`.claude/agents/`)
-
-| Agent | Tools | Purpose |
-|---|---|---|
-| `strategy-researcher` | Read, Grep, WebSearch | Read-only strategy research; drafts paper-mode test plans |
-| `risk-reviewer` | Read | Diff `risk/` and trading-decision paths against `docs/risk-rules.md` |
-| `security-reviewer` | Read, Bash (scoped grep/gitleaks) | Secrets, injection, signing-path review |
-
----
-
-## 8. Skills (`.claude/skills/`)
-
-On-demand: `polymarket-api` (endpoints, rate limits, EIP-712 signing, fees); `paper-mode-protocol` (how to validate a strategy in paper mode, when to consider promotion to real-capital, see §11 / `trading_feedback.md §7`); `incident-response` (kill-switch, position-close, key rotation).
-
----
-
-## 9. Risk Layer Protection
-
-`risk/` contains the *deterministic* guard rails (size caps, daily loss caps, kill-switch triggers, capital gate). AI decides *what* to trade; risk layer decides *whether and how much*.
-
-- All §1 limits = plain constants/config in `risk/`, never AI outputs.
-- AI agents may not edit `risk/` outside Plan Mode + explicit user approval (§6 hook).
-- All trading-decision paths import from `risk/`. Direct CLOB calls bypassing `risk/` forbidden by import-linter in CI.
+- All §1 limits = plain constants/Settings imports in `risk/`, never AI outputs.
+- AI agents may not edit `risk/` outside Plan Mode + explicit user approval (§9 hook).
+- All trading-decision paths import from `risk/`. Direct CLOB calls bypassing `risk/` are forbidden by `import-linter` in CI.
 - `risk/` requires 100% line coverage; CI fails below.
 
----
-
-## 10. Capital Gate
-
-Hardcoded absolute capital cap, single constant:
+**Capital gate.** Single constant:
 
 ```python
 # risk/capital_gate.py
-MAX_CAPITAL_EUR: Final = <TBD_CAPITAL_CAP_EUR>
+MAX_CAPITAL_EUR: Final = <TBD_BY_OPERATOR>
 ```
 
-- `position-manager` rejects any order pushing gross deployed capital above `MAX_CAPITAL_EUR`.
-- Constant changed only via: PR with required ≥ 2 reviewer approvals (branch protection), explicit rationale in PR description, audit-log entry on merge.
-- Decreases also gated to ≥ 1 reviewer (prevent panic over-reduction).
-- Reviewed quarterly.
+- The order-submission path rejects any order pushing gross deployed capital above `MAX_CAPITAL_EUR`.
+- Constant changed only via PR; in `real_capital` mode this requires ≥ 2 reviewer approvals + an audit-log entry. Decreases also gated to ≥ 1 reviewer to prevent panic over-reduction. Reviewed quarterly.
 
 ---
 
-## 11. Operational Modes (paper vs. real-capital)
+## 4. Operational Modes (paper vs. real_capital)
 
-The system has exactly two operational modes, controlled by a single flag in the central settings file (§21):
+Single flag in the central settings file (§10):
 
 ```
 TRADING_MODE = "paper" | "real_capital"
 ```
 
-- **`paper` (default).** Every step of the cycle runs identically — universe scan, agent inference, risk gates, sizing — except the `execution-engine` writes orders into a **paper-trading ledger** (Postgres table `paper_trades`) instead of routing them to Polymarket CLOB. Mark-to-market PnL uses live orderbook bids exactly like real mode. Settlement on resolution likewise. The §1 risk gates and `MAX_CAPITAL_EUR` apply to paper notional too — the simulation is intentionally faithful, including a paper "cash" balance that depletes with paper trades.
-- **`real_capital`.** The `execution-engine` routes real orders to the Polymarket CLOB with EIP-712-signed transactions (`data_infrastructure.md §2`). All other behavior identical to paper mode.
+- **`paper` (default).** Identical pipeline to `real_capital` except the `execution-engine` writes to the `paper_trades` table instead of Polymarket CLOB. Mark-to-market PnL uses live Polymarket bids; settlement on resolution likewise. §1 risk gates and `MAX_CAPITAL_EUR` apply to paper notional too.
+- **`real_capital`.** EIP-712-signed orders to the Polymarket CLOB (`data_infrastructure.md §2`). Identical pipeline otherwise.
 
-**Switching modes is manual.** Flipping `TRADING_MODE` is a code change in the central settings file: PR with ≥ 1 reviewer approval (real → paper, defensive direction) or ≥ 2 reviewer approvals (paper → real_capital, offensive direction); audit-log entry on merge. **Never set via env var, never set at runtime.** A human eyeballs the diff every time the system starts trading real capital.
+**Switching modes is manual.** PR with ≥ 1 reviewer approval (real → paper, defensive) or ≥ 2 reviewer approvals (paper → real_capital, offensive); audit-log entry on merge. **Never via env var, never at runtime.** **Default for a fresh checkout is `paper`** — a clean clone cannot trade real capital without an explicit settings-file change.
 
-**Default for new branches / fresh deploys.** `paper`. A clean checkout cannot trade real capital without an explicit settings-file change.
-
-**Backtests.** Out of scope for v1 — Polymarket markets are too thin and too short-lived for a meaningful historical backtest harness. Paper mode replaces the backtest gate (see `trading_feedback.md §7` for paper-mode promotion guidance).
+**Backtests.** Out of scope — Polymarket markets are too short-lived for a meaningful historical harness. Paper-mode is the validation gate.
 
 ---
 
-## 12. Secret Management
+## 5. Self-Improvement Loop (MVP form)
 
-- `.env*` in `.gitignore`, blocked by §6 hook on write.
-- `gitleaks` + `trufflehog` in `.pre-commit-config.yaml`; same on `Stop` hook.
-- Private keys never in repo/env: KMS or hardware only.
-- API tokens in HashiCorp Vault or AWS Secrets Manager; fetched at startup, never persist to disk.
-- Key rotation: `docs/runbooks/key-rotation.md`.
+What makes the bot "self-improving" in MVP — and what does not:
+
+1. **Outcome ingestion.** When a market resolves, a Trade-Evaluation step writes `outcome` and `realized_pnl` on the corresponding `predictions` row.
+2. **Lesson extraction.** A daily batch reads recently resolved predictions and emits structured `lessons` rows: observation, hypothesis, action_taken, outcome, status (per `optimization.md §2`).
+3. **Prompt injection.** The next cycle's agent prompt includes the most recent `N` lessons (configurable via §10 settings), so the agent's reasoning is informed by what worked and what missed.
+4. **Code / prompt / limit changes are never auto-applied.** They materialize as Git PRs the operator reviews and merges. The §1 risk limits and the §2 kill switch are immune to any agent action.
+
+That is the entire feedback loop. Multi-agent ensembles, agent rosters, capital reallocation, and prompt-mutation are post-MVP.
 
 ---
 
-## 13. Strict Typing & Property-Based Tests
+## 6. Repository Layout
 
-- `mypy --strict` is hard CI gate.
+```
+autonomous_trading/
+├── research/        # agent prompt + skills (web_search, etc.)
+├── execution/       # paper-trade ledger; later, CLOB client
+├── risk/            # limits, kill switch, sanity gates, capital_gate (§3)
+├── shared/
+│   ├── config/      # central settings (§10)
+│   ├── adapters/    # PredictionMarketAdapter (Polymarket + Paper)
+│   └── models/      # Pydantic models for every typed artifact
+├── infra/           # docker-compose (Postgres only in MVP), scripts/
+├── alembic/         # DB migrations
+├── tests/
+├── docs/
+├── .claude/         # project-scoped Claude Code config (committed)
+├── CLAUDE.md        # AI-coding guard rails (committed)
+├── CLAUDE.local.md  # personal notes (gitignored)
+└── *.md             # specs (this file + 6 others, plus specs.md)
+```
+
+`risk/` is *protected code* — see §3.
+
+---
+
+## 7. CLAUDE.md (project)
+
+Short, high-signal, < 200 lines. Every line must answer *yes* to: "Would Claude make a mistake without this line?"
+
+Mandatory:
+- Build/test/lint commands (`pytest`, `ruff`, `mypy --strict`).
+- No-go list:
+  - **NEVER** commit real API keys, private keys, mnemonics, `.env*`.
+  - **NEVER** trigger live trades without explicit user confirmation in this session.
+  - **NEVER** modify code under `risk/` outside Plan Mode with explicit approval.
+  - **NEVER** push directly to `main` or force-push.
+- Pointer to `specs.md` and the four component spec files.
+
+Personal/transient → `CLAUDE.local.md` (gitignored). Global → `~/.claude/CLAUDE.md`.
+
+---
+
+## 8. Secret Management (MVP)
+
+- `.env*` in `.gitignore`. `gitleaks` + `trufflehog` in `.pre-commit-config.yaml` and on every PR.
+- API tokens (Anthropic, OpenAI, Polymarket-read) live in `.env` for MVP — local `.env` is enough because we never trade real capital here.
+- **No private keys in MVP.** EIP-712 signing arrives only on the `real_capital` switch; cloud KMS or hardware key (YubiHSM) ship with that change, not before.
+
+---
+
+## 9. Hooks (`.claude/settings.json`) — MVP set
+
+Hooks are deterministic guarantees. CLAUDE.md is a request, hooks are enforcement.
+
+| Hook | Trigger | Action |
+|---|---|---|
+| `PostToolUse` Edit/Write | After code edit | `ruff` + `mypy --strict` + relevant `pytest` subset; block on failure |
+| `PreToolUse` Bash | Before bash | Block `rm -rf`, `git push --force`, `git reset --hard`; block writes to `.env*` |
+| `PreToolUse` Edit/Write on `risk/**` | Before risk-code edit | Block unless session in Plan Mode with prior user approval |
+| `Stop` | Before turn end | `gitleaks` on staged diff; abort on any secret hit |
+| `UserPromptSubmit` | On user prompt | If contains "live trade" / "echtes Kapital" / "real money", inject confirmation banner |
+
+Production-cycle Agent-Teams hooks (`SessionStart` janitor, `TeammateIdle`, `TaskCreated`, `TaskCompleted`, cleanup-assertion in `Stop`) are post-MVP — they only matter once the cycle runs as an unattended Claude Code Agent Team.
+
+---
+
+## 10. Centralized Configuration (Single Source of Truth)
+
+**Hard rule.** All numerical thresholds, limits, parameters, and tunables live in **one single settings module** — never duplicated, never hardcoded as magic numbers in service code.
+
+- Canonical location: `shared/config/settings.py` (Pydantic Settings) backed by environment-specific values in `.env`.
+- All services and agents import from this module — no parallel constants, no scattered defaults.
+- **MVP knobs that must live there:** every limit in §1 (15% concentration cap, per-cycle spending cap), `TRADING_MODE` (§4), `MAX_CAPITAL_EUR` (§3), edge threshold, cycle period, agent timeout, web-search timeout + blacklist, lessons-injected-per-cycle (`N`), retention policies for `market_snapshots` and `inference_log` blobs.
+- **Risk-layer interaction (§3).** The hardest gates physically live inside `risk/`. The settings module imports and re-exports them — does not duplicate.
+- **Validation.** Pydantic Settings + `mypy --strict`: missing or wrong-typed values fail at startup, never silently at runtime.
+- **Anti-pattern enforcement.** A CI lint rejects PRs that introduce numeric literals in `execution/`, `research/`, or `risk/` outside the settings module (allowlist for trivial constants like `0`, `1`, `2`).
+
+This is the dual of §3: §3 prevents AI from changing the *hardest* limits without humans; §10 prevents anyone (human or AI) from scattering tunables.
+
+---
+
+## 11. Strict Typing & Property-Based Tests
+
+- `mypy --strict` is a hard CI gate.
 - All order/position/trade/decision/prediction/`PortfolioState` objects = Pydantic models. No untyped dicts on those paths.
-- Risk-engine functions covered by `hypothesis` property tests, e.g. *"for any (proposed_notional, equity, open_orders), the clipped notional never exceeds 15% of equity AND never violates solvency"*.
+- Risk-engine functions covered by `hypothesis` property tests, e.g. *"for any (proposed_notional, equity, open_orders), the clipped notional never exceeds 15% of equity AND never violates solvency."*
 - Coverage: `risk/` 100%, `execution/` ≥ 90%, rest ≥ 80%.
 
 ---
 
-## 14. Custom Slash Commands (`.claude/commands/`)
-
-| Command | Purpose |
-|---|---|
-| `/mode` | Print current `TRADING_MODE` and recent mode-switch history (read-only) |
-| `/kill-all` | Trigger kill switch (with confirmation; `disable-model-invocation` set so only humans can run it) |
-| `/risk-rules` | Print effective limits from `risk/` |
-| `/audit <decision_id>` | Replay AI decision: prompt, model, tools, output, market data |
-
----
-
-## 15. Permission Modes & Sandboxing
-
-**Development sessions** (a human is at the terminal):
-- `/permissions` allowlist for safe read-only/local commands (`pytest`, `git diff`, `ruff`, `gh pr view`).
-- Auto-mode permitted only for `docs/`, `tests/`, read-only `research/` exploration.
-- Auto-mode **forbidden** for any path that can reach live trading endpoints.
-- `/sandbox` (OS-level) for any code with network access running unsupervised.
-- For development against live-trading endpoints (e.g. running a one-off CLI), interactive permission confirmation is required every session — never allowlisted.
-
-**Production trading-cycle session** (no human at the terminal — one fresh Claude Code Agent Team per cycle, ~12 min lifetime, per `orchestration.md §2`):
-- The Lead is launched with `--dangerously-skip-permissions` so it does not block on prompts. This is unavoidable for unattended operation. Blast radius is bounded to the single cycle's lifetime — a misbehaving cycle cannot accumulate damage across cycles, and the next scheduled cycle starts clean.
-- Safety in this mode comes from:
-  1. **§6 hooks** — deterministic guard rails on tool use (block `rm -rf`, block writes to `risk/`, secret scanning, `SessionStart` janitor, `Stop` cleanup-assertion, etc.). Hooks fire regardless of permission mode.
-  2. **§1 risk gates + §2 kill-switch** — the only authoritative gate on whether a trade is placed. The team's permission mode is irrelevant here; the risk-engine member can produce a `Decision`, but the deterministic position-manager (`risk/`) and execution-engine still enforce caps and refuse out-of-bounds orders. These services run as separate, long-lived processes — they do **not** die with the cycle.
-  3. **`orchestration.md §2` team hooks** — `TeammateIdle`, `TaskCreated`, `TaskCompleted` validate every artifact before downstream members consume it.
-  4. **Network egress allowlist** — the production server can only reach Polymarket CLOB, Anthropic API, configured data sources; everything else is blocked at the firewall, so even a malformed tool call cannot exfiltrate or hit unintended endpoints.
-  5. **Filesystem isolation** — production server writes only to repo-local `~/.claude/`, the Postgres/Redis network sockets, and S3 (scoped IAM). No general filesystem access.
-  6. **Bounded lifetime** — every cycle process exits after ~12 min by design; a process that fails to exit is killed by the scheduler (e.g. cron + timeout, k8s `activeDeadlineSeconds`).
-- The trading-cycle Lead is the **only** environment where `--dangerously-skip-permissions` is acceptable. Every other Claude Code session (dev, Trade-Evaluation runs, Code-Evaluation batches, debug) keeps standard permissions.
-
----
-
-## 16. Workflow Discipline
-
-- **Plan Mode** (Shift+Tab) for any non-trivial change.
-- **Subagents** for investigation; keeps main context clean.
-- `/clear` between unrelated tasks.
-- `/rewind` / Esc-Esc to undo, never destructive bash recovery.
-- **Writer/Reviewer split**: one session writes, fresh session reviews `execution/` + `risk/` changes.
-- `/statusline` configured for live token usage.
-
----
-
-## 17. Parallel Work Setups
-
-- **Claude Code Desktop App** for multiple isolated worktrees in parallel.
-- **Claude Code on the Web** for longer autonomous research on cloud VMs.
-- **Agent Teams** for orchestrated multi-session workflows on complex refactors.
-
----
-
-## 18. Audit Trail (development reinforcement of `data_infrastructure.md §3`)
-
-Every AI decision replayable from logs alone. Required per decision:
-- Full input prompt (template + filled context)
-- Model id + version + temperature/params
-- Raw output (with tool calls + reasoning trace)
-- Snapshot of market data used (orderbook, news bundle URI)
-- All risk-gate evaluations + results
-- Final action taken/rejected, with reason
-
-Stored in `decisions` table (`data_infrastructure.md §1`); reasoning blob in S3. Replay via `/audit <decision_id>`.
-
----
-
-## 19. MCP Servers
-
-`claude mcp add` for external systems used during *development*:
-- Postgres/TimescaleDB (read-only for research, read-write only for migrations)
-- Polymarket API (custom MCP if no public; read-only by default)
-- Grafana/Sentry (observability into Claude session)
-- Linear or Notion (strategy specs, ticket sync)
-
-MCP servers are **never** wired into live trading-loop services — only developer/Claude sessions.
-
----
-
-## 20. Development-Side Observability
-
-Reinforces `data_infrastructure.md §3`:
-- Sentry for exceptions in all services.
-- Grafana dashboard URL in PR template.
-- Alerts on anomalous trade volume routed to operator phone (never to Claude/AI).
-
----
-
-## 21. Centralized Configuration (Single Source of Truth)
-
-**Hard rule.** All numerical thresholds, limits, parameters, and tunables that influence runtime behavior live in **one single settings file** — never duplicated, never hardcoded as magic numbers in service code. The user must be able to change every operational knob from one file.
-
-- Canonical location: `shared/config/settings.py` (Pydantic Settings model) backed by `config/settings.toml` for the values themselves. Single source of truth.
-- All services and agents import from this module — no parallel constants, no scattered defaults, no magic numbers in business logic.
-- **Examples of values that MUST live there** (non-exhaustive): every limit in §1 (15% concentration cap, per-cycle spending cap), `TRADING_MODE` flag (§11), edge threshold (`trading.md §6`), cycle period and per-stage timeouts (`trading.md §5`), agent timeout, reconciler interval / diff threshold (`data_infrastructure.md §2`), retry/backoff parameters (`data_infrastructure.md §2`), fee estimator constants, top-K for belief injection (`trading.md §2`), notes cap, position-thesis adverse-move threshold (`trading.md §2`), Code-Eval explore/exploit budget ratios + drawdown-tilt and outperformance-tilt thresholds (`optimization.md §3`), weekly-batch top-K size (`optimization.md §3`), strategy-displacement minimum days (`trading.md §3.1`).
-- **Risk-layer interaction (§9, §10).** The hardest gates (`MAX_CAPITAL_EUR`, kill-switch triggers, all `risk/`-owned limits) physically live inside `risk/` for protection. The settings file imports and re-exports them — it does **not duplicate** them. Users still see one file with all knobs; `risk/` retains its 2-human-review enforcement on the source.
-- **Validation.** Pydantic Settings + `mypy --strict`: missing or wrong-typed values fail at service startup, never silently at runtime.
-- **Change governance.** Edits to non-`risk/` settings require ≥ 1 reviewer + CI tests. Edits to `risk/`-owned values keep the §9/§10 stricter rules (≥ 2 reviewers, audit-log entry). `TRADING_MODE` paper → real_capital follows §11 review counts.
-- **Hot-reload.** Non-critical operational knobs (scan filters, dashboard intervals) hot-reload from Postgres-backed config (§2) without restart. Structural values (cycle period, schema fields, `TRADING_MODE`) are restart-only.
-- **Anti-pattern enforcement.** A CI lint rule rejects PRs that introduce a numeric literal in `execution/`, `research/`, or `risk/` outside the settings module (allowlist for trivial constants like `0`, `1`, `2`). Forces every new tunable through the settings file.
-
-This rule is the dual of §9 risk-layer protection: §9 prevents the AI from changing the *hardest* limits without humans; §21 prevents anyone (human or AI) from scattering tunables so widely that no single file shows the full operating envelope.
-
----
-
-## Appendix A — Reference Tech Stack
+## 12. Reference Tech Stack (MVP)
 
 | Layer | Choice |
 |---|---|
-| Language | Python 3.12 (services), Rust (hot-path execution) |
-| API framework | FastAPI |
-| Async runtime | asyncio + uvloop; Tokio for Rust |
-| Message bus | Redis Streams (v1) → NATS JetStream (v2) |
-| Relational DB | Postgres 16 |
-| Time-series | TimescaleDB extension |
-| Cache | Redis 7 |
-| Object store | MinIO local, S3 prod |
-| Orchestration | Docker Compose (v1) → Kubernetes (v2) |
-| Observability | Prometheus + Grafana + Loki + Tempo |
-| LLM provider | Anthropic — **Claude Opus only** (single-vendor, single-model-family by design) |
-| Vector store | pgvector (research bundle dedup) |
-| Secrets | HashiCorp Vault |
-| Signing | EIP-712 via web3.py / ethers-rs |
+| Language | Python 3.12 |
+| Async runtime | `asyncio` (`uvloop` optional) |
+| Storage | Postgres 16 (single tier — see `data_infrastructure.md` MVP scope) |
+| Object store | Filesystem under `./data/` (deferred S3) |
+| Secrets | `.env` (deferred Vault / Secrets Manager) |
+| Orchestration | `docker-compose` for local infra; `cron` for the cycle (deferred k8s / ECS / Agent-Teams runtime) |
+| Observability | Structured JSON logs to stdout + file (deferred Prometheus / Loki / Tempo / CloudWatch) |
+| LLM (research / web search) | OpenAI Responses API + `web_search_preview` (model in §10) |
+| LLM (decision) | Anthropic Claude Opus |
+| Vector store | None in MVP |
+| Signing | None in MVP (paper-mode only) |
+
+Post-MVP layers (FastAPI HTTP surface, Redis, TimescaleDB, MinIO/S3, Vault, k8s, MCP servers in dev) are listed in the older revisions of this doc and re-introduced as measured needs arise.
 
 ---
 
 ## See also
 
-- `orchestration.md` — runtime topology, team mechanics, capital allocation.
-- `data_infrastructure.md` — schemas, prediction-market interface, observability.
-- `trading.md` — what the trading runtime does on top of these guard rails.
-- `trading_feedback.md` — Tier 1 evaluation, paper-mode promotion guidance.
-- `optimization.md` — Tier 2 code evaluation, governance for code changes (`§7` review counts).
+- `orchestration.md` — runtime topology (apply MVP scope there too).
+- `data_infrastructure.md` — schemas, MVP single-tier storage, OpenAI web-search intake.
+- `trading.md` — what the cycle does on top of these guard rails.
+- `trading_feedback.md` — Tier 1 evaluation that writes outcomes.
+- `optimization.md` — Tier 2 self-improvement loop that emits lessons + PRs.
 - `specs.md` — architecture diagram and entry point.
