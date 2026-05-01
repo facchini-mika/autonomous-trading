@@ -141,18 +141,13 @@ Revision authored exclusively by `strategy-optimizer` (see `optimization.md §2`
 
 ## 3. Strategie / Strategy Layer
 
-Strategies are concerns *across* agents — not separate agents. PnL tracked per strategy.
+Strategies are concerns *across* agents — not separate agents. PnL tracked per strategy. **v1 runs exactly one strategy: Mispricing.** Additional strategies are out of scope for v1; the explore track (`optimization.md §2` `strategy-explorer`) may propose new ones over time, subject to §3.1 and the review counts in `optimization.md §7`.
 
 | Strategy | Trigger | Sizing | Notes |
 |---|---|---|---|
-| **Mispricing (core)** | edge ≥ 3%, ensemble agrees | Model-proposed, clipped by per-trade gates | Default; ~70% of capital |
-| **Momentum** | 7d trend + supporting news, edge ≥ 1.5% | Smaller; clipped by gates | Operator may manually trail-stop |
-| **Contrarian** | Price ≥ 0.95 or ≤ 0.05 with thin news; ensemble disagrees ≥ 10% | Tiny; tail-risk only | Cap 0.5% per trade |
-| **Cross-market arb** | Same event across Polymarket/Kalshi/sportsbook with > 2% gap net of fees | Capped at narrowest depth | v2 — needs multi-venue |
-| **News-driven** | NLP flags high-impact news + market hasn't moved 5 min | Smaller; clipped by gates | 30 min event window |
-| **Resolution arb** | Outcome confirmed by external feed, market < 0.97 (or > 0.03) | Up to 5% per market | Requires strong feed certainty |
+| **Mispricing (core)** | edge ≥ 3%, ensemble agrees | Model-proposed, clipped by per-trade gates | The only active strategy in v1; receives 100% of allocated capital |
 
-Sizing within each strategy is the model's call, clipped by per-trade gates (see `infrastructure.md §2`). Weights between strategies tuned monthly via attribution.
+Sizing is the model's call, clipped by per-trade gates (see `infrastructure.md §2`).
 
 ### 3.1 Anti-whipsaw rule
 
@@ -248,7 +243,7 @@ Pattern adapted from Voyager (Wang et al., NeurIPS 2024): an open-ended agent ma
 
 **For us, a "skill" is a deterministic helper for a recurring trading sub-task** that has been validated through paper mode and operator review. Examples a skill might embody:
 - `compute_implied_distribution(market_set)` — derive a price-implied distribution across a related set of binary markets (e.g. tiered BTC-price markets).
-- `detect_news_freshness(market_id, window_min)` — score how stale current market price is relative to news flow, used by the news-driven strategy.
+- `detect_news_freshness(market_id, window_min)` — score how stale current market price is relative to news flow, useful when the mispricing thesis depends on a news event the market may not have absorbed.
 - `find_correlated_basket(market_id)` — identify the cluster of related markets for diversification / arb checks.
 
 **Promotion path** (from observation to skill):

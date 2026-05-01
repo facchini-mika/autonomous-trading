@@ -318,7 +318,7 @@ class PredictionMarketAdapter(Protocol):
 **Implementations:**
 
 - **`PolymarketAdapter`** — primary. WebSocket subscribed to orderbooks for tracked markets (open positions + active candidates). REST for orders + account state. EIP-712 typed-data signing; private key in cloud KMS or hardware key (YubiHSM). Network: Polygon mainnet; gas in MATIC. Settlement: USDC.e. Polymarket Gamma API for resolution lookup. **Full read-and-write** — used by Trading Team in `real_capital` mode.
-- **`KalshiAdapter`** — secondary, read-only v1. `get_universe`, `get_orderbook`, `get_market_metadata`, `get_resolved_markets` only; `place_order` raises `NotImplementedError`. Used by `trading.md §3 Cross-market arb` strategy as a price reference.
+- **`KalshiAdapter`** — secondary, read-only v1. `get_universe`, `get_orderbook`, `get_market_metadata`, `get_resolved_markets` only; `place_order` raises `NotImplementedError`. Reserved for cross-venue price comparison if/when the explore track promotes a strategy that needs it.
 - **`PaperTradingAdapter`** — wraps `PolymarketAdapter` for read paths but redirects `place_order` / `cancel_order` to a Postgres `paper_trades` ledger. Selected automatically when `TRADING_MODE='paper'` (§8.9).
 
 **Composition.** The `execution-engine` service holds exactly one `PredictionMarketAdapter` instance, selected at startup based on `TRADING_MODE`. The Trade Evaluation Team holds a read-only adapter (rejects write methods at the type-stub level). The Code Evaluation Team holds **no adapter** — it has no live-trading capability by design (`optimization.md §1`).
