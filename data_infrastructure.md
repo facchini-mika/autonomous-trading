@@ -6,6 +6,31 @@ Where data lives, how the prediction market is accessed, and how the system is o
 
 ---
 
+## 0. Build on existing OSS first (load-bearing principle)
+
+Before writing any adapter, data-fetcher, market-client, parser, signer, or pipeline component: **search GitHub / PyPI for an existing project and build on it.** Do not reimplement what is already maintained. Specifically — but not exclusively — relevant to the components specified below:
+
+| Component | Existing projects to evaluate first |
+|---|---|
+| Polymarket CLOB client (REST + WS, EIP-712 signing) | `Polymarket/py-clob-client` (official Python client), `Polymarket/clob-client` (TS reference) |
+| Polymarket Gamma API client | The official Polymarket monorepo + community wrappers; raw REST is fine if no library fits |
+| Kalshi client | `Kalshi-Exchange/kalshi-python`, `kalshi/trade-api-clients` |
+| News + web search | OpenAI web search API (Prediction-Arena reference), Tavily SDK, Brave Search SDK, GDELT-DOC client |
+| Time-series storage helpers | `timescale/python-tsv2`, official TimescaleDB tutorials/migrations |
+| EIP-712 signing | `web3.py` (eth_account), `ethers-rs` for hot path |
+| Reconciliation patterns / order idempotency | Reference Hummingbot, freqtrade, or any well-known broker-integration codebase |
+| Observability instrumentation | `structlog`, `opentelemetry-python` SDK, official Sentry SDK |
+
+**Workflow:**
+1. Before opening a PR that adds an integration, link the upstream OSS project considered (or rejected, with reason) in the PR description.
+2. Prefer thin wrappers/adapters over the OSS lib — keep our `shared/adapters/` Protocols as the abstraction boundary, the OSS lib lives behind that boundary.
+3. Pin OSS versions in `pyproject.toml`; never vendor copies into the repo.
+4. If we genuinely have to roll our own (the OSS lib is dead, unsafe, or wrong-shape), document the decision as an ADR in `docs/adr/`.
+
+This rule is the dual of `engineering.md §21`: §21 prevents tunable-sprawl, §0 prevents *implementation*-sprawl. Both keep the system small enough for a solo operator to maintain.
+
+---
+
 ## 1. Data Layer
 
 **Sources:**
