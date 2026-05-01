@@ -44,7 +44,14 @@ trades      │    (append)      (curated)      (gated)
 outcomes    ┘
 ```
 
-**Agent-Team topology (Lead + Members + Subagents).** The architectural pattern is taken from Claude Code's Agent Teams (`code.claude.com/docs/en/agent-teams`): one **Team Lead Agent** + multiple **Team-Member Agents** sharing a task list and a mailbox + per-member **Subagents** for focused fanout. This is a *pattern adoption*: the production runtime implements it on top of the raw Anthropic API with custom orchestration. The experimental Claude Code Agent Teams feature itself is used in **development workflows** (§14, §15) but is **not the production runtime** — it is documented as experimental, lacks session resumption, and supports only one team per session, none of which is acceptable for a 24/7 trading loop.
+**Agent-Team topology (Lead + Members + Subagents).** The trading loop runs as **one Claude Code Agent Team** (`code.claude.com/docs/en/agent-teams`) — the experimental feature is the production runtime, not just a pattern. One persistent **Team Lead** session orchestrates the cycle clock, one **Team Member Agent** per Tier-1 stage, members may spawn **Subagents** for focused fan-out. The "one team per session" limit is acceptable because the loop only ever needs one team that covers the whole value chain.
+
+**Operational pre-conditions** (binding):
+- `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` set in `.claude/settings.json` (§14.4).
+- Claude Code v2.1.32 or later, pinned in `infra/`.
+- Lead runs as a long-lived headless session on a dedicated server, started with `--dangerously-skip-permissions` so it does not block on interactive permission prompts during unattended operation. Safety in this mode comes **exclusively** from §6 risk-gates, §12 kill-switch, and §14.4 hooks — the permission system is no longer a defense layer (see §14.14).
+- A supervisor (systemd unit / k8s liveness probe / process manager) restarts the lead session if it crashes. On restart the team is rebuilt from scratch: long-term memory in Postgres persists, but the in-flight short-term layer (mailbox, task list) is lost. The current cycle is aborted, no orders are placed, and the next cycle starts cleanly. This is the explicit failure-mode contract.
+- Team config (`~/.claude/teams/{team-name}/config.json`) and task-list directory (`~/.claude/tasks/{team-name}/`) live on persistent disk; no manual editing (Cloud-doc warning).
 
 **Topology:**
 
@@ -81,7 +88,10 @@ outcomes    ┘
 | `evaluator` | `outcome-fetcher`, `pnl-aggregator` |
 | `safety-watchdog` | `reconciliation-diff-explainer` (only on triggered alerts) |
 
-**Cloud-doc constraint mirrored in production:** subagents may not spawn further teams (only the Lead manages the team). They may, however, fan out into nested subagents within their own session (e.g. one `web-searcher` per query), which is the right primitive for parallelizable I/O-bound work.
+**Cloud-doc constraints (binding because the feature is the runtime):**
+- Subagents may not spawn further teams (only the Lead manages the team). They may fan out into nested subagents within their own session (e.g. one `web-searcher` per query) — this is the right primitive for parallelizable I/O-bound work.
+- Lead is fixed for the team's lifetime; cannot be promoted or transferred. New lead = new team (after supervisor-driven restart).
+- No nested teams: a member cannot bring up its own sub-team. If a member needs hierarchical coordination, it must do so via subagents only.
 
 **Why members vs subagents:** members coordinate (mailbox + shared list, can challenge each other, peer-visible); subagents fan out (parent-only return, cheaper because results summarize back into the parent's context). Same rule as in the Cloud doc — choose by whether workers need to talk to each other.
 
@@ -183,7 +193,7 @@ The short-term layer is **never** read by future cycles — it cleans up at cycl
 9. **T+8m — Decide: Sizing.** Quarter-Kelly within remaining caps from `PortfolioState`.
 10. **T+9m — Decide: Order placement.** Limit, post-only when viable. Iceberg slicing for size > $500.
 11. **T+10–11m — Fill monitoring.** Track partial fills. Cancel/replace on > 1% adverse move.
-12. **T+12m — Cycle close.** Lead persists in-flight artifacts (decisions, fills, reasoning links) to long-term stores (§8); writes any agent-initiated `notes` / `beliefs` / `lessons` updates; emits cycle metrics; **tears down the short-term layer** (clears mailbox, archives the cycle's task list, shuts down team members). Next cycle starts with a fresh Team Lead and fresh short-term layer.
+12. **T+12m — Cycle close.** Lead persists in-flight artifacts (decisions, fills, reasoning links) to long-term stores (§8); writes any agent-initiated `notes` / `beliefs` / `lessons` updates; emits cycle metrics. **The team itself is *not* cleaned up** — the same team persists across cycles for its whole lifetime. The Lead resets the shared task list (clears completed tasks, creates the next cycle's task list) and clears the mailbox; members stay alive with their context windows reset to the next cycle's spawn prompt. Team teardown happens only on supervisor-driven restart.
 
 ---
 
@@ -619,6 +629,9 @@ Hooks are *deterministic* guarantees — CLAUDE.md is a request, hooks are enfor
 | `PreToolUse` Edit/Write on `risk/**` | Before risk-code edit | Block unless session in Plan Mode with prior user approval |
 | `Stop` | Before turn end | `gitleaks`/`trufflehog` on staged diff; abort on any secret hit |
 | `UserPromptSubmit` | On user prompt | If contains "live trade"/"echtes Kapital"/"real money", inject confirmation banner |
+| `TeammateIdle` (production trading-team only) | Member goes idle | If task incomplete or no artifact written, exit 2 to keep member working; if member idles 3× in a row on the same task, escalate to safety-watchdog and trigger §12 kill-switch warning |
+| `TaskCreated` (production trading-team only) | Lead creates task | Validate task schema matches §3 cycle; reject malformed tasks before members claim |
+| `TaskCompleted` (production trading-team only) | Member marks task done | Validate output artifact against §14.12 Pydantic schema; exit 2 to force retry on schema mismatch; exit 0 only on clean artifact |
 
 ### 14.5 Subagents (`.claude/agents/`)
 
@@ -702,11 +715,22 @@ Promotion to live requires:
 
 ### 14.14 Permission Modes & Sandboxing
 
+**Development sessions** (a human is at the terminal):
 - `/permissions` allowlist for safe read-only/local commands (`pytest`, `git diff`, `ruff`, `gh pr view`).
 - Auto-mode permitted only for `docs/`, `tests/`, read-only `research/` exploration.
 - Auto-mode **forbidden** for any path that can reach live trading endpoints.
 - `/sandbox` (OS-level) for any code with network access running unsupervised.
-- Live-trading endpoint use requires interactive permission confirmation every session — never allowlisted.
+- For development against live-trading endpoints (e.g. running a one-off CLI), interactive permission confirmation is required every session — never allowlisted.
+
+**Production trading-loop session** (no human at the terminal — one Claude Code Agent Team running 24/7 per §14.22):
+- The Lead is launched with `--dangerously-skip-permissions` so it does not block on prompts. This is unavoidable for unattended operation.
+- Safety in this mode comes from:
+  1. **§14.4 hooks** — deterministic guard rails on tool use (block `rm -rf`, block writes to `risk/`, secret scanning, etc.). Hooks fire regardless of permission mode.
+  2. **§6 risk gates + §12 kill-switch** — the only authoritative gate on whether a trade is placed. The team's permission mode is irrelevant here; the risk-engine member can produce a `Decision`, but the deterministic position-manager (`risk/`) and execution-engine still enforce caps and refuse out-of-bounds orders.
+  3. **§14.22 team hooks** — `TeammateIdle`, `TaskCreated`, `TaskCompleted` validate every artifact before downstream members consume it.
+  4. **Network egress allowlist** — the production server can only reach Polymarket CLOB, Anthropic API, configured data sources; everything else is blocked at the firewall, so even a malformed tool call cannot exfiltrate or hit unintended endpoints.
+  5. **Filesystem isolation** — production server writes only to repo-local `~/.claude/`, the Postgres/Redis network sockets, and S3 (scoped IAM). No general filesystem access.
+- The trading-team Lead session is the **only** environment where `--dangerously-skip-permissions` is acceptable. Every other Claude Code session (dev, improvement-team batches, debug) keeps standard permissions.
 
 ### 14.15 Workflow Discipline
 
@@ -779,29 +803,52 @@ Before any new component, do a prior-art search; prefer reuse over rewriting.
 
 This rule is the dual of §14.7 risk-layer protection: §14.7 prevents the AI from changing the *hardest* limits without humans; §14.21 prevents anyone (human or AI) from scattering tunables so widely that no single file shows the full operating envelope.
 
-### 14.22 Agent Teams & Subagents in Development
+### 14.22 Agent Teams & Subagents — Production Runtime + Dev Use
 
-The §2 Lead + Members + Subagents topology is implemented in production with custom orchestration (the Anthropic API directly), because Claude Code's Agent Teams feature is documented as **experimental** with limitations unsuitable for a 24/7 trading loop (no session resumption, one team per session, lead can't be promoted/transferred — see `code.claude.com/docs/en/agent-teams#limitations`).
+**Production trading loop = one Claude Code Agent Team.** The §2 Lead + Members + Subagents topology is implemented directly via Claude Code's experimental Agent Teams feature (`code.claude.com/docs/en/agent-teams`). One team, one Lead, all members covering the whole value chain. The "one team per session" limit is fine — the loop only needs one team. We accept the experimental status of the feature as a known operational risk, mitigated by the controls below.
 
-For **development and operations** workflows, Claude Code's Agent Teams *is* used directly:
+**Bootstrap & lifecycle (production):**
 
-- **Improvement-agent batches** (§15.3) — the weekly batch (`pattern-miner` → `strategy-improver` → `meta-reviewer`) is a natural fit for Agent Teams: parallel exploration, members challenge each other's lessons, mailbox communication for adversarial review of proposed prompts.
-- **Parallel debugging / incident response** — when investigating a live alert (e.g. reconciliation diff > $10), spawn a team with competing hypotheses per the Cloud-doc *competing hypotheses* pattern.
-- **PR review on `risk/` and `execution/`** — security-reviewer + risk-reviewer + test-runner as a 3-member team rather than sequential subagent calls.
-- **Backtest fan-out** — multiple paper-strategy backtests in parallel, one teammate per strategy, lead synthesizes the comparison.
+```bash
+# enabled per .claude/settings.json (§14.4)
+CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
 
-**Subagents** (one-way fan-out, parent-only return — `code.claude.com/docs/en/sub-agents`) are used everywhere a focused worker is enough and inter-agent dialogue is not needed: each `risk-reviewer`, `strategy-researcher`, `backtest-runner`, `security-reviewer` (§14.5). A subagent definition is reusable as both a delegated subagent *and* an agent-team teammate (Cloud-doc: *Use subagent definitions for teammates*).
+# launch (run by systemd / k8s, NOT a human terminal)
+claude --teammate-mode in-process \
+       --dangerously-skip-permissions \
+       -p "Bring up the trading-team. Lead role + spawn members per .claude/teams/trading-team.spec.json. Run cycles per §3 until shutdown signal."
+```
 
-**Decision rule:**
+- **Single long-lived Lead session** per environment (paper, prod). Lead stays alive across cycles. Cycles re-use the same team — only the shared task list is reset at cycle close (§3 step 12).
+- **Supervisor restart contract.** External supervisor (systemd unit `trading-team.service` or k8s `Deployment` with liveness probe) detects Lead death, calls cleanup, restarts. New Lead = new team. Long-term memory in Postgres is unaffected. The cycle in flight at the time of the crash is **aborted** — all orders not yet placed are dropped; orders already in flight at the broker are managed by the deterministic position-manager (§9 reconciler + §6 stop-out rules), independent of the team.
+- **Cleanup discipline.** Lead-driven cleanup before any planned shutdown / deploy (Cloud-doc warning: never let a teammate run cleanup, leaves `~/.claude/teams/` inconsistent). The supervisor's pre-stop hook sends `clean up the team` to the Lead before SIGTERM.
+
+**Hooks specifically for the team** (in `.claude/settings.json`, see §14.4 for general hooks):
+- `TeammateIdle` — exit code 2 to keep a member working if it stops without producing its task artifact (e.g. an aggregator that returns without writing `ConsensusProbability`).
+- `TaskCreated` — sanity-check that every task created by the Lead matches the §3 cycle schema (rejects malformed tasks before members see them).
+- `TaskCompleted` — verify task output (e.g. `Decision` artifact has all required fields per §14.12 Pydantic schema) before marking complete; exit code 2 to force the member to retry.
+
+**Subagents** (one-way fan-out, parent-only return — `code.claude.com/docs/en/sub-agents`): used by individual members for focused work where peer dialogue is not needed. Subagent definitions in `.claude/agents/` are reusable as both delegated subagents and (for ops/dev tasks) team members. Examples per member listed in §2.
+
+**Off-cycle teams (development + improvement).** The trading loop is the only team in the loop, but the same Claude Code feature is used in **separate sessions** for:
+- **Improvement-agent batches** (§15.3) — weekly batch runs a separate Improvement Team in its own Claude Code session (different `team-name`), spawned on schedule, cleaned up after the batch.
+- **Parallel debugging on alerts** — incident response spawns ad-hoc teams for competing-hypothesis investigation.
+- **PR review** — security-reviewer + risk-reviewer + test-runner as a 3-member team.
+- **Backtest fan-out** — one teammate per candidate strategy.
+
+These are temporally separate from the trading-loop team and run in their own Claude Code processes, so the "one team per session" limit is not violated.
+
+**Decision rule (when to use what):**
 
 | Situation | Use |
 |---|---|
-| Focused task, only the result matters | Subagent |
-| Parallel exploration where workers must compare/challenge | Agent Team |
-| Inside a teammate, focused fan-out (multiple queries, parallel scans) | Subagent (within teammate session) |
-| Production trading hot path | Custom orchestration (the *pattern* of Agent Teams, not the experimental feature) |
+| Focused task, only the result matters, no peer dialogue | Subagent |
+| Workers must compare / challenge / coordinate | Agent Team |
+| Inside a member, focused fan-out (multiple queries, parallel scans) | Subagent (within member session) |
+| Production trading loop | The Trading Team (this section) |
+| Off-cycle improvement / debug / review | Separate Agent Team in its own Claude Code session |
 
-Enabling Agent Teams in dev: set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in `.claude/settings.json` (§14.4), require Claude Code v2.1.32+. Cleanup discipline: always `clean up the team` via the Lead before ending a session (Cloud-doc warning) to avoid orphaned `~/.claude/teams/` entries.
+**Versioning & rollback.** Claude Code version pinned in `infra/`. Team-spec config (member roster, subagent definitions, system prompts) lives in `.claude/agents/` + `.claude/teams/trading-team.spec.json` in the repo (`config.json` itself is runtime state per Cloud-doc and not edited by hand). Any change to the team spec is a normal PR through §14.3 branch protection. If a Claude Code release introduces an Agent-Teams-breaking change, the pin keeps prod stable until the upgrade has passed paper-mode (§14.10).
 
 ---
 
@@ -825,16 +872,15 @@ Both run on cloud-hosted Claude Opus per §4 (hard rule). Diversity in role + pr
 | `prior-art-scout` | Enforce §14.20 — search GitHub/PyPI/papers before custom builds | On every new-component PR open | Prior-art note posted to PR |
 | `meta-reviewer` | Aggregate, dedupe, prioritize all proposals; route top-K to operator | Weekly | Decision queue (Slack/email) |
 
-**Team structure.** Improvement agents form their own **Improvement Team** following the same Lead + Members + Subagents pattern as the trading team (§2):
+**Team structure.** Improvement agents form their own **Improvement Team** — a *separate* Claude Code Agent Team session, distinct from the Trading Team (§2, §14.22). The "one team per session" Cloud-doc constraint is respected because the Improvement Team runs in **its own Claude Code process**, on schedule, never simultaneously inside the trading-loop session.
 
-- A dedicated **Improvement Team Lead** orchestrates each scheduled batch (hourly, daily, weekly, monthly per §15.3).
-- The members above are spawned per batch; their short-term coordination uses the same shared-task-list + mailbox primitives as Tier-1.
-- `pattern-miner` and `strategy-improver` may spawn subagents for fan-out (e.g. one subagent per lesson cluster, one per category being analyzed).
+- A dedicated **Improvement Team Lead** orchestrates each scheduled batch (hourly, daily, weekly, monthly per §15.3). The Lead session is started by cron / scheduler (`schedule` skill or k8s `CronJob`), runs the batch, and cleans up (`clean up the team` per Cloud-doc) before exiting.
+- Members above are spawned per batch and tear down with the team at end of run; their short-term coordination uses the standard task-list + mailbox primitives.
+- `pattern-miner` and `strategy-improver` may spawn subagents for fan-out (one subagent per lesson cluster, per category being analyzed).
 - The Improvement Team is **isolated from the Trading Team** — separate Lead, separate task list, no shared mailbox. The only coupling is the long-term memory layer: improvement agents *read* episodic + reflective tables and *write* `lessons` / `patterns` / `proposals` / Git PRs.
+- Permission mode: standard (no `--dangerously-skip-permissions`). The Improvement Team has no live-trading endpoint access by design (§15.6 safety boundary), so blocking on permission prompts for unexpected tool use is acceptable behavior. If a batch hangs on a prompt, the scheduler kills it after a timeout and pages the operator.
 
-In **development**, this team can be instantiated using Claude Code's experimental Agent Teams feature (`code.claude.com/docs/en/agent-teams`); in **production** it runs as scheduled workers on the same custom orchestration as Tier-1.
-
-All members are defined as Claude Code subagents (§14.5) — reusable subagent definitions per `code.claude.com/docs/en/sub-agents` — with read-only access to live observational data (`predictions`, `decisions`, `trades`, snapshots, calibration history) and write access only to `lessons`, `patterns`, `proposals`, and Git via PR on feature branches.
+All members are defined as Claude Code subagent definitions (§14.5, `code.claude.com/docs/en/sub-agents`), reusable as both delegated subagents and Improvement-Team teammates (Cloud-doc: *Use subagent definitions for teammates*). Read-only access to live observational data (`predictions`, `decisions`, `trades`, snapshots, calibration history); write access only to `lessons`, `patterns`, `proposals`, and Git via PR on feature branches.
 
 ### 15.2 Shared Memory & Notes
 
