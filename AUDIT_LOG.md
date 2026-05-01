@@ -45,7 +45,7 @@ Every PR that touches one of the following must have an entry here:
 ## 2026-05-01 — Single-operator doctrine + branch-protection loosening
 
 - **Category:** Branch-protection change + doctrine rewrite
-- **PR:** _to be filled in after merge_
+- **PR:** [#3](https://github.com/facchini-mika/autonomous_trading/pull/3) (squashed to commit `5eb3b6f`)
 - **Description:** Lowered branch protection's `required_approving_review_count`
   from 1 to 0 (everything else unchanged). Reason: GitHub forbids the PR
   author from approving their own PR, so on a single-operator project a
