@@ -12,6 +12,7 @@ To start as simply as possible:
 - **Single market venue:** Polymarket only (CLOB + Gamma). Kalshi and any multi-venue support are deferred until post-MVP.
 - **Single information-intake channel for everything that is not market data:** OpenAI's web search (Responses API + `web_search_preview`), invoked via the `web_search` skill. **No** NewsAPI, GDELT, X/Twitter, Reddit, Tavily/Brave, FRED, or per-domain feeds in MVP. The agent searches the web through one tool and reads the synthesized result.
 - **Internal data:** market data from Polymarket, plus our own resolved-market archive for performance tracking. Nothing else.
+- **Single storage tier:** Postgres 16 only. No TimescaleDB, no Redis, no S3/MinIO in MVP. Time-series tables are plain Postgres (snapshot cadence is per-cycle, not per-second — comfortably handled). Reasoning traces, research blobs, and any binary-ish artifacts go into JSONB columns. Kill-switch and rate-limit state live in a small `system_state` table or in-process counters. Anything that was previously a Redis or S3 concern is folded back into Postgres for MVP.
 
 Anything below that contradicts this MVP scope is aspirational and applies post-MVP.
 
@@ -55,14 +56,13 @@ This rule is the dual of `engineering.md §21`: §21 prevents tunable-sprawl, §
 
 **Post-MVP candidates** (none active in MVP): NewsAPI / GDELT, X / Twitter, Reddit, Tavily / Brave, Kalshi public API, FRED, sports stats APIs. Each is added only when a measured gap in MVP performance demands it, and goes through the §0 OSS-first workflow.
 
-**Storage:**
+**Storage (MVP):**
 
 | Store | Tech | Data |
 |---|---|---|
-| Time series | TimescaleDB | `market_snapshots` (1s active, 1m archive) |
-| Relational | Postgres 16 | `markets`, `predictions`, `decisions`, `trades`, `positions`, `agent_state`, `cycle_plan`, `operating_doctrine`, `lessons`, `patterns`, `proposals` |
-| Hot state | Redis 7 | open positions, current quotes, kill switch flag, rate limits |
-| Object | S3-compatible (MinIO local, S3 prod) | raw articles, agent reasoning traces, screenshots |
+| Single tier | Postgres 16 | All tables in §1 (market data, predictions, decisions, paper-trades, positions, agent state, cycle plan, doctrine, beliefs, notes, agent performance, lessons, patterns, proposals, `system_state`). Reasoning traces and research blobs live in JSONB columns on `predictions` (`inference_log`). Kill-switch flag and any global runtime flags live in `system_state`. Rate-limit counters are in-process per service (no persistence). |
+
+**Post-MVP candidates:** TimescaleDB hypertables for sub-second `market_snapshots`, Redis for hot state and pub/sub, S3 for cold reasoning-trace archive and screenshots. Each is added when a measured limit (table size, query latency, snapshot cadence) demands it.
 
 **Key schemas (sketch):**
 
@@ -71,11 +71,15 @@ markets(id pk, condition_id, slug, title, category, end_date, status,
         resolution_source, created_at, last_seen, ambiguity_score)
 
 market_snapshots(time, market_id fk, best_bid, best_ask, mid, depth_bid_1pct,
-                 depth_ask_1pct, volume_24h)              -- TimescaleDB hypertable
+                 depth_ask_1pct, volume_24h)              -- plain Postgres table in MVP,
+                                                          -- per-cycle cadence; index on (market_id, time)
 
 predictions(id pk, time, market_id fk, agent_id, p_raw,
-            reasoning_uri, research_bundle_id, latency_ms,
+            inference_log jsonb,                          -- prompt + Claude output + tool calls + web_search results
+            latency_ms,
             outcome?, pnl_realized?)                       -- outcome/pnl set by Trade Eval Team
+
+system_state(key text pk, value jsonb, updated_at)        -- kill_switch, mode flags, ad-hoc runtime state
 
 decisions(id pk, cycle_id, market_id fk, p_consensus, q_market, edge,
           gate_results jsonb, action, rationale)
@@ -124,12 +128,15 @@ proposals(id pk, time, source_agent_id,
           paper_validation_uri, pr_url?, status, decided_by, decided_at)
 ```
 
-**Retention:**
-- Snapshots: 90d hot → continuous-aggregate to 1h cold for 5y.
-- Trades, decisions, predictions: indefinite.
-- Reasoning traces: 1y hot → cold S3.
-- `cycle_plan`: latest active row hot; superseded rows kept 90d (replay/audit), then archived to cold S3.
+**Retention (MVP):**
+- `market_snapshots`: 30 days, then a daily cron prunes older rows.
+- `predictions`, `decisions`, `trades`, `paper_trades`, `positions`: indefinite.
+- `predictions.inference_log` (reasoning trace JSONB): 90 days, then nulled out (the prediction row stays, the blob drops).
+- `cycle_plan`: latest active row hot; superseded rows kept 90 days, then deleted.
 - `operating_doctrine`: full lineage indefinite (operative-state record).
+- `lessons`, `patterns`, `proposals`: indefinite.
+
+Post-MVP: cold-archive policies (S3 / Glacier) once Postgres size becomes a concern.
 
 ---
 
@@ -193,7 +200,7 @@ class PredictionMarketAdapter(Protocol):
 
 ## 3. Logging & Observability
 
-**Structured logs (JSON to stdout → Vector/Fluent Bit → Loki).** Required per line: `timestamp, service, level, cycle_id, correlation_id, market_id?, agent_id?, decision_id?, message, ...payload`. Reasoning traces in S3, referenced by URI in `predictions.reasoning_uri`. Every decision reconstructable from logs alone.
+**Structured logs (JSON to stdout → file in MVP; cloud-side aggregator post-MVP).** Required per line: `timestamp, service, level, cycle_id, correlation_id, market_id?, agent_id?, decision_id?, message, ...payload`. Reasoning traces (full prompt + Claude output + tool calls + web_search results) live in `predictions.inference_log` JSONB — every decision is reconstructable from Postgres + the structured log alone.
 
 **Metrics (Prometheus):**
 
