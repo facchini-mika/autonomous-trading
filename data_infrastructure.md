@@ -1,6 +1,6 @@
 # Data Infrastructure — Storage, Market Interface, Observability
 
-Where data lives, how the prediction market is accessed, and how the system is observed. Owns: data sources, all storage tiers, all long-term-memory schemas, retention, the Polymarket / Kalshi adapter abstraction, order placement mechanics, idempotency + reconciliation, failure handling, slippage tracking, and the full observability stack.
+Where data lives, how the prediction market is accessed, and how the system is observed. Owns: data sources, all storage tiers, all long-term-memory schemas, retention, the Polymarket adapter (Kalshi post-MVP), order placement mechanics, idempotency + reconciliation, failure handling, slippage tracking, and the full observability stack.
 
 **What lives here:** schemas, sources, adapters, observability. **What does not live here:** runtime topology (`orchestration.md`), risk limits or safety controls (`engineering.md §1`–§2), secrets (`engineering.md §7`) or central settings (`engineering.md §10`).
 
@@ -60,11 +60,11 @@ This rule is the dual of `engineering.md §10`: §10 prevents tunable-sprawl, §
 
 | Store | Tech | Data |
 |---|---|---|
-| Single tier | Postgres 16 | All tables in §1 (market data, predictions, decisions, paper-trades, positions, agent state, cycle plan, doctrine, beliefs, notes, agent performance, lessons, patterns, proposals, `system_state`). Reasoning traces and research blobs live in JSONB columns on `predictions` (`inference_log`). Kill-switch flag and any global runtime flags live in `system_state`. Rate-limit counters are in-process per service (no persistence). |
+| Single tier | Postgres 16 | The 11 MVP tables: `markets`, `market_snapshots`, `predictions` (with `inference_log` JSONB carrying the reasoning trace), `decisions`, `trades`, `paper_trades`, `positions`, `notes`, `cycle_plan`, `lessons`, `system_state`. Kill-switch flag and any global runtime flags live in `system_state`. Rate-limit counters are in-process per service (no persistence). Post-MVP tables (`agent_performance`, `beliefs`, `operating_doctrine`, `patterns`, `proposals`) — see "Post-MVP table sketches" subsection below. |
 
 **Post-MVP candidates:** TimescaleDB hypertables for sub-second `market_snapshots`, Redis for hot state and pub/sub, S3 for cold reasoning-trace archive and screenshots. Each is added when a measured limit (table size, query latency, snapshot cadence) demands it.
 
-**Key schemas (sketch):**
+**Key MVP schemas (sketch):**
 
 ```sql
 markets(id pk, condition_id, slug, title, category, end_date, status,
@@ -77,7 +77,7 @@ market_snapshots(time, market_id fk, best_bid, best_ask, mid, depth_bid_1pct,
 predictions(id pk, time, market_id fk, agent_id, p_raw,
             inference_log jsonb,                          -- prompt + Claude output + tool calls + web_search results
             latency_ms,
-            outcome?, pnl_realized?)                       -- outcome/pnl set by Trade Eval Team
+            outcome?, pnl_realized?)                       -- outcome/pnl set by outcome-ingestion script (trading_feedback.md §1)
 
 system_state(key text pk, value jsonb, updated_at)        -- kill_switch, mode flags, ad-hoc runtime state
 
@@ -88,17 +88,15 @@ trades(id pk, decision_id fk, time, market_id fk, side, size, price, fees,
        status, broker_order_id, parent_trade_id,
        realized_pnl?)                                      -- realized_pnl set on settlement
 
+paper_trades(id pk, decision_id fk, time, market_id fk, side, size, price, fees,
+             status, broker_order_id?,                     -- broker_order_id null in paper mode
+             parent_trade_id, realized_pnl?)               -- mirror of `trades`; populated when TRADING_MODE='paper'
+
 positions(market_id fk, side, size, avg_price, unrealized_pnl, realized_pnl,
-          opened_at, last_updated, status)
+          opened_at, last_updated, status)                 -- single positions ledger across paper / real_capital,
+                                                          -- distinguished by upstream trade source
 
-agent_performance(agent_id, time, hit_rate_30d, sharpe_30d, pnl_30d, n_samples)
-
-beliefs(id pk, time, agent_id, domain,
-        scope ('global'|'category'|'market'|'position'),
-        scope_ref, statement, p_estimate?, confidence, evidence_uri,
-        supersedes_id?, status, last_updated)             -- per-agent structured views
-
-notes(id pk, time, agent_id, body, tags jsonb, last_accessed)   -- per-agent scratchpad (LRU)
+notes(id pk, time, agent_id, body, tags jsonb, last_accessed)   -- per-agent scratchpad (LRU ≤ 50 rows in MVP)
 
 cycle_plan(id pk, written_at, written_by_cycle_id,
            next_priorities jsonb, holds_with_rationale jsonb,
@@ -106,26 +104,38 @@ cycle_plan(id pk, written_at, written_by_cycle_id,
            blockers jsonb, superseded_at?)                -- portfolio-level forward-looking handoff;
                                                          -- exactly one row with superseded_at IS NULL
 
+lessons(id pk, time, source_agent_id, trigger_event_id, market_id?,
+        observation, hypothesis, action_taken, outcome, status,
+        parent_pattern_id?, tags jsonb)            -- append-only; written by lessons-summary script (optimization.md §1)
+```
+
+**Post-MVP table sketches** (deferred — full specs in `trading_feedback.md §6`, `optimization.md §5`, `trading.md §8`):
+
+```sql
+agent_performance(agent_id, time, hit_rate_30d, sharpe_30d, pnl_30d, n_samples)
+                                              -- written by Trade Evaluation Team (trading_feedback.md §6);
+                                              -- not needed in MVP because there is only one trading agent
+
+beliefs(id pk, time, agent_id, domain,
+        scope ('global'|'category'|'market'|'position'),
+        scope_ref, statement, p_estimate?, confidence, evidence_uri,
+        supersedes_id?, status, last_updated)             -- per-agent structured views (trading.md §8)
+
 operating_doctrine(id pk, created_at, target_date,
                    phases jsonb, current_phase, key_risks jsonb,
                    revised_at, revised_by, approved_by,
-                   supersedes_id?, status)                -- current operative strategy with lineage;
+                   supersedes_id?, status)                -- current operative strategy with lineage (trading.md §8);
                                                          -- exactly one row with status='active'
 
--- Reflective tables (written by evaluation tiers, see optimization.md §2 + trading_feedback.md §4):
-
-lessons(id pk, time, source_agent_id, trigger_event_id, market_id?,
-        observation, hypothesis, action_taken, outcome, status,
-        parent_pattern_id?, tags jsonb)            -- append-only
-
 patterns(id pk, first_seen, last_seen, occurrences, description,
-         supporting_lesson_ids uuid[], confidence)
+         supporting_lesson_ids uuid[], confidence)        -- written by Code Evaluation Team (optimization.md §5)
 
 proposals(id pk, time, source_agent_id,
           target_kind ('prompt' | 'strategy' | 'code' | 'limit' | 'config'
                        | 'operating_doctrine' | 'agent_roster'),
           target_ref, current_value, proposed_value, rationale,
           paper_validation_uri, pr_url?, status, decided_by, decided_at)
+                                                         -- written by Code Evaluation Team (optimization.md §5)
 ```
 
 **Retention (MVP):**
@@ -133,8 +143,8 @@ proposals(id pk, time, source_agent_id,
 - `predictions`, `decisions`, `trades`, `paper_trades`, `positions`: indefinite.
 - `predictions.inference_log` (reasoning trace JSONB): 90 days, then nulled out (the prediction row stays, the blob drops).
 - `cycle_plan`: latest active row hot; superseded rows kept 90 days, then deleted.
-- `operating_doctrine`: full lineage indefinite (operative-state record).
-- `lessons`, `patterns`, `proposals`: indefinite.
+- `lessons`: indefinite.
+- Retention for post-MVP tables specified when those tables enter scope.
 
 Post-MVP: cold-archive policies (S3 / Glacier) once Postgres size becomes a concern.
 
@@ -169,12 +179,12 @@ class PredictionMarketAdapter(Protocol):
 
 **MVP implementations:**
 
-- **`PolymarketAdapter`** — primary. WebSocket subscribed to orderbooks for tracked markets (open positions + active candidates). REST for orders + account state. EIP-712 typed-data signing; private key in cloud KMS or hardware key (YubiHSM). Network: Polygon mainnet; gas in MATIC. Settlement: USDC.e. Polymarket Gamma API for resolution lookup. **Full read-and-write** — used by Trading Team in `real_capital` mode.
+- **`PolymarketAdapter`** — primary. WebSocket subscribed to orderbooks for tracked markets (open positions + active candidates). REST for orders + account state. EIP-712 typed-data signing via the `KeyProvider` abstraction (`engineering.md §7`): AWS KMS preferred, encrypted-at-rest local file acceptable fallback, plaintext keys forbidden. Network: Polygon mainnet; gas in MATIC. Settlement: USDC.e. Polymarket Gamma API for resolution lookup. **Full read-and-write** — used by Trading Team in `real_capital` mode.
 - **`PaperTradingAdapter`** — wraps `PolymarketAdapter` for read paths but redirects `place_order` / `cancel_order` to a Postgres `paper_trades` ledger. Selected automatically when `TRADING_MODE='paper'` (`engineering.md §4`).
 
 **Post-MVP:** `KalshiAdapter` (read-only cross-venue reference) — added only if and when an explore-track strategy needs it.
 
-**Composition.** The `execution-engine` service holds exactly one `PredictionMarketAdapter` instance, selected at startup based on `TRADING_MODE`. The Trade Evaluation Team holds a read-only adapter (rejects write methods at the type-stub level). The Code Evaluation Team holds **no adapter** — it has no live-trading capability by design (`optimization.md §1`).
+**Composition (MVP).** The `risk-execution` member of the Trading Team (`trading.md §2`) instantiates exactly one `PredictionMarketAdapter` per cycle, selected at startup based on `TRADING_MODE`. Other members (`scanner-reviewer` for read-only universe/orderbook, `trading-agent` for analysis) only need read paths and use the same adapter instance via the Lead. The outcome-ingestion script (`trading_feedback.md §1`) instantiates its own read-only Polymarket Gamma client (no order endpoints). The lessons-summary script (`optimization.md §1`) holds **no adapter** — it has no live-trading capability by design. Post-MVP Trade-Evaluation-Team and Code-Evaluation-Team adapter rules are specified in `trading_feedback.md §6` and `optimization.md §5`.
 
 **Order types** (PA-aligned — orders execute immediately, no smart order routing in v1):
 
@@ -213,7 +223,7 @@ class PredictionMarketAdapter(Protocol):
 | `equity_usd` | gauge | |
 | `gross_exposure_usd` | gauge | |
 | `drawdown_pct` | gauge | |
-| `agent_hit_rate_30d` | gauge | agent_id |
+| `agent_hit_rate_30d` | gauge | agent_id (post-MVP — single trading agent in MVP) |
 | `kill_switch_active` | gauge | 0/1 |
 
 **Tracing (OpenTelemetry → Tempo/Jaeger):** one trace per decision cycle; spans per service call; sub-spans per agent inference + tool call.
@@ -230,7 +240,7 @@ class PredictionMarketAdapter(Protocol):
 | Cycle latency P95 > 30s | warn |
 | Reconciliation diff > $10 | critical |
 | Error rate > 5% / 5 min | warn |
-| Agent disagreement std > 0.30 sustained | info (regime change) |
+| Agent disagreement std > 0.30 sustained | info (regime change) — post-MVP, requires ensemble |
 
 ---
 
@@ -239,6 +249,6 @@ class PredictionMarketAdapter(Protocol):
 - `orchestration.md` — runtime topology that consumes these schemas and adapters.
 - `engineering.md` — risk limits, safety controls, secrets, central settings, audit trail (development reinforcement of §3 above).
 - `trading.md` — what fills the schemas in §1.
-- `trading_feedback.md` — Tier 1 evaluation that writes outcomes and PnL.
-- `optimization.md` — Tier 2 evaluation that writes lessons / patterns / proposals.
+- `trading_feedback.md` — outcome-ingestion script that writes `outcome` and `realized_pnl` (MVP); the full Trade Evaluation Team is post-MVP (§6).
+- `optimization.md` — daily lessons-summary script that writes `lessons` (MVP); the Code Evaluation Team that writes `patterns` / `proposals` is post-MVP (§5).
 - `specs.md` — architecture diagram and entry point.

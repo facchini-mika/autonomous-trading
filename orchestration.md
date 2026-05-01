@@ -33,7 +33,7 @@ A failed run on any process is a non-event — no orders placed, no state mutate
 
 | Role | Used by | Privileges |
 |---|---|---|
-| `trading_cycle` | Trading Cycle process | `SELECT` everywhere; `INSERT`/`UPDATE` on `predictions`, `decisions`, `trades`, `paper_trades`, `positions`, `cycle_plan`, `notes`, `system_state` |
+| `trading_cycle` | Trading Cycle process | `SELECT` everywhere; `INSERT`/`UPDATE` on `markets`, `market_snapshots`, `predictions`, `decisions`, `trades`, `paper_trades`, `positions`, `cycle_plan`, `notes`, `system_state` |
 | `outcome_ingestion` | Outcome Ingestion script | `SELECT` everywhere; `UPDATE` only on `predictions.outcome`/`realized_pnl`, `trades.realized_pnl`/`status`, `paper_trades.realized_pnl`/`status`, `positions.status`/`realized_pnl`/`last_updated`, `system_state.last_outcome_ingestion_at` |
 | `lessons_summary` | Lessons Summary script | `SELECT` on trading tables; `INSERT` only on `lessons` |
 
