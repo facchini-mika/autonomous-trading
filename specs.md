@@ -2,7 +2,7 @@
 
 ## 1. Objective
 
-Deploy capital on Polymarket binary prediction markets to generate risk-adjusted returns by systematically identifying and exploiting probabilistic mispricings. A heterogeneous ensemble of AI agents produces calibrated probability estimates compared against market-implied probabilities to extract expected-value edge.
+Deploy capital on Polymarket binary prediction markets to generate risk-adjusted returns by systematically identifying and exploiting probabilistic mispricings. A heterogeneous ensemble of AI agents produces probability estimates compared against market-implied probabilities to extract expected-value edge.
 
 **Core pattern.** This is an **agent-orchestration system**, not a single LLM with plumbing. Specialized agents perform distinct tasks (research, prediction, aggregation, risk gating, execution, reflection), pass typed memory artifacts within a cycle (§2), and accumulate cross-cycle memory (§15). Decisions emerge from the pipeline; outcomes feed back into memory.
 
@@ -23,17 +23,16 @@ Deploy capital on Polymarket binary prediction markets to generate risk-adjusted
 ```
 [Team Lead Agent]           → drives cycle clock; spawns members; assigns + monitors tasks; synthesizes
         ↓
-[market-scanner]            → universe of candidate markets
-[portfolio-reviewer]        → PortfolioState  (positions, cash, PnL, drawdown, remaining capacity per scope)
-[research-orchestrator]     → ResearchBundle  (news, history, related markets; in S3)   ← spawns subagents
-[trading agents — §4]       → Prediction      (p_yes, confidence, reasoning) per agent  ← may spawn subagents
-[aggregator]                → ConsensusProbability  (calibrated, with disagreement metric)
+[market-scanner]            → universe of all tradable markets (PA-style: no filter)
+[portfolio-reviewer]        → PortfolioState  (positions, cash, PnL, last 10 settlements + trades)
+[trading agents — §4]       → Prediction      (p_raw, reasoning) per agent  ← call research tools (web search, news, analogues) inline as needed
+[aggregator]                → ConsensusProbability  (mean of p_raw, with disagreement metric)
 [risk-engine]               → Decision        (action, size, gate results, rationale)
-[execution-engine]          → Trades + fills
-[evaluator (on resolve)]    → Outcome + PnL + per-agent calibration update
+[execution-engine]          → Trades + fills (paper or real-capital, §14.9)
+[evaluator (on resolve)]    → Outcome + PnL + per-agent hit-rate / PnL update
 ```
 
-The four-stage shape — **Receive (market-scanner) → Review (portfolio-reviewer) → Analyze (research + agents + aggregator) → Decide (risk-engine + execution)** — mirrors the canonical Prediction Arena cycle, generalized to a multi-agent ensemble. Review precedes Analyze deliberately: if portfolio state already triggers a §6 trip-wire or exhausts capacity, the cycle skips expensive research entirely.
+The four-stage shape — **Receive (market-scanner) → Review (portfolio-reviewer) → Analyze (agents call research tools, then aggregator) → Decide (risk-engine + execution)** — mirrors the canonical Prediction Arena cycle, generalized to a multi-agent ensemble. Review precedes Analyze deliberately: the portfolio snapshot is consumed by both the agent prompts and the risk gates, so it must exist before either runs.
 
 **Tier 2 — Cross-cycle reflection (§15).** Improvement agents read Tier-1 memory asynchronously and emit higher-order memory that flows back via prompt/strategy/config updates after human approval. The improvement layer is its own **Improvement Team** (§15.1) — separate Team Lead, separate task list — running off-cycle from trading:
 
@@ -62,7 +61,7 @@ outcomes    ┘
 ┌────────────────── Team Lead Agent (per cycle) ──────────────────┐
 │  - drives cycle clock (§3); initializes shared task list         │
 │  - spawns members at the right time, passes typed artifacts      │
-│  - decides Review-gate short-circuit (§3 step 2)                 │
+│  - consumes the §6 risk gates' results to short-circuit if the cycle is fully blocked                 │
 │  - synthesizes intermediate results + member disagreements       │
 │  - emits cycle-close artifacts; never executes orders directly   │
 └──────────────────────────────────────────────────────────────────┘
@@ -72,11 +71,10 @@ outcomes    ┘
 [Team Members]                                  [each in own context window]
   · market-scanner
   · portfolio-reviewer
-  · research-orchestrator     ─┐
-  · trading-agent-{id} (×7)    │ may spawn Subagents (one-way fanout, results
-  · aggregator                 │ return to parent member only)
-  · risk-engine                │
-  · execution-engine          ─┘
+  · trading-agent-{id} (×7)   ─┐ each agent calls research tools (web_search,
+  · aggregator                 │ news_fetch, analogue_lookup, related_market_scan)
+  · risk-engine                │ inline during inference; may spawn Subagents
+  · execution-engine          ─┘ for I/O-bound fan-out (one-way, parent-only)
   · evaluator
 ```
 
@@ -84,10 +82,8 @@ outcomes    ┘
 
 | Team member | Subagents (typical) |
 |---|---|
-| `research-orchestrator` | `news-fetcher`, `web-searcher`, `historical-analogue-finder`, `related-market-scanner`, `social-sentiment-extractor` — one per research dimension, fired in parallel per candidate market |
+| Any trading agent | `web-searcher`, `news-fetcher`, `analogue-finder`, `related-market-scanner` — fanned out for I/O-bound research on the markets the agent chooses to focus on |
 | `domain-router` (trading agent) | Per-domain sub-prompts (`politics-sub`, `crypto-sub`, `sports-sub`, `macro-sub`) so the parent context stays lean |
-| `historical-analogue` (trading agent) | `analogue-finder`, `analogue-weighter` |
-| `risk-engine` | `slippage-simulator`, `correlation-cluster-checker` for compute-heavy gate evaluations |
 | `evaluator` | `outcome-fetcher`, `pnl-aggregator` |
 | `safety-watchdog` | `reconciliation-diff-explainer` (only on triggered alerts) |
 
@@ -103,9 +99,9 @@ outcomes    ┘
 
 | Scope | Mechanism | Lifetime | Read by |
 |---|---|---|---|
-| **Short-term coordination** | **Shared task list** (per-cycle, file-locked, states `pending`/`in_progress`/`completed`, with explicit dependencies — e.g. `agent-inference` blocks on `research-bundle-ready`) | one cycle | Lead + all members of the same cycle |
+| **Short-term coordination** | **Shared task list** (per-cycle, file-locked, states `pending`/`in_progress`/`completed`, with explicit dependencies — e.g. `aggregation` blocks on `agent-inference-complete`) | one cycle | Lead + all members of the same cycle |
 | **Short-term coordination** | **Mailbox** (auto-delivered messages between members, used for clarifications, partial-result hand-offs, aggregator disagreement-flagging) | one cycle | Sender + named recipient(s) |
-| **Short-term hand-off** | **In-flight typed artifacts** in process memory: `PortfolioState`, `ResearchBundle`, `Prediction`, `ConsensusProbability`, `Decision` | one cycle (persisted on close to §8 for replay only) | Downstream members of same cycle |
+| **Short-term hand-off** | **In-flight typed artifacts** in process memory: `PortfolioState`, `Prediction`, `ConsensusProbability`, `Decision` | one cycle (persisted on close to §8 for replay only) | Downstream members of same cycle |
 | **Short-term reasoning** | **Per-member context window** | one cycle (member shutdown) | Owning member only |
 | **Long-term agent state** | `notes` (LRU scratchpad, §4) | cross-cycle, capped | Owning agent's next cycle; improvement agents (§15) |
 | **Long-term agent state** | `beliefs` (typed, revisable with lineage, §4) | cross-cycle, indefinite | Owning agent's next cycle; improvement agents |
@@ -122,7 +118,7 @@ The short-term layer is **never** read by future cycles — it cleans up at cycl
 |---|---|---|---|
 | Working / Short-term | Shared task list + mailbox (Lead-managed); in-flight Pydantic artifacts in process memory; per-member context window | one cycle | Inter-member coordination + hand-offs within a cycle |
 | Agent notes | Per-agent `notes` table (max 50 × ~200 words, LRU) | cross-cycle, capped | Trading agent's scratchpad — ad-hoc reminders + provisional flags |
-| Agent beliefs | Per-agent `beliefs` table, typed by domain | cross-cycle, revisable, full lineage | Structured market views — calibration-tracked (§4 + §8) |
+| Agent beliefs | Per-agent `beliefs` table, typed by domain | cross-cycle, revisable, full lineage | Structured market views — hit-rate-tracked when falsifiable (§4 + §8) |
 | Cycle plan | `cycle_plan` table, single active row, portfolio-level (§4) | overwritten each cycle, history retained | Forward-looking handoff: next-cycle priorities, holds-with-rationale, pending settlements, blockers |
 | Operating doctrine | `operating_doctrine` table, single active row with lineage (§4) | revisable (weeks–months), lineage retained | Currently-active phased strategy with target date — directive, not retrospective |
 | Episodic | `predictions`, `decisions`, `trades`, `positions` (§8) | indefinite | Per-event ground truth; replay/audit |
@@ -154,9 +150,8 @@ The short-term layer is **never** read by future cycles — it cleans up at cycl
 |---|---|
 | `data-ingestor-{source}` | Pull data from each external source |
 | `market-scanner` | Filter universe by liquidity / edge potential |
-| `portfolio-reviewer` | Snapshot positions, cash, unrealized + realized PnL, drawdown, daily loss, recent settlements; compute remaining capacity per category/agent/portfolio scope; emit `PortfolioState` and gate downstream (skip cycle if at trip-wire) |
-| `research-orchestrator` | Bundle context per candidate market |
-| `agent-worker-{id}` | Run one agent's reasoning loop in isolation |
+| `portfolio-reviewer` | Snapshot positions, cash, unrealized + realized PnL, last 10 settlements, last 10 closed trades; emit `PortfolioState` consumed by agent prompts (§4) and risk gates (§3 step 7) |
+| `agent-worker-{id}` | Run one agent's reasoning loop in isolation; agent calls research tools (web search, news fetch, analogue lookup) inline as needed |
 | `aggregator` | Combine per-agent outputs into consensus |
 | `risk-engine` | Apply pre-trade risk gates |
 | `execution-engine` | Translate decisions into CLOB orders |
@@ -184,26 +179,26 @@ The short-term layer is **never** read by future cycles — it cleans up at cycl
 | Snapshot | 1 s | Update orderbook for active positions |
 | Reconcile | 30 s | Match internal positions to broker truth |
 | Decision | 12 min | Full scan → decide → execute |
-| Recalibration | 1 h | Refit per-agent isotonic curves on recently resolved markets |
 | Allocation | 24 h | Rebalance per-agent capital |
-| Resolution | 1 min | Detect resolved markets, finalize PnL, feed calibration |
+| Resolution | 1 min | Detect resolved markets, finalize PnL |
 
 **Decision cycle (T = scheduler fire time, i.e. a fresh `claude` process started).** The four-stage spine is **Receive → Review → Analyze → Decide** (PA-pattern); a Boot phase runs first, and Cycle-close tears the team down. Steps below are the concrete sub-stages.
 
-0. **T+0–15s — Boot.** Scheduler starts a fresh Claude Code process with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and `--dangerously-skip-permissions`. A janitor first sweeps stale `~/.claude/teams/{team-name}/` directories left by a previous cycle that crashed without cleanup. Lead loads CLAUDE.md, MCP servers, hooks, the team-spec from `.claude/teams/trading-team.spec.json` (§14.22), then spawns members per the spec — each loads its subagent definitions and waits idle for tasks. Long-term memory pointers (current `MAX_CAPITAL_EUR`, latest calibration curves, recent settlement IDs) are read from Postgres and exposed to the Lead. The Lead also reads the **previous cycle's `cycle_plan`** (forward-looking handoff: priorities, holds, blockers) and the **active `operating_doctrine`** row (current phase + target date) from Postgres — both are propagated to members via the §4 prompt context. Boot completes when every member reports idle.
-1. **T+15s — Receive: Universe snapshot.** Filter: 24h vol ≥ $10k; bid-ask depth ≥ $1k within ±1% of mid; end date > 24h and < 365d; not in cooldown.
-2. **T+25s — Review: Portfolio & Performance.** `portfolio-reviewer` builds `PortfolioState`: current positions, cash, unrealized PnL, realized PnL (today, 7d, 30d), drawdown vs peak, daily loss vs cap, gross + per-category exposure, last 10 settlements + last 10 closed trades, rolling per-agent hit rate / PnL / Sharpe. Computes remaining capacity per scope against §6 limits. **Gate:** if any §6 trip-wire is active (15% drawdown kill-switch, 5% daily-loss cap, gross-exposure cap), the cycle either skips new orders entirely or restricts to position-reducing trades — research dispatch is short-circuited. The artifact is consumed by triage, risk-engine, and (subset) injected into agent prompts (§4).
-3. **T+35s — Triage.** Cheap heuristic edge estimate (price vs base rate, related markets, momentum), filtered by remaining-capacity from `PortfolioState`. Top-K (K=20) advance.
-4. **T+45s — Analyze: Research dispatch.** Per candidate: parallel bundle (news 7d, web search 3–5 queries, historical analogues, related-market snapshot). Persisted to S3, ID forwarded.
-5. **T+3m — Analyze: Agent inference.** Each agent gets bundle + market metadata + relevant slice of `PortfolioState`. Output: `P(YES)`, confidence, reasoning trace URI. Parallel; per-agent timeout 90s. Failed agents excluded from this market only.
-6. **T+5m — Analyze: Calibration & aggregation.** Per-agent isotonic recalibration; hit-rate-weighted mean. Consensus confidence = weighted geometric mean × disagreement penalty.
-7. **T+6m — Analyze: Edge computation.** Live orderbook. Compute `q = mid`, `effective_q` = volume-weighted price for intended size, `edge = p_consensus − effective_q` (symmetric for NO).
-8. **T+7m — Decide: Risk gates.** Order: edge threshold → position limits → category exposure → drawdown → slippage → resolution risk. Reject or size-reduce.
-9. **T+8m — Decide: Sizing.** Quarter-Kelly within remaining caps from `PortfolioState`.
-10. **T+9m — Decide: Order placement.** Limit, post-only when viable. Iceberg slicing for size > $500.
-11. **T+10–11m — Fill monitoring.** Track partial fills. Cancel/replace on > 1% adverse move.
-12. **T+11m45s — Persist & emit.** Lead persists in-flight artifacts (decisions, fills, reasoning links) to long-term stores (§8); writes any agent-initiated `notes` / `beliefs` / `lessons` updates; **writes a fresh `cycle_plan` row** (forward-looking handoff for the next cycle: top priorities, holds-with-rationale, pending settlements, identified-but-deferred opportunities, blockers) — synthesized by the Lead from the cycle's artifacts; emits cycle metrics. `operating_doctrine` is read-only here (only `strategy-improver` revises it, §15.1).
-13. **T+11m55s — Cycle close.** Lead calls `clean up the team` (Cloud-doc warning: never let a member run cleanup), shutting down all members and the team config. Lead process exits. The next cycle is a brand-new `claude` process started by the scheduler at the next fire time — no shared in-process state with this cycle. All short-term memory (mailbox, task list, member context windows) dies with the process; only what was persisted in step 12 survives.
+0. **T+0–15s — Boot.** Scheduler starts a fresh Claude Code process with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and `--dangerously-skip-permissions`. A janitor first sweeps stale `~/.claude/teams/{team-name}/` directories left by a previous cycle that crashed without cleanup. Lead loads CLAUDE.md, MCP servers, hooks, the team-spec from `.claude/teams/trading-team.spec.json` (§14.22), then spawns members per the spec — each loads its subagent definitions and waits idle for tasks. Long-term memory pointers (current `MAX_CAPITAL_EUR`, current `TRADING_MODE`, recent settlement IDs) are read from Postgres and exposed to the Lead. The Lead also reads the **previous cycle's `cycle_plan`** (forward-looking handoff: priorities, holds, blockers) and the **active `operating_doctrine`** row (current phase + target date) from Postgres — both are propagated to members via the §4 prompt context. Boot completes when every member reports idle.
+1. **T+15s — Receive: Universe snapshot.** All currently-tradable Polymarket binary markets are pulled — orderbook prices, bid/ask spreads, settlement rules. **No filter applied** (PA-style): the agent ensemble sees the full universe and triages itself during inference (step 3). The only exclusion is markets with structurally undefined data (no orderbook, no settlement criteria parseable).
+2. **T+25s — Review: Portfolio.** `portfolio-reviewer` builds `PortfolioState`: cash balance, current positions, unrealized + realized PnL, **last 10 settlements with realized PnL**, **last 10 closed trades with realized PnL**. Mark-to-market against current best **bid** (PA convention, §10). The artifact is consumed by the risk-engine (for solvency + per-cycle-cap checks) and injected into agent prompts (§4).
+3. **T+45s – T+5m — Analyze: Agent inference (with model-driven research).** Each agent gets the full universe + `PortfolioState` + memory context (§4) and runs inference. Research is **agent-driven**, not pre-dispatched (PA-style): each agent has tool access to `web_search`, `news_fetch`, `historical_analogue_lookup`, and `related_market_scan`, and calls them on the markets it chooses to focus on. The Member's own reasoning loop decides which markets are worth scoring and which to pass on. Output per scored market: `P(YES)`, reasoning trace URI, list of research-tool calls made (persisted to S3 for audit). Parallel across agents; per-agent timeout 90s. Failed agents excluded from this market only.
+4. **T+5m — Analyze: Aggregation.** Simple mean of `p_raw_i` across active agents per market: `p_consensus = mean(p_raw_i)`. Disagreement metric retained as `std(p_raw_i)` for visibility, but no calibration step.
+5. **T+6m — Analyze: Edge computation.** `q = best_ask` (for buying YES) or `1 − best_bid` (for buying NO). `edge = p_consensus − q`. Trade only if `|edge| ≥ 0.03` (central setting §14.21).
+6. **T+7m — Decide: Risk gates** (PA-style, three checks in fixed order):
+   1. **Concentration** — proposed notional ≤ 15% of equity in any single market.
+   2. **Solvency** — cash ≥ proposed notional + estimated fees + open-order reservations.
+   3. **Per-cycle spending cap** — total notional opened this cycle ≤ cycle cap (central setting §14.21).
+   Reject any trade that fails any gate. Plus the constitutional `MAX_CAPITAL_EUR` hard cap (§14.8).
+7. **T+8m — Decide: Sizing.** Agent proposes notional. Risk-engine clips to the smaller of: concentration cap remaining, solvency headroom, per-cycle-cap remaining. No Kelly formula — sizing is the model's call within hard limits.
+8. **T+9m — Decide: Order placement.** Orders execute **immediately** (PA-style) as marketable limit orders at the current best ask (buy) or best bid (sell). No post-only default, no iceberg slicing, no TWAP. Internal idempotency key on every order. In paper mode (§14.9) the order is written to the paper-trading ledger instead.
+9. **T+11m45s — Persist & emit.** Lead persists in-flight artifacts (decisions, fills, reasoning links) to long-term stores (§8); writes any agent-initiated `notes` / `beliefs` / `lessons` updates; **writes a fresh `cycle_plan` row** (forward-looking handoff for the next cycle: top priorities, holds-with-rationale, pending settlements, identified-but-deferred opportunities, blockers) — synthesized by the Lead from the cycle's artifacts; emits cycle metrics. `operating_doctrine` is read-only here (only `strategy-improver` revises it, §15.1).
+10. **T+11m55s — Cycle close.** Lead calls `clean up the team` (Cloud-doc warning: never let a member run cleanup), shutting down all members and the team config. Lead process exits. The next cycle is a brand-new `claude` process started by the scheduler at the next fire time — no shared in-process state with this cycle. All short-term memory (mailbox, task list, member context windows) dies with the process; only what was persisted in step 9 survives.
 
 ---
 
@@ -218,12 +213,13 @@ class Agent:
     prompt_template: str            # versioned, in repo
     tools: list[Tool]               # explicit allow-list
 
-    def predict(self, market: Market, research: ResearchBundle) -> Prediction:
-        """Returns Prediction(p_yes, confidence, reasoning_trace_uri,
-                              sub_questions, key_evidence)"""
+    def predict(self, market: Market) -> Prediction:
+        """Calls research tools (web_search, news_fetch, analogue_lookup,
+        related_market_scan) inline as needed during inference.
+        Returns Prediction(p_yes, reasoning_trace_uri, sub_questions, key_evidence)."""
 ```
 
-**Model.** All agents run on **Anthropic Claude Opus exclusively** (latest, pinned per release). Diversity comes from prompt × tool × persona, not from model heterogeneity. Trade-off: simpler ops/pinning/calibration/audit; no cross-provider drift; an Anthropic outage is a system-wide constraint (§9).
+**Model.** All agents run on **Anthropic Claude Opus exclusively** (latest, pinned per release). Diversity comes from prompt × tool × persona, not from model heterogeneity. Trade-off: simpler ops/pinning/audit; no cross-provider drift; an Anthropic outage is a system-wide constraint (§9).
 
 **Hard rule — cloud inference only (binding for all current and future versions).** Inference exclusively against managed cloud LLM endpoints. **No self-hosted, on-prem, locally-run, or edge-deployed inference** — not in v1, v2+, sub-component, research, shadow, or paper mode. Rationale: deterministic model-version provenance for replay, capability/safety tracking, vendor-managed eval pipelines, ops simplicity, no self-managed weight integrity risk. Future model additions (§13) must be cloud-hosted.
 
@@ -239,7 +235,7 @@ class Agent:
 | `microstructure-reader` | Orderbook + flow + smart-money proxies | Catches positioning | Mistakes noise for signal |
 | `red-team-adversary` | Tries to falsify the leading hypothesis | Robustness check | Excess uncertainty |
 
-**Per-agent state:** predictions log (joined to outcome on resolution); calibration curve (isotonic, refit hourly on last 500 resolved); capital allocation (meta-allocator); internal portfolio (subset of global); performance history (rolling 7d/30d/90d Sharpe, hit rate, PnL).
+**Per-agent state:** predictions log (joined to outcome on resolution); capital allocation (meta-allocator); internal portfolio (subset of global); performance history (rolling 30d hit rate, PnL).
 
 **Independence guarantees:**
 - Agents do not see each other's outputs before producing their own.
@@ -249,13 +245,13 @@ class Agent:
 **Per-cycle prompt context** (assembled deterministically, on top of system prompt with role/philosophy/risk/tools/protocol). Most fields below are sourced from the upstream `PortfolioState` artifact built in §3 step 2 (Review) — the prompt does not re-query state, it consumes the already-snapshotted view, so all agents in a cycle see consistent numbers:
 - Current timestamp + cycle metadata
 - Market data: orderbook snapshot, settlement criteria, depth at ±1% of mid
-- **Account state** (from `PortfolioState`): cash, positions, unrealized + realized PnL, drawdown vs peak, daily loss vs cap, gross + per-category exposure, remaining capacity per scope
+- **Account state** (from `PortfolioState`): cash, positions, unrealized + realized PnL, gross exposure, remaining capacity under §6 limits
 - **Recent settlements** (from `PortfolioState`) — last 10 resolved markets with realized PnL
 - **Recent closed trades** (from `PortfolioState`) — last 10 trades with realized PnL
 - **Previous-cycle reasoning** — agent's own prior reasoning on same market/category
 - **Previous cycle's `cycle_plan`** — operational handoff: priorities, holds-with-rationale, identified-but-deferred opportunities, blockers (e.g. settlement bottleneck). Read-only context for the agent.
 - **Active `operating_doctrine`** — current phase, phase-specific actions, target date, key risks. Directive: agent's actions should be coherent with the current phase.
-- **Critical-learning section** — curated `lessons`/`patterns` excerpts (§15.2): losing patterns to avoid, winning patterns to replicate, position-management reminders. Curated weekly by `meta-reviewer`; injected per cycle by research-orchestrator.
+- **Critical-learning section** — curated `lessons`/`patterns` excerpts (§15.2): losing patterns to avoid, winning patterns to replicate, position-management reminders. Curated weekly by `meta-reviewer`; injected per cycle by the Team Lead at boot.
 - The agent's most recent `notes`
 - The agent's active `beliefs` for this market / category / open positions (top-K by relevance + recency)
 - Step-by-step trading protocol
@@ -275,7 +271,7 @@ This is the explicit bridge between Tier-1 working memory and Tier-2 reflective 
 - `supersedes_id` — id of prior belief revised (lineage preserved; nothing deleted)
 - `status` — `active` / `superseded` / `retired`
 
-**Position-thesis beliefs (special case).** When a trading agent's prediction directly drives a position open, the execution-engine writes a `scope=position` belief alongside the `decisions` row, copying the agent's reasoning summary as the `statement` and the entry edge as `p_estimate`. On every subsequent cycle while the position is open, the per-cycle prompt for the originating agent injects this belief automatically; if the market price has moved > X% (default 15%, central settings §14.21) against the entry, the belief is auto-flagged for `revise` or `retire`. This closes the loop "why am I still holding this?" — every open position has a tracked, calibration-eligible thesis.
+**Position-thesis beliefs (special case).** When a trading agent's prediction directly drives a position open, the execution-engine writes a `scope=position` belief alongside the `decisions` row, copying the agent's reasoning summary as the `statement` and the entry edge as `p_estimate`. On every subsequent cycle while the position is open, the per-cycle prompt for the originating agent injects this belief automatically; if the market price has moved > X% (default 15%, central settings §14.21) against the entry, the belief is auto-flagged for `revise` or `retire`. This closes the loop "why am I still holding this?" — every open position has a tracked thesis with full revision lineage.
 
 **Beliefs vs notes vs lessons vs predictions vs cycle_plan vs operating_doctrine:**
 
@@ -294,7 +290,7 @@ This is the explicit bridge between Tier-1 working memory and Tier-2 reflective 
 - Settlement/move that contradicts an active belief auto-flags it next cycle; agent decides `revise` (new belief with `supersedes_id`) or `retire`.
 - Improvement agents (§15) mine beliefs across the agent population for convergent/divergent views, surface stale beliefs, lift recurring true beliefs into shared `patterns`.
 
-This makes the agent's *implicit world model* explicit, inspectable, and calibration-trackable.
+This makes the agent's *implicit world model* explicit, inspectable, and (for falsifiable beliefs with `p_estimate`) hit-rate-trackable.
 
 **Cycle plan (forward-looking handoff).** Single-row portfolio-level artifact written at the very end of each cycle by the Team Lead, read by the *next* cycle's Lead at boot. Solves the gap that fresh-team-per-cycle (§2) creates: the next process knows nothing about what the previous one was about to do. Distinct from `notes` (per-agent, retrospective) and `lessons` (reflective, written by improvement agents). Fields:
 - `written_at` / `written_by_cycle_id`
@@ -321,71 +317,48 @@ Revision authored exclusively by `strategy-improver` (§15.1) as a `proposal`; m
 
 ## 5. Decision Logic
 
-**Per agent:**
-- Raw output: `p_raw ∈ (0, 1)`
-- Calibration: `p_cal = isotonic_i(p_raw)` from agent's last 500 resolved.
-- Confidence `c ∈ (0, 1)`: from expected absolute calibration error at this `p_cal`.
+PA-aligned, deliberately lean. No calibration layer, no Kelly sizing, no multi-leg construction in v1.
 
-**Aggregation:**
-- `weight_i = max(hit_rate_i_30d − 0.5, 0.01)` — agents below random get a floor weight
-- `p_consensus = Σ weight_i · p_cal_i / Σ weight_i`
-- `confidence_consensus = (Σ weight_i · c_i / Σ weight_i) · (1 − std(p_cal_i))`
+**Per agent:** raw output `p_raw ∈ (0, 1)`. No isotonic recalibration, no per-agent confidence score.
 
-**Edge & EV (buying YES at price q, $1 payoff):**
+**Aggregation:** simple mean across active agents.
+- `p_consensus = mean(p_raw_i)`
+- `disagreement = std(p_raw_i)` — retained for visibility / logging, not used as a gate.
+
+**Edge & EV (buying YES at ask `q`, $1 payoff):**
 - `edge = p_consensus − q`
-- `EV per dollar = p_consensus − q` (after fees: subtract `q · f_eff`)
+- `EV per dollar = p_consensus − q` (subtract `q · f_eff` for fees if material)
 
-**Sizing — fractional Kelly (binary contracts):**
-- Kelly: `f* = (p − q) / (1 − q)`
-- Applied: `min(0.25 · f* · equity, position_cap)`
-- Floor: $25.
+**Trade trigger (must hold):**
+- `|edge| ≥ 0.03` (central setting §14.21)
 
-**Execution thresholds (must all hold):**
-- `|edge| ≥ 0.03`
-- `|edge| ≥ effective_spread + expected_slippage`
-- `consensus_confidence ≥ 0.6`
-- `std(p_cal_i) ≤ 0.20` (high disagreement → no trade)
-- Not in cooldown (24h after stop-out on same market)
-
-**Multi-leg.** If two markets cover correlated events with implied probabilities inconsistent (e.g., mutually exclusive outcomes summing > 1.05), open a relative-value pair instead of directional.
+**Sizing.** Agent proposes notional. Risk-engine clips to the smallest of: concentration cap (15% of equity), solvency headroom, per-cycle-cap remaining (§6). No Kelly formula — the model owns sizing within hard limits.
 
 ---
 
 ## 6. Risk Management
 
-Limits at nested scopes; trade must pass *every* applicable scope.
+PA-aligned: three deterministic gates plus the constitutional capital cap. All limits are plain constants in `risk/` (§14.7), never AI outputs.
 
-**Per-trade:**
-- Max notional: 2% of equity
-- Min edge: 3% (post slippage + fees)
-- Max slippage tolerance: 1% of mid
-- Solvency check: rejected if (proposed notional + estimated fees + open-order reservations) > available cash; estimate uses Polymarket-API fee data when available, conservative fallback otherwise.
+**Per-trade gates** (applied in order; trade rejected on first failure):
 
-**Per-market:**
-- Max gross exposure (long + short): 4% of equity
-- 24h cooldown after stop-out on this market
+1. **Concentration** — proposed notional ≤ **15% of equity** in any single market (PA standard).
+2. **Solvency** — cash ≥ proposed notional + estimated fees + open-order reservations. Estimate uses Polymarket-API fee data when available, conservative fallback otherwise.
+3. **Per-cycle spending cap** — total notional opened this cycle ≤ cycle cap (default 25% of equity, central setting §14.21).
 
-**Per-category** (politics-elections, crypto-prices, sports-event, macro-economy, science-tech, geopolitics, entertainment):
-- Max category exposure: 10% of equity
-- Max correlated cluster (auto-detected by 30d covariance): 25%
+**Constitutional cap (§14.8):**
+- `MAX_CAPITAL_EUR` is a hard, two-human-approval-only ceiling on gross deployed capital. Independent of all other gates.
 
-**Per-agent:**
-- Initial: equal weight (1/N)
-- Rebalanced weekly by meta-allocator on rolling 30d Sharpe (softmax, T=0.5)
-- Performance floor: rolling 30d return < −10% → halve allocation
-- Emergency disable: 7d hit rate < 40% (with ≥ 20 resolved samples) OR 7d realized PnL < −8% of agent allocation → suspend, alert
+**Per-agent allocation:**
+- Initial: equal weight (1/N).
+- Rebalanced weekly by `meta-allocator` on rolling 30d hit rate + PnL (softmax, T=0.5).
+- An agent that the operator manually flags as broken can be disabled; no automatic suspend rule.
 
-**Portfolio:**
-- Max gross exposure: 60% of equity
-- Daily VaR(95%): 4% of equity
-- Daily realized loss cap: 5% → halt new orders for the day
-- Drawdown trip-wires: 5% from peak: warning; 10%: reduce all new sizes by 50%; 15%: kill switch, manual restart.
+**Manual kill-switch (§12).**
+- Operator can halt all new orders via the kill-switch flag in Redis. Existing positions remain open; the safety-watchdog respects the flag at the gate. There are no automatic drawdown trip-wires — drawdown is monitored (§10) and surfaced via alerts (§11), but action is the operator's call.
 
-**Resolution risk (Polymarket-specific):**
-- Polymarket resolves via UMA optimistic oracle (~2–7 day delay, dispute possible).
-- Markets flagged "ambiguous resolution criteria" by manual review or NLP heuristic: position reduced by 50%.
-- No new positions in markets resolving within 1h.
-- Force-close at p ≥ 0.99 only when an authoritative external feed confirms outcome and no UMA dispute is open.
+**Resolution risk (Polymarket-specific, deterministic):**
+- Polymarket resolves via UMA optimistic oracle (~2–7 day delay, dispute possible). Surfaced in agent prompts as market metadata; no automatic position reduction.
 
 ---
 
@@ -395,14 +368,14 @@ Strategies are concerns *across* agents — not separate agents. PnL tracked per
 
 | Strategy | Trigger | Sizing | Notes |
 |---|---|---|---|
-| **Mispricing (core)** | edge ≥ 3%, high consensus | Kelly | Default; ~70% of capital |
-| **Momentum** | 7d trend + supporting news, edge ≥ 1.5% | Half-Kelly | Trail stop at 5% adverse |
-| **Contrarian** | Price ≥ 0.95 or ≤ 0.05 with thin news; `base-rate-bayesian` disagrees ≥ 10% | Quarter-Kelly | Tail risk; cap 0.5% per trade |
+| **Mispricing (core)** | edge ≥ 3%, ensemble agrees | Model-proposed, clipped by §6 | Default; ~70% of capital |
+| **Momentum** | 7d trend + supporting news, edge ≥ 1.5% | Smaller; clipped by §6 | Operator may manually trail-stop |
+| **Contrarian** | Price ≥ 0.95 or ≤ 0.05 with thin news; ensemble disagrees ≥ 10% | Tiny; tail-risk only | Cap 0.5% per trade |
 | **Cross-market arb** | Same event across Polymarket/Kalshi/sportsbook with > 2% gap net of fees | Capped at narrowest depth | v2 — needs multi-venue |
-| **News-driven** | NLP flags high-impact news + market hasn't moved 5 min | Quarter-Kelly | 30 min event window |
+| **News-driven** | NLP flags high-impact news + market hasn't moved 5 min | Smaller; clipped by §6 | 30 min event window |
 | **Resolution arb** | Outcome confirmed by external feed, market < 0.97 (or > 0.03) | Up to 5% per market | Requires strong feed certainty |
 
-Weights tuned monthly via attribution. New strategies → 30d shadow before live.
+Sizing within each strategy is the model's call, clipped by §6 limits. Weights between strategies tuned monthly via attribution. New strategies → ≥ 30 days in paper-trading mode (§14.10) before flipping to real-capital mode.
 
 ---
 
@@ -420,7 +393,7 @@ Weights tuned monthly via attribution. New strategies → 30d shadow before live
 | Tavily / Brave Search | Web | Open-ended research queries |
 | Kalshi public API | Market | Cross-market reference (read-only v1) |
 | FRED, sports stats APIs | Domain | Macro and sports priors |
-| Internal: resolved markets archive | Calibration | Agent calibration training |
+| Internal: resolved markets archive | Performance tracking | Per-agent hit-rate / PnL evaluation |
 
 **Storage:**
 
@@ -440,7 +413,7 @@ markets(id pk, condition_id, slug, title, category, end_date, status,
 market_snapshots(time, market_id fk, best_bid, best_ask, mid, depth_bid_1pct,
                  depth_ask_1pct, volume_24h)              -- TimescaleDB hypertable
 
-predictions(id pk, time, market_id fk, agent_id, p_raw, p_calibrated, confidence,
+predictions(id pk, time, market_id fk, agent_id, p_raw,
             reasoning_uri, research_bundle_id, latency_ms)
 
 decisions(id pk, cycle_id, market_id fk, p_consensus, q_market, edge,
@@ -452,8 +425,7 @@ trades(id pk, decision_id fk, time, market_id fk, side, size, price, fees,
 positions(market_id fk, side, size, avg_price, unrealized_pnl, realized_pnl,
           opened_at, last_updated)
 
-agent_performance(agent_id, time, hit_rate_30d, sharpe_30d, pnl_30d,
-                  isotonic_curve_uri, n_samples)
+agent_performance(agent_id, time, hit_rate_30d, sharpe_30d, pnl_30d, n_samples)
 
 beliefs(id pk, time, agent_id, domain,
         scope ('global'|'category'|'market'|'position'),
@@ -492,14 +464,11 @@ operating_doctrine(id pk, created_at, target_date,
 - EIP-712 typed-data signing; private key in cloud KMS or hardware key (YubiHSM).
 - Network: Polygon mainnet; gas in MATIC. Settlement: USDC.e.
 
-**Order types:**
+**Order types** (PA-aligned — orders execute immediately, no smart order routing in v1):
 
 | Type | Use |
 |---|---|
-| Limit, post-only | Default; capture maker rebate |
-| Limit, marketable | When edge is decaying and speed > price |
-| Iceberg slices | Orders > $500 split into 5–10 random-sized chunks with random delay |
-| TWAP exit | Position closes for size > 1% of equity |
+| Marketable limit | Default for both entry and exit. Buy at current best ask, sell at current best bid. |
 
 **Idempotency & reconciliation:**
 - Internal idempotency key (tag) on every order.
@@ -513,9 +482,7 @@ operating_doctrine(id pk, created_at, target_date,
 - Anthropic API outage (Claude Opus): no model failover by design. A cycle that cannot reach the API simply fails — the Lead exits, no orders are placed, the next scheduled cycle tries again. If `safety-watchdog` (independent of the team, deterministic, in `risk/`) sees ≥ 3 consecutive cycle-failures, it sets the system to monitor-only mode until recovery; existing positions remain governed by deterministic rules in `risk/` (stop-outs, kill-switch, time-based close), which run independently of the Claude Code process.
 - Data source outage: continue with degraded info; flag in decision metadata.
 
-**Slippage control:**
-- Pre-trade: simulate fill against orderbook. Reject if expected slippage > `max_slippage` gate.
-- Post-trade: realized vs expected logged; sustained excess → tighten estimator.
+**Slippage:** Realized fill price logged vs. expected (`q` at decision time). Sustained excess flagged as a `lesson` (§15.2) for the operator. No pre-trade slippage gate in v1.
 
 ---
 
@@ -570,8 +537,8 @@ operating_doctrine(id pk, created_at, target_date,
 | Condition | Severity |
 |---|---|
 | Kill switch activated | info (event) |
-| Drawdown > 10% | warn |
-| Drawdown > 15% | critical (page) |
+| Drawdown > 10% from peak | warn (operator decides whether to halt) |
+| Drawdown > 15% from peak | critical (page operator) |
 | Cycle latency P95 > 30s | warn |
 | Reconciliation diff > $10 | critical |
 | Error rate > 5% / 5 min | warn |
@@ -584,8 +551,8 @@ operating_doctrine(id pk, created_at, target_date,
 **Kill switch:**
 - Global Redis flag `system:kill_switch`.
 - HTTP `POST /admin/kill` (auth: signed token + 2FA in prod).
-- Order-placing services poll every 1s; on activation halt new orders, optionally close positions.
-- Auto-trip: drawdown > 15%; daily loss > 5%; reconciliation diff > $100; error rate > 20% / 5 min.
+- Order-placing services poll every 1s; on activation halt new orders. Existing positions remain open unless the operator explicitly closes them via `/manual override`.
+- **Manual trigger only** (PA-aligned lean model): no automatic trip-wires. Alerts (§11) page the operator on drawdown / reconciliation diff / sustained errors; the operator decides whether to flip the switch. The only fully-automatic guard is the constitutional `MAX_CAPITAL_EUR` cap (§14.8), enforced inside every order-submit path.
 
 **Manual override (CLI + minimal web UI):**
 - Pause/resume agent; close specific position (immediate market); edit per-agent allocation; adjust limits without restart (config in Postgres, hot-reloaded); force kill switch on/off.
@@ -619,7 +586,7 @@ operating_doctrine(id pk, created_at, target_date,
 
 **Privacy/security maturation:** HSM-backed signing (production hardware); SOC2-style controls if scaling to external capital; ZK proofs for prediction provenance (research).
 
-**Scalar/categorical markets:** beyond binary; new aggregation logic + Kelly variants.
+**Scalar/categorical markets:** beyond binary; new aggregation logic.
 
 ---
 
@@ -631,7 +598,7 @@ Sections above describe *what*; this section codifies *how* humans + AI build/mo
 
 ```
 autonomous_trading/
-├── research/        # strategies, backtests, agent prompts, calibration
+├── research/        # strategies, agent prompts
 ├── execution/       # order routing, CLOB client, position management
 ├── risk/            # limits, kill switches, sanity gates, capital gate
 ├── shared/          # data models, schemas, common utilities
@@ -669,8 +636,8 @@ Personal/transient → `CLAUDE.local.md` (gitignored). Global → `~/.claude/CLA
 - **`gh` CLI** required locally — token-cheaper for AI use.
 - **`/ultrareview`** before every merge into `main` touching `execution/` or `risk/`.
 - **`/security-review`** on every PR touching auth, signing, or secrets.
-- **GitHub Actions** with `claude -p` (headless): backtest on PR, AI-code lint, regression detection.
-- **Branch protection on `main`**: required PR reviews (≥ 2 for `risk/`), required status checks (`tests`, `backtest`, `security-review`, `mypy-strict`, `gitleaks`), no direct pushes, no force-push.
+- **GitHub Actions** with `claude -p` (headless): AI-code lint, regression detection on tests.
+- **Branch protection on `main`**: required PR reviews (≥ 2 for `risk/`), required status checks (`tests`, `security-review`, `mypy-strict`, `gitleaks`), no direct pushes, no force-push.
 
 ### 14.4 Hooks (`.claude/settings.json`)
 
@@ -693,14 +660,13 @@ Hooks are *deterministic* guarantees — CLAUDE.md is a request, hooks are enfor
 
 | Agent | Tools | Purpose |
 |---|---|---|
-| `strategy-researcher` | Read, Grep, WebSearch | Read-only strategy research; produces backtest specs |
-| `backtest-runner` | Bash (scoped), Read | Execute backtests, return metrics |
+| `strategy-researcher` | Read, Grep, WebSearch | Read-only strategy research; drafts paper-mode test plans |
 | `risk-reviewer` | Read | Diff `risk/` and trading-decision paths against `docs/risk-rules.md` |
 | `security-reviewer` | Read, Bash (scoped grep/gitleaks) | Secrets, injection, signing-path review |
 
 ### 14.6 Skills (`.claude/skills/`)
 
-On-demand: `polymarket-api` (endpoints, rate limits, EIP-712 signing, fees); `backtesting-protocol` (required steps + metrics before live); `incident-response` (kill-switch, position-close, key rotation).
+On-demand: `polymarket-api` (endpoints, rate limits, EIP-712 signing, fees); `paper-mode-protocol` (how to validate a strategy in paper mode, when to consider promotion to real-capital, §14.9/§14.10); `incident-response` (kill-switch, position-close, key rotation).
 
 ### 14.7 Risk Layer Protection
 
@@ -725,24 +691,31 @@ MAX_CAPITAL_EUR: Final = <TBD_CAPITAL_CAP_EUR>
 - Decreases also gated to ≥ 1 reviewer (prevent panic over-reduction).
 - Reviewed quarterly.
 
-### 14.9 Backtest-First Gate
+### 14.9 Operational Modes (paper vs. real-capital)
 
-No PR modifying `research/` or strategy code merges into `main` without:
-- Backtest on latest 90d resolved markets
-- Documented metrics in PR: Sharpe, hit rate, drawdown, PnL — vs. previous version
-- CI check `backtest-required` passing (branch protection)
+The system has exactly two operational modes, controlled by a single flag in the central settings file (§14.21):
 
-Pre-commit hook also runs fast smoke backtest on touched strategies.
+```
+TRADING_MODE = "paper" | "real_capital"
+```
 
-### 14.10 Paper-Trading Mandate
+- **`paper` (default).** Every step of the cycle runs identically — universe scan, agent inference, risk gates, sizing — except the `execution-engine` writes orders into a **paper-trading ledger** (Postgres table `paper_trades`) instead of routing them to Polymarket CLOB. Mark-to-market PnL uses live orderbook bids exactly like real mode. Settlement on resolution likewise. The §6 risk gates and `MAX_CAPITAL_EUR` apply to paper notional too — the simulation is intentionally faithful, including a paper "cash" balance that depletes with paper trades.
+- **`real_capital`.** The `execution-engine` routes real orders to the Polymarket CLOB with EIP-712-signed transactions (§9). All other behavior identical to paper mode.
 
-Every new/materially-modified strategy → **≥ 30 days** Polymarket paper/sandbox mode (separate test allocation, no real CLOB) before live capital. Expands §7 shadow with concrete promotion gates.
+**Switching modes is manual.** Flipping `TRADING_MODE` is a code change in the central settings file: PR with ≥ 1 reviewer approval (real → paper, defensive direction) or ≥ 2 reviewer approvals (paper → real_capital, offensive direction); audit-log entry on merge. **Never set via env var, never set at runtime.** A human eyeballs the diff every time the system starts trading real capital.
 
-Promotion to live requires:
-- Paper Sharpe > 1.0
-- Paper max drawdown < 10%
-- Paper hit rate ≥ 55% (with ≥ 30 resolved samples)
-- `/paper-deploy` run, results posted to PR
+**Default for new branches / fresh deploys.** `paper`. A clean checkout cannot trade real capital without an explicit settings-file change.
+
+**Backtests.** Out of scope for v1 — Polymarket markets are too thin and too short-lived for a meaningful historical backtest harness. Paper mode replaces the backtest gate: a strategy proves itself by running in paper for ≥ 30 days against live order books before the operator is willing to flip the mode for it.
+
+### 14.10 Paper-mode promotion guidance (informal)
+
+Before flipping to `real_capital`, the operator should review at minimum:
+- ≥ 30 days continuous run in paper mode
+- Hit rate, realized PnL, max paper drawdown — judged against the operator's own thresholds (no hard gate)
+- A spot-check of `lessons` accumulated in the paper window
+
+There is **no automated CI gate** that blocks the promotion — the operator owns the call, the audit log records it.
 
 ### 14.11 Secret Management
 
@@ -755,16 +728,15 @@ Promotion to live requires:
 ### 14.12 Strict Typing & Property-Based Tests
 
 - `mypy --strict` is hard CI gate.
-- All order/position/trade/decision/prediction/`PortfolioState`/`ResearchBundle` objects = Pydantic models. No untyped dicts on those paths.
-- Risk-engine functions covered by `hypothesis` property tests, e.g. *"for any (p, q, equity), Kelly size never exceeds the position cap"*.
+- All order/position/trade/decision/prediction/`PortfolioState` objects = Pydantic models. No untyped dicts on those paths.
+- Risk-engine functions covered by `hypothesis` property tests, e.g. *"for any (proposed_notional, equity, open_orders), the clipped notional never exceeds 15% of equity AND never violates solvency"*.
 - Coverage: `risk/` 100%, `execution/` ≥ 90%, rest ≥ 80%.
 
 ### 14.13 Custom Slash Commands (`.claude/commands/`)
 
 | Command | Purpose |
 |---|---|
-| `/backtest <strategy>` | Run backtest, post metrics to current branch/PR |
-| `/paper-deploy <strategy>` | Deploy to paper sandbox |
+| `/mode` | Print current `TRADING_MODE` and recent mode-switch history (read-only) |
 | `/kill-all` | Trigger kill switch (with confirmation; `disable-model-invocation` set so only humans can run it) |
 | `/risk-rules` | Print effective limits from `risk/` |
 | `/audit <decision_id>` | Replay AI decision: prompt, model, tools, output, market data |
@@ -840,10 +812,10 @@ Before any new component, do a prior-art search; prefer reuse over rewriting.
 - Search GitHub, PyPI/crates.io, recent papers (with code). `strategy-researcher` (§14.5) + `prior-art-scout` (§15.1) lead.
 - Every PR introducing a non-trivial new component must include a `prior-art` note: what considered, what selected, and — if rewriting — explicit reason.
 - Bias: fork + minimal patches > rewrite. Forks declare upstream + sync cadence in `docs/forks.md`.
-- Examples to evaluate: Polymarket SDK clients (Python/TS), backtesting frameworks (`vectorbt`, `nautilus_trader`, `backtrader`), agent orchestration (`langgraph`, `dspy`, `pydantic-ai`), calibration (`netcal`, `sklearn.calibration`), order management (`ccxt`).
+- Examples to evaluate: Polymarket SDK clients (Python/TS), agent orchestration (`langgraph`, `dspy`, `pydantic-ai`), order management (`ccxt`).
 - License: production may depend only on MIT/BSD/Apache-2/MPL-2. Copyleft (GPL/AGPL) requires legal review + PR sign-off.
 
-**Concrete prior-art adopted.** From a survey of *Prediction Arena* (Arcada Labs, `predictionarena.ai`): per-cycle prompt assembly with recent settlements/recent trades/previous-cycle reasoning/critical-learning section (§4); the **dual knowledge management** pattern from PA's Polymarket implementation — per-agent `manage_notes` scratchpad (~50 × ~200 words, LRU) for ad-hoc memory + structured `manage_beliefs` store typed by domain (`market_structure`/`strategy`/`event`/`risk`/`sentiment`) for first-class market views with revision history (§4 + §2 + §8); bid-based mark-to-market valuation (§10); explicit pre-trade solvency check (§6). Rejected or independently re-derived (stricter): 15% per-market concentration limit (we use 4% in §6), Fill-or-Kill-only order semantics (we use post-only limit + iceberg + TWAP in §9), single-OpenAI-web-search tooling (we keep cloud-only Anthropic per §4 with Tavily/Brave for search), and pooled real-capital structure. The two-tier orchestration view (§2), multi-agent self-improvement loop (§15), multi-tier risk gates (§6), and cloud-only rule (§4) are independently designed.
+**Concrete prior-art adopted.** From a survey of *Prediction Arena* (Arcada Labs, `predictionarena.ai`): the four-stage cycle spine Receive → Review → Analyze → Decide (§3); per-cycle prompt assembly with recent settlements/recent trades/previous-cycle reasoning/critical-learning section (§4); the **dual knowledge management** pattern from PA's Polymarket implementation — per-agent `manage_notes` scratchpad (~50 × ~200 words, LRU) for ad-hoc memory + structured `manage_beliefs` store typed by domain (`market_structure`/`strategy`/`event`/`risk`/`sentiment`) for first-class market views with revision history (§4 + §2 + §8); bid-based mark-to-market valuation (§10); the three-gate risk model — 15% per-market concentration + solvency + per-cycle spending cap (§6); model-determined sizing within the gates (§5/§6); marketable-limit immediate execution (§9); the lean two-mode operation (paper / real-capital) replacing the deeper backtest harness (§14.9). Rejected or independently re-derived: single-OpenAI-web-search tooling (we keep cloud-only Anthropic per §4 with Tavily/Brave for search), pooled real-capital structure, single-model-per-cycle competition (we run a 7-persona ensemble of one model). The fresh-team-per-cycle process model (§2), multi-agent self-improvement loop (§15), `cycle_plan` + `operating_doctrine` memory layers (§4), and cloud-only rule (§4) are independently designed.
 
 ### 14.21 Centralized Configuration (Single Source of Truth)
 
@@ -851,11 +823,11 @@ Before any new component, do a prior-art search; prefer reuse over rewriting.
 
 - Canonical location: `shared/config/settings.py` (Pydantic Settings model) backed by `config/settings.toml` for the values themselves. Single source of truth.
 - All services and agents import from this module — no parallel constants, no scattered defaults, no magic numbers in business logic.
-- **Examples of values that MUST live there** (non-exhaustive): every limit in §6 (per-trade/market/category/agent/portfolio caps, drawdown trip-wires, daily loss cap), edge / confidence / disagreement thresholds (§5), cycle period and per-stage timeouts (§3), Top-K (§3), iceberg threshold (§9), liquidity filter (§3), agent timeout (§3), reconciler interval / diff threshold (§9), retry/backoff parameters (§9), agent emergency-disable conditions (§6), fee/slippage estimator constants, isotonic refit window size (§5), top-K for belief injection (§4), notes cap (§4).
+- **Examples of values that MUST live there** (non-exhaustive): every limit in §6 (15% concentration cap, per-cycle spending cap), `TRADING_MODE` flag (§14.9), edge threshold (§5), cycle period and per-stage timeouts (§3), agent timeout (§3), reconciler interval / diff threshold (§9), retry/backoff parameters (§9), fee estimator constants, top-K for belief injection (§4), notes cap (§4), position-thesis adverse-move threshold (§4).
 - **Risk-layer interaction (§14.7, §14.8).** The hardest gates (`MAX_CAPITAL_EUR`, kill-switch triggers, all `risk/`-owned limits) physically live inside `risk/` for protection. The settings file imports and re-exports them — it does **not duplicate** them. Users still see one file with all knobs; `risk/` retains its 2-human-review enforcement on the source.
 - **Validation.** Pydantic Settings + `mypy --strict`: missing or wrong-typed values fail at service startup, never silently at runtime.
-- **Change governance.** Edits to non-`risk/` settings require ≥ 1 reviewer + CI tests + smoke backtest. Edits to `risk/`-owned values keep the §14.7/§14.8 stricter rules (≥ 2 reviewers, audit-log entry).
-- **Hot-reload.** Non-critical operational knobs (cooldown windows, scan filters, dashboard intervals) hot-reload from Postgres-backed config (§12) without restart. Structural values (cycle period, schema fields) are restart-only.
+- **Change governance.** Edits to non-`risk/` settings require ≥ 1 reviewer + CI tests. Edits to `risk/`-owned values keep the §14.7/§14.8 stricter rules (≥ 2 reviewers, audit-log entry). `TRADING_MODE` paper → real_capital follows §14.9 review counts.
+- **Hot-reload.** Non-critical operational knobs (scan filters, dashboard intervals) hot-reload from Postgres-backed config (§12) without restart. Structural values (cycle period, schema fields, `TRADING_MODE`) are restart-only.
 - **Anti-pattern enforcement.** A CI lint rule rejects PRs that introduce a numeric literal in `execution/`, `research/`, or `risk/` outside the settings module (allowlist for trivial constants like `0`, `1`, `2`). Forces every new tunable through the settings file.
 
 This rule is the dual of §14.7 risk-layer protection: §14.7 prevents the AI from changing the *hardest* limits without humans; §14.21 prevents anyone (human or AI) from scattering tunables so widely that no single file shows the full operating envelope.
@@ -937,10 +909,9 @@ Both run on cloud-hosted Claude Opus per §4 (hard rule). Diversity in role + pr
 
 | Agent | Role | Trigger | Output |
 |---|---|---|---|
-| `risk-auditor` | Scan recent trades for risk-rule near-misses, anomalous fills, drawdown precursors | Daily + on alert | `lessons` row |
-| `calibration-refiner` | Detect performance drift per trading agent; suggest isotonic recalibration on the latest resolved window | Hourly + on agent suspend | PR updating calibration curve |
+| `risk-auditor` | Scan recent trades for risk-rule near-misses, anomalous fills, drawdown signals | Daily + on alert | `lessons` row |
 | `pattern-miner` | Cluster lessons into recurring patterns | Weekly | `patterns` row + supersedence links |
-| `strategy-improver` | Read losing trades + new patterns; propose prompt/strategy/sizing deltas; revise `operating_doctrine` (§4) when phase entry/exit conditions are met or target date is reached | Weekly + after drawdown trip-wire (§6) + on doctrine-phase transition | `proposals` row + draft PR with backtest; on merge of doctrine proposal: new `operating_doctrine` row supersedes prior |
+| `strategy-improver` | Read losing trades + new patterns; propose prompt/strategy/sizing deltas; revise `operating_doctrine` (§4) when phase entry/exit conditions are met or target date is reached | Weekly + on doctrine-phase transition | `proposals` row + draft PR; on merge of doctrine proposal: new `operating_doctrine` row supersedes prior |
 | `prior-art-scout` | Enforce §14.20 — search GitHub/PyPI/papers before custom builds | On every new-component PR open | Prior-art note posted to PR |
 | `meta-reviewer` | Aggregate, dedupe, prioritize all proposals; route top-K to operator | Weekly | Decision queue (Slack/email) |
 
@@ -952,7 +923,7 @@ Both run on cloud-hosted Claude Opus per §4 (hard rule). Diversity in role + pr
 - The Improvement Team is **isolated from the Trading Team** — separate Lead, separate task list, no shared mailbox. The only coupling is the long-term memory layer: improvement agents *read* episodic + reflective tables and *write* `lessons` / `patterns` / `proposals` / Git PRs.
 - Permission mode: standard (no `--dangerously-skip-permissions`). The Improvement Team has no live-trading endpoint access by design (§15.6 safety boundary), so blocking on permission prompts for unexpected tool use is acceptable behavior. If a batch hangs on a prompt, the scheduler kills it after a timeout and pages the operator.
 
-All members are defined as Claude Code subagent definitions (§14.5, `code.claude.com/docs/en/sub-agents`), reusable as both delegated subagents and Improvement-Team teammates (Cloud-doc: *Use subagent definitions for teammates*). Read-only access to live observational data (`predictions`, `decisions`, `trades`, snapshots, calibration history); write access only to `lessons`, `patterns`, `proposals`, and Git via PR on feature branches.
+All members are defined as Claude Code subagent definitions (§14.5, `code.claude.com/docs/en/sub-agents`), reusable as both delegated subagents and Improvement-Team teammates (Cloud-doc: *Use subagent definitions for teammates*). Read-only access to live observational data (`predictions`, `decisions`, `trades`, snapshots, agent-performance history); write access only to `lessons`, `patterns`, `proposals`, and Git via PR on feature branches.
 
 ### 15.2 Shared Memory & Notes
 
@@ -969,7 +940,7 @@ patterns(id pk, first_seen, last_seen, occurrences, description,
 proposals(id pk, time, source_agent_id,
           target_kind ('prompt' | 'strategy' | 'code' | 'limit' | 'config' | 'operating_doctrine'),
           target_ref, current_value, proposed_value, rationale,
-          backtest_result_uri, status, decided_by, decided_at)
+          paper_validation_uri, status, decided_by, decided_at)
 ```
 
 - `lessons` append-only; supersedence via `status`, never deletion. Replay always possible.
@@ -981,7 +952,6 @@ Read API exposes these to all improvement agents; write paths scoped by role.
 
 ### 15.3 Learning Loop Cadence
 
-- **Hourly**: `calibration-refiner` pulls newly resolved markets, refits per-agent isotonic curves, opens proposals only on material drift (curve KL-divergence vs. previous fit > threshold).
 - **Daily**: `risk-auditor` scans last-24h trades; writes lessons for near-misses, outliers, slippage anomalies.
 - **Weekly batch** (Mon morning, off-cycle):
   1. `pattern-miner` extracts patterns from week's lessons.
@@ -997,10 +967,10 @@ Every improvement-agent change goes through standard merge pipeline. **No improv
 
 | Target of change | Required reviewers | Required tests/gates |
 |---|---|---|
-| Prompt (agent template) | 1 agent reviewer + 1 human | Backtest + 30d paper (§14.10) |
-| Strategy parameter | 1 agent reviewer + 1 human | Backtest + 30d paper |
-| New strategy | `meta-reviewer` + 2 humans | Backtest + 30d paper + risk review |
-| `operating_doctrine` revision (§4) | `meta-reviewer` + 1 human | Backtest if quantitative; sanity-check on phase entry/exit conditions |
+| Prompt (agent template) | 1 agent reviewer + 1 human | ≥ 30d in paper mode (§14.9/§14.10) |
+| Strategy parameter | 1 agent reviewer + 1 human | ≥ 30d in paper mode |
+| New strategy | `meta-reviewer` + 2 humans | ≥ 30d in paper mode + risk review |
+| `operating_doctrine` revision (§4) | `meta-reviewer` + 1 human | Sanity-check on phase entry/exit conditions; live-trial in paper if quantitative |
 | Code in `execution/` | `security-reviewer` + 2 humans | Tests + integration tests |
 | Risk limit (`risk/`) | **2 humans only** — no agent override | Property-based tests pass |
 | Hard cap `MAX_CAPITAL_EUR` | 2 humans + audit-log entry (§14.8) | n/a |
@@ -1062,13 +1032,10 @@ Result: no runaway self-modification. Human in loop on every merge that affects 
 ## Appendix B — Glossary
 
 - **Edge** — signed difference between consensus probability and market-implied probability of the same outcome, net of expected slippage + fees.
-- **Calibration (procedure)** — isotonic recalibration mapping `p_raw → p_cal` from an agent's historical resolved predictions. The procedure is retained even though calibration *quality metrics* (Brier, ECE) are not used in v1.
-- **Quarter-Kelly** — position size scaled to 25% of full Kelly; reduces volatility at modest cost in expected log-growth.
 - **Resolution risk** — risk that a market resolves contrary to obvious outcome due to ambiguous criteria, oracle dispute, or delay.
-- **Effective spread** — bid-ask spread adjusted for fee impact + depth at intended order size.
-- **Shadow mode** — strategy/agent running paper-trading on live data, for evaluation before capital allocation.
+- **Paper mode / real-capital mode** — the two operational modes of the system (§14.9). Paper writes orders to a paper-trading ledger; real-capital routes them to the Polymarket CLOB. Switching is a manual settings-file change.
 - **Agent orchestration** — coordination of multiple specialized AI agents into an explicit task pipeline, with typed memory artifacts passed between tasks (Tier 1) and reflective memory accumulated across cycles (Tier 2). See §2.
-- **Team Lead Agent** — per-cycle orchestrator (§2). A fresh `claude` process spawned by the scheduler at each cycle: boots the team from the spec, initializes the shared task list, spawns Team Members, routes mailbox traffic, decides Review-gate short-circuit, persists artifacts to long-term stores, calls `clean up the team`, and exits. Lifetime = one cycle (~12 min). Never executes orders directly.
+- **Team Lead Agent** — per-cycle orchestrator (§2). A fresh `claude` process spawned by the scheduler at each cycle: boots the team from the spec, initializes the shared task list, spawns Team Members, routes mailbox traffic, persists artifacts to long-term stores, calls `clean up the team`, and exits. Lifetime = one cycle (~12 min). Never executes orders directly.
 - **Team Member Agent** — independent Claude session with its own context window, owns one Tier-1 stage. Communicates with peers via mailbox + shared task list. Pattern from `code.claude.com/docs/en/agent-teams`.
 - **Subagent** — focused worker spawned by a Team Member for one-way fan-out. Result returns to the parent only; no peer messaging, no shared task list. Cheaper than a Team Member because results summarize back into the parent context. Pattern from `code.claude.com/docs/en/sub-agents`.
 - **Short-term memory** — per-cycle, ephemeral: shared task list + mailbox + in-flight Pydantic artifacts + per-member context windows. Cleared at cycle close. Never read by future cycles.
