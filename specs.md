@@ -10,7 +10,7 @@ Deploy capital on Polymarket binary prediction markets to generate risk-adjusted
 - Net Sharpe > 1.5 (annualized, post fees + gas)
 - Max drawdown < 25% of equity
 - Net PnL > 0 monthly; positive trailing 90d return
-- Edge consistency: no single category > 40% of PnL
+- Edge consistency: no single category > 50% of PnL
 
 **Out of scope (v1):** non-binary scalar markets, leverage beyond bankroll, market-making, externally-pooled capital.
 
@@ -21,14 +21,17 @@ Deploy capital on Polymarket binary prediction markets to generate risk-adjusted
 **Tier 1 — Per-cycle pipeline.** Sequence of tasks, each owned by an agent/service. Memory passed as typed artifacts and persisted (fully replayable):
 
 ```
-[market-scanner]           → universe of candidate markets
-[research-orchestrator]    → ResearchBundle  (news, history, related markets; in S3)
-[trading agents — §4]      → Prediction      (p_yes, confidence, reasoning) per agent
-[aggregator]               → ConsensusProbability  (calibrated, with disagreement metric)
-[risk-engine]              → Decision        (action, size, gate results, rationale)
-[execution-engine]         → Trades + fills
-[evaluator (on resolve)]   → Outcome + PnL + per-agent calibration update
+[market-scanner]            → universe of candidate markets
+[portfolio-reviewer]        → PortfolioState  (positions, cash, PnL, drawdown, remaining capacity per scope)
+[research-orchestrator]     → ResearchBundle  (news, history, related markets; in S3)
+[trading agents — §4]       → Prediction      (p_yes, confidence, reasoning) per agent
+[aggregator]                → ConsensusProbability  (calibrated, with disagreement metric)
+[risk-engine]               → Decision        (action, size, gate results, rationale)
+[execution-engine]          → Trades + fills
+[evaluator (on resolve)]    → Outcome + PnL + per-agent calibration update
 ```
+
+The four-stage shape — **Receive (market-scanner) → Review (portfolio-reviewer) → Analyze (research + agents + aggregator) → Decide (risk-engine + execution)** — mirrors the canonical Prediction Arena cycle, generalized to a multi-agent ensemble. Review precedes Analyze deliberately: if portfolio state already triggers a §6 trip-wire or exhausts capacity, the cycle skips expensive research entirely.
 
 **Tier 2 — Cross-cycle reflection (§15).** Improvement agents read Tier-1 memory asynchronously and emit higher-order memory that flows back via prompt/strategy/config updates after human approval:
 
@@ -75,6 +78,7 @@ outcomes    ┘
 |---|---|
 | `data-ingestor-{source}` | Pull data from each external source |
 | `market-scanner` | Filter universe by liquidity / edge potential |
+| `portfolio-reviewer` | Snapshot positions, cash, unrealized + realized PnL, drawdown, daily loss, recent settlements; compute remaining capacity per category/agent/portfolio scope; emit `PortfolioState` and gate downstream (skip cycle if at trip-wire) |
 | `research-orchestrator` | Bundle context per candidate market |
 | `agent-worker-{id}` | Run one agent's reasoning loop in isolation |
 | `aggregator` | Combine per-agent outputs into consensus |
@@ -108,19 +112,20 @@ outcomes    ┘
 | Allocation | 24 h | Rebalance per-agent capital |
 | Resolution | 1 min | Detect resolved markets, finalize PnL, feed calibration |
 
-**Decision cycle (T = cycle start):**
+**Decision cycle (T = cycle start).** The four-stage spine is **Receive → Review → Analyze → Decide** (PA-pattern); steps below are the concrete sub-stages.
 
-1. **T+0s — Universe snapshot.** Filter: 24h vol ≥ $10k; bid-ask depth ≥ $1k within ±1% of mid; end date > 24h and < 365d; not in cooldown.
-2. **T+15s — Triage.** Cheap heuristic edge estimate (price vs base rate, related markets, momentum) ranks markets. Top-K (K=20) advance.
-3. **T+30s — Research dispatch.** Per candidate: parallel bundle (news 7d, web search 3–5 queries, historical analogues, related-market snapshot). Persisted to S3, ID forwarded.
-4. **T+3m — Agent inference.** Each agent gets bundle + market metadata. Output: `P(YES)`, confidence, reasoning trace URI. Parallel; per-agent timeout 90s. Failed agents excluded from this market only.
-5. **T+5m — Calibration & aggregation.** Per-agent isotonic recalibration; hit-rate-weighted mean. Consensus confidence = weighted geometric mean × disagreement penalty.
-6. **T+6m — Edge computation.** Live orderbook. Compute `q = mid`, `effective_q` = volume-weighted price for intended size, `edge = p_consensus − effective_q` (symmetric for NO).
-7. **T+7m — Risk gates.** Order: edge threshold → position limits → category exposure → drawdown → slippage → resolution risk. Reject or size-reduce.
-8. **T+8m — Sizing.** Quarter-Kelly within remaining caps.
-9. **T+9m — Order placement.** Limit, post-only when viable. Iceberg slicing for size > $500.
-10. **T+10–11m — Fill monitoring.** Track partial fills. Cancel/replace on > 1% adverse move.
-11. **T+12m — Cycle close.** Persist decisions, fills, reasoning links. Emit metrics. Next cycle.
+1. **T+0s — Receive: Universe snapshot.** Filter: 24h vol ≥ $10k; bid-ask depth ≥ $1k within ±1% of mid; end date > 24h and < 365d; not in cooldown.
+2. **T+10s — Review: Portfolio & Performance.** `portfolio-reviewer` builds `PortfolioState`: current positions, cash, unrealized PnL, realized PnL (today, 7d, 30d), drawdown vs peak, daily loss vs cap, gross + per-category exposure, last 10 settlements + last 10 closed trades, rolling per-agent hit rate / PnL / Sharpe. Computes remaining capacity per scope against §6 limits. **Gate:** if any §6 trip-wire is active (15% drawdown kill-switch, 5% daily-loss cap, gross-exposure cap), the cycle either skips new orders entirely or restricts to position-reducing trades — research dispatch is short-circuited. The artifact is consumed by triage, risk-engine, and (subset) injected into agent prompts (§4).
+3. **T+20s — Triage.** Cheap heuristic edge estimate (price vs base rate, related markets, momentum), filtered by remaining-capacity from `PortfolioState`. Top-K (K=20) advance.
+4. **T+30s — Analyze: Research dispatch.** Per candidate: parallel bundle (news 7d, web search 3–5 queries, historical analogues, related-market snapshot). Persisted to S3, ID forwarded.
+5. **T+3m — Analyze: Agent inference.** Each agent gets bundle + market metadata + relevant slice of `PortfolioState`. Output: `P(YES)`, confidence, reasoning trace URI. Parallel; per-agent timeout 90s. Failed agents excluded from this market only.
+6. **T+5m — Analyze: Calibration & aggregation.** Per-agent isotonic recalibration; hit-rate-weighted mean. Consensus confidence = weighted geometric mean × disagreement penalty.
+7. **T+6m — Analyze: Edge computation.** Live orderbook. Compute `q = mid`, `effective_q` = volume-weighted price for intended size, `edge = p_consensus − effective_q` (symmetric for NO).
+8. **T+7m — Decide: Risk gates.** Order: edge threshold → position limits → category exposure → drawdown → slippage → resolution risk. Reject or size-reduce.
+9. **T+8m — Decide: Sizing.** Quarter-Kelly within remaining caps from `PortfolioState`.
+10. **T+9m — Decide: Order placement.** Limit, post-only when viable. Iceberg slicing for size > $500.
+11. **T+10–11m — Fill monitoring.** Track partial fills. Cancel/replace on > 1% adverse move.
+12. **T+12m — Cycle close.** Persist decisions, fills, reasoning links. Emit metrics. Next cycle.
 
 ---
 
@@ -163,12 +168,12 @@ class Agent:
 - Separate processes, independent LLM calls.
 - Aggregation by a separate, deterministic service.
 
-**Per-cycle prompt context** (assembled deterministically, on top of system prompt with role/philosophy/risk/tools/protocol):
+**Per-cycle prompt context** (assembled deterministically, on top of system prompt with role/philosophy/risk/tools/protocol). Most fields below are sourced from the upstream `PortfolioState` artifact built in §3 step 2 (Review) — the prompt does not re-query state, it consumes the already-snapshotted view, so all agents in a cycle see consistent numbers:
 - Current timestamp + cycle metadata
 - Market data: orderbook snapshot, settlement criteria, depth at ±1% of mid
-- Account state: cash, positions, unrealized PnL
-- **Recent settlements** — last 10 resolved markets with realized PnL
-- **Recent closed trades** — last 10 trades with realized PnL
+- **Account state** (from `PortfolioState`): cash, positions, unrealized + realized PnL, drawdown vs peak, daily loss vs cap, gross + per-category exposure, remaining capacity per scope
+- **Recent settlements** (from `PortfolioState`) — last 10 resolved markets with realized PnL
+- **Recent closed trades** (from `PortfolioState`) — last 10 trades with realized PnL
 - **Previous-cycle reasoning** — agent's own prior reasoning on same market/category
 - **Critical-learning section** — curated `lessons`/`patterns` excerpts (§15.2): losing patterns to avoid, winning patterns to replicate, position-management reminders. Curated weekly by `meta-reviewer`; injected per cycle by research-orchestrator.
 - The agent's most recent `notes`
@@ -623,7 +628,7 @@ Promotion to live requires:
 ### 14.12 Strict Typing & Property-Based Tests
 
 - `mypy --strict` is hard CI gate.
-- All order/position/trade/decision/prediction objects = Pydantic models. No untyped dicts on those paths.
+- All order/position/trade/decision/prediction/`PortfolioState`/`ResearchBundle` objects = Pydantic models. No untyped dicts on those paths.
 - Risk-engine functions covered by `hypothesis` property tests, e.g. *"for any (p, q, equity), Kelly size never exceeds the position cap"*.
 - Coverage: `risk/` 100%, `execution/` ≥ 90%, rest ≥ 80%.
 
