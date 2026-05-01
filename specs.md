@@ -44,14 +44,17 @@ trades      │    (append)      (curated)      (gated)
 outcomes    ┘
 ```
 
-**Agent-Team topology (Lead + Members + Subagents).** The trading loop runs as **one Claude Code Agent Team** (`code.claude.com/docs/en/agent-teams`) — the experimental feature is the production runtime, not just a pattern. One persistent **Team Lead** session orchestrates the cycle clock, one **Team Member Agent** per Tier-1 stage, members may spawn **Subagents** for focused fan-out. The "one team per session" limit is acceptable because the loop only ever needs one team that covers the whole value chain.
+**Agent-Team topology (Lead + Members + Subagents).** The trading loop is implemented as **one Claude Code Agent Team per cycle** (`code.claude.com/docs/en/agent-teams`) — the experimental feature is the production runtime. Every cycle, a scheduler fires a fresh `claude` process; the Lead boots the team, runs one cycle, cleans up, exits. Long-term memory persists across cycles in Postgres / S3 (§8); short-term memory (mailbox, task list, member context windows) lives only inside one cycle's process and dies with it.
+
+**Why fresh-team-per-cycle (vs. one persistent team running 24/7):** The §2 design rule *"Memory is the only coupling between tasks"* is **enforced by construction** rather than by trusting a long-lived Lead to reset member contexts correctly. A bad cycle cannot poison the next; memory leaks are physically impossible; Claude Code version upgrades pick up at the next cycle naturally; the Cloud-doc limitations (no session resumption, fixed Lead, one team per session) all become non-issues because every cycle starts a fresh session anyway. Cost: a one-off boot of ~5–30s per cycle, which is < 5% of a 12-minute cycle period and happens entirely before edge-time-sensitive work begins.
 
 **Operational pre-conditions** (binding):
 - `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` set in `.claude/settings.json` (§14.4).
-- Claude Code v2.1.32 or later, pinned in `infra/`.
-- Lead runs as a long-lived headless session on a dedicated server, started with `--dangerously-skip-permissions` so it does not block on interactive permission prompts during unattended operation. Safety in this mode comes **exclusively** from §6 risk-gates, §12 kill-switch, and §14.4 hooks — the permission system is no longer a defense layer (see §14.14).
-- A supervisor (systemd unit / k8s liveness probe / process manager) restarts the lead session if it crashes. On restart the team is rebuilt from scratch: long-term memory in Postgres persists, but the in-flight short-term layer (mailbox, task list) is lost. The current cycle is aborted, no orders are placed, and the next cycle starts cleanly. This is the explicit failure-mode contract.
-- Team config (`~/.claude/teams/{team-name}/config.json`) and task-list directory (`~/.claude/tasks/{team-name}/`) live on persistent disk; no manual editing (Cloud-doc warning).
+- Claude Code v2.1.32 or later, pinned in `infra/` (§14.22).
+- Each cycle's Lead process is started with `--dangerously-skip-permissions` so it does not block on interactive permission prompts during unattended operation. Safety in this mode comes **exclusively** from §6 risk-gates, §12 kill-switch, and §14.4 hooks — the permission system is no longer a defense layer (see §14.14). Blast radius of any one cycle is bounded by these gates.
+- The cycle scheduler (cron / k8s `CronJob` / `/loop` skill) fires every cycle period (12 min, set in central settings §14.21). A missed or failed cycle is a non-event: no team is started, no orders are placed, the next scheduled cycle simply runs. There is no supervisor with liveness probes, no auto-restart logic — the cron is the supervisor.
+- The Lead **must** call `clean up the team` before process exit (Cloud-doc warning). Any cycle process that crashes without cleanup leaves a stale `~/.claude/teams/{team-name}/` directory; a janitor step at the start of the next cycle (§14.22) sweeps stale entries before spawning the new team.
+- Team config (`~/.claude/teams/{team-name}/config.json`) is runtime state, written by Claude Code, never manually edited (Cloud-doc warning). The team-spec source-of-truth lives in `.claude/teams/trading-team.spec.json` in the repo and is read at boot time.
 
 **Topology:**
 
@@ -90,8 +93,9 @@ outcomes    ┘
 
 **Cloud-doc constraints (binding because the feature is the runtime):**
 - Subagents may not spawn further teams (only the Lead manages the team). They may fan out into nested subagents within their own session (e.g. one `web-searcher` per query) — this is the right primitive for parallelizable I/O-bound work.
-- Lead is fixed for the team's lifetime; cannot be promoted or transferred. New lead = new team (after supervisor-driven restart).
+- Lead is fixed for the team's lifetime — and the team's lifetime is exactly one cycle, so this constraint is no longer load-bearing.
 - No nested teams: a member cannot bring up its own sub-team. If a member needs hierarchical coordination, it must do so via subagents only.
+- No session resumption: irrelevant in this design, since every cycle starts a new session by construction.
 
 **Why members vs subagents:** members coordinate (mailbox + shared list, can challenge each other, peer-visible); subagents fan out (parent-only return, cheaper because results summarize back into the parent's context). Same rule as in the Cloud doc — choose by whether workers need to talk to each other.
 
@@ -180,12 +184,13 @@ The short-term layer is **never** read by future cycles — it cleans up at cycl
 | Allocation | 24 h | Rebalance per-agent capital |
 | Resolution | 1 min | Detect resolved markets, finalize PnL, feed calibration |
 
-**Decision cycle (T = cycle start).** The four-stage spine is **Receive → Review → Analyze → Decide** (PA-pattern); steps below are the concrete sub-stages.
+**Decision cycle (T = scheduler fire time, i.e. a fresh `claude` process started).** The four-stage spine is **Receive → Review → Analyze → Decide** (PA-pattern); a Boot phase runs first, and Cycle-close tears the team down. Steps below are the concrete sub-stages.
 
-1. **T+0s — Receive: Universe snapshot.** Filter: 24h vol ≥ $10k; bid-ask depth ≥ $1k within ±1% of mid; end date > 24h and < 365d; not in cooldown.
-2. **T+10s — Review: Portfolio & Performance.** `portfolio-reviewer` builds `PortfolioState`: current positions, cash, unrealized PnL, realized PnL (today, 7d, 30d), drawdown vs peak, daily loss vs cap, gross + per-category exposure, last 10 settlements + last 10 closed trades, rolling per-agent hit rate / PnL / Sharpe. Computes remaining capacity per scope against §6 limits. **Gate:** if any §6 trip-wire is active (15% drawdown kill-switch, 5% daily-loss cap, gross-exposure cap), the cycle either skips new orders entirely or restricts to position-reducing trades — research dispatch is short-circuited. The artifact is consumed by triage, risk-engine, and (subset) injected into agent prompts (§4).
-3. **T+20s — Triage.** Cheap heuristic edge estimate (price vs base rate, related markets, momentum), filtered by remaining-capacity from `PortfolioState`. Top-K (K=20) advance.
-4. **T+30s — Analyze: Research dispatch.** Per candidate: parallel bundle (news 7d, web search 3–5 queries, historical analogues, related-market snapshot). Persisted to S3, ID forwarded.
+0. **T+0–15s — Boot.** Scheduler starts a fresh Claude Code process with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and `--dangerously-skip-permissions`. A janitor first sweeps stale `~/.claude/teams/{team-name}/` directories left by a previous cycle that crashed without cleanup. Lead loads CLAUDE.md, MCP servers, hooks, the team-spec from `.claude/teams/trading-team.spec.json` (§14.22), then spawns members per the spec — each loads its subagent definitions and waits idle for tasks. Long-term memory pointers (current `MAX_CAPITAL_EUR`, latest calibration curves, recent settlement IDs) are read from Postgres and exposed to the Lead. Boot completes when every member reports idle.
+1. **T+15s — Receive: Universe snapshot.** Filter: 24h vol ≥ $10k; bid-ask depth ≥ $1k within ±1% of mid; end date > 24h and < 365d; not in cooldown.
+2. **T+25s — Review: Portfolio & Performance.** `portfolio-reviewer` builds `PortfolioState`: current positions, cash, unrealized PnL, realized PnL (today, 7d, 30d), drawdown vs peak, daily loss vs cap, gross + per-category exposure, last 10 settlements + last 10 closed trades, rolling per-agent hit rate / PnL / Sharpe. Computes remaining capacity per scope against §6 limits. **Gate:** if any §6 trip-wire is active (15% drawdown kill-switch, 5% daily-loss cap, gross-exposure cap), the cycle either skips new orders entirely or restricts to position-reducing trades — research dispatch is short-circuited. The artifact is consumed by triage, risk-engine, and (subset) injected into agent prompts (§4).
+3. **T+35s — Triage.** Cheap heuristic edge estimate (price vs base rate, related markets, momentum), filtered by remaining-capacity from `PortfolioState`. Top-K (K=20) advance.
+4. **T+45s — Analyze: Research dispatch.** Per candidate: parallel bundle (news 7d, web search 3–5 queries, historical analogues, related-market snapshot). Persisted to S3, ID forwarded.
 5. **T+3m — Analyze: Agent inference.** Each agent gets bundle + market metadata + relevant slice of `PortfolioState`. Output: `P(YES)`, confidence, reasoning trace URI. Parallel; per-agent timeout 90s. Failed agents excluded from this market only.
 6. **T+5m — Analyze: Calibration & aggregation.** Per-agent isotonic recalibration; hit-rate-weighted mean. Consensus confidence = weighted geometric mean × disagreement penalty.
 7. **T+6m — Analyze: Edge computation.** Live orderbook. Compute `q = mid`, `effective_q` = volume-weighted price for intended size, `edge = p_consensus − effective_q` (symmetric for NO).
@@ -193,7 +198,8 @@ The short-term layer is **never** read by future cycles — it cleans up at cycl
 9. **T+8m — Decide: Sizing.** Quarter-Kelly within remaining caps from `PortfolioState`.
 10. **T+9m — Decide: Order placement.** Limit, post-only when viable. Iceberg slicing for size > $500.
 11. **T+10–11m — Fill monitoring.** Track partial fills. Cancel/replace on > 1% adverse move.
-12. **T+12m — Cycle close.** Lead persists in-flight artifacts (decisions, fills, reasoning links) to long-term stores (§8); writes any agent-initiated `notes` / `beliefs` / `lessons` updates; emits cycle metrics. **The team itself is *not* cleaned up** — the same team persists across cycles for its whole lifetime. The Lead resets the shared task list (clears completed tasks, creates the next cycle's task list) and clears the mailbox; members stay alive with their context windows reset to the next cycle's spawn prompt. Team teardown happens only on supervisor-driven restart.
+12. **T+11m45s — Persist & emit.** Lead persists in-flight artifacts (decisions, fills, reasoning links) to long-term stores (§8); writes any agent-initiated `notes` / `beliefs` / `lessons` updates; emits cycle metrics.
+13. **T+11m55s — Cycle close.** Lead calls `clean up the team` (Cloud-doc warning: never let a member run cleanup), shutting down all members and the team config. Lead process exits. The next cycle is a brand-new `claude` process started by the scheduler at the next fire time — no shared in-process state with this cycle. All short-term memory (mailbox, task list, member context windows) dies with the process; only what was persisted in step 12 survives.
 
 ---
 
@@ -456,7 +462,7 @@ notes(id pk, time, agent_id, body, tags jsonb, last_accessed)   -- per-agent scr
 - Transient (network, 5xx): exponential backoff (1s, 2s, 4s, 8s; max 60s).
 - Circuit breaker: 5 errors / 60s on a service → 5 min cooldown.
 - Polymarket outage: halt new orders, monitor only; positions tracked from cached state.
-- Anthropic API outage (Claude Opus): no model failover by design. Affected agents abstain for current cycle. Outage > 5 min: system halts new-order placement cycle-wide, reverts to monitor-only until recovery; existing positions governed by deterministic rules in `risk/` (stop-outs, kill-switch, time-based close).
+- Anthropic API outage (Claude Opus): no model failover by design. A cycle that cannot reach the API simply fails — the Lead exits, no orders are placed, the next scheduled cycle tries again. If `safety-watchdog` (independent of the team, deterministic, in `risk/`) sees ≥ 3 consecutive cycle-failures, it sets the system to monitor-only mode until recovery; existing positions remain governed by deterministic rules in `risk/` (stop-outs, kill-switch, time-based close), which run independently of the Claude Code process.
 - Data source outage: continue with degraded info; flag in decision metadata.
 
 **Slippage control:**
@@ -629,9 +635,11 @@ Hooks are *deterministic* guarantees — CLAUDE.md is a request, hooks are enfor
 | `PreToolUse` Edit/Write on `risk/**` | Before risk-code edit | Block unless session in Plan Mode with prior user approval |
 | `Stop` | Before turn end | `gitleaks`/`trufflehog` on staged diff; abort on any secret hit |
 | `UserPromptSubmit` | On user prompt | If contains "live trade"/"echtes Kapital"/"real money", inject confirmation banner |
-| `TeammateIdle` (production trading-team only) | Member goes idle | If task incomplete or no artifact written, exit 2 to keep member working; if member idles 3× in a row on the same task, escalate to safety-watchdog and trigger §12 kill-switch warning |
-| `TaskCreated` (production trading-team only) | Lead creates task | Validate task schema matches §3 cycle; reject malformed tasks before members claim |
-| `TaskCompleted` (production trading-team only) | Member marks task done | Validate output artifact against §14.12 Pydantic schema; exit 2 to force retry on schema mismatch; exit 0 only on clean artifact |
+| `SessionStart` (production trading-cycle only) | Lead boots | Janitor: sweep stale `~/.claude/teams/{team-name}/` directories from prior cycles that crashed without cleanup; assert team-spec source-of-truth at `.claude/teams/trading-team.spec.json` exists and parses; check Claude Code version pin; abort cycle if any check fails (next scheduled cycle retries) |
+| `TeammateIdle` (production trading-cycle only) | Member goes idle | If task incomplete or no artifact written, exit 2 to keep member working; if member idles 3× in a row on the same task, abort cycle and emit alert (no kill-switch trip — a single bad cycle is non-fatal) |
+| `TaskCreated` (production trading-cycle only) | Lead creates task | Validate task schema matches §3 cycle; reject malformed tasks before members claim |
+| `TaskCompleted` (production trading-cycle only) | Member marks task done | Validate output artifact against §14.12 Pydantic schema; exit 2 to force retry on schema mismatch; exit 0 only on clean artifact |
+| `Stop` (production trading-cycle only) | Lead about to exit | Assert `clean up the team` was called; if not, force cleanup before allowing exit (Cloud-doc warning: avoid orphaned `~/.claude/teams/` entries) |
 
 ### 14.5 Subagents (`.claude/agents/`)
 
@@ -722,15 +730,16 @@ Promotion to live requires:
 - `/sandbox` (OS-level) for any code with network access running unsupervised.
 - For development against live-trading endpoints (e.g. running a one-off CLI), interactive permission confirmation is required every session — never allowlisted.
 
-**Production trading-loop session** (no human at the terminal — one Claude Code Agent Team running 24/7 per §14.22):
-- The Lead is launched with `--dangerously-skip-permissions` so it does not block on prompts. This is unavoidable for unattended operation.
+**Production trading-cycle session** (no human at the terminal — one fresh Claude Code Agent Team per cycle, ~12 min lifetime, per §14.22):
+- The Lead is launched with `--dangerously-skip-permissions` so it does not block on prompts. This is unavoidable for unattended operation. Blast radius is bounded to the single cycle's lifetime — a misbehaving cycle cannot accumulate damage across cycles, and the next scheduled cycle starts clean.
 - Safety in this mode comes from:
-  1. **§14.4 hooks** — deterministic guard rails on tool use (block `rm -rf`, block writes to `risk/`, secret scanning, etc.). Hooks fire regardless of permission mode.
-  2. **§6 risk gates + §12 kill-switch** — the only authoritative gate on whether a trade is placed. The team's permission mode is irrelevant here; the risk-engine member can produce a `Decision`, but the deterministic position-manager (`risk/`) and execution-engine still enforce caps and refuse out-of-bounds orders.
+  1. **§14.4 hooks** — deterministic guard rails on tool use (block `rm -rf`, block writes to `risk/`, secret scanning, `SessionStart` janitor, `Stop` cleanup-assertion, etc.). Hooks fire regardless of permission mode.
+  2. **§6 risk gates + §12 kill-switch** — the only authoritative gate on whether a trade is placed. The team's permission mode is irrelevant here; the risk-engine member can produce a `Decision`, but the deterministic position-manager (`risk/`) and execution-engine still enforce caps and refuse out-of-bounds orders. These services run as separate, long-lived processes — they do **not** die with the cycle.
   3. **§14.22 team hooks** — `TeammateIdle`, `TaskCreated`, `TaskCompleted` validate every artifact before downstream members consume it.
   4. **Network egress allowlist** — the production server can only reach Polymarket CLOB, Anthropic API, configured data sources; everything else is blocked at the firewall, so even a malformed tool call cannot exfiltrate or hit unintended endpoints.
   5. **Filesystem isolation** — production server writes only to repo-local `~/.claude/`, the Postgres/Redis network sockets, and S3 (scoped IAM). No general filesystem access.
-- The trading-team Lead session is the **only** environment where `--dangerously-skip-permissions` is acceptable. Every other Claude Code session (dev, improvement-team batches, debug) keeps standard permissions.
+  6. **Bounded lifetime** — every cycle process exits after ~12 min by design; a process that fails to exit is killed by the scheduler (e.g. cron + timeout, k8s `activeDeadlineSeconds`).
+- The trading-cycle Lead is the **only** environment where `--dangerously-skip-permissions` is acceptable. Every other Claude Code session (dev, improvement-team batches, debug) keeps standard permissions.
 
 ### 14.15 Workflow Discipline
 
@@ -805,38 +814,53 @@ This rule is the dual of §14.7 risk-layer protection: §14.7 prevents the AI fr
 
 ### 14.22 Agent Teams & Subagents — Production Runtime + Dev Use
 
-**Production trading loop = one Claude Code Agent Team.** The §2 Lead + Members + Subagents topology is implemented directly via Claude Code's experimental Agent Teams feature (`code.claude.com/docs/en/agent-teams`). One team, one Lead, all members covering the whole value chain. The "one team per session" limit is fine — the loop only needs one team. We accept the experimental status of the feature as a known operational risk, mitigated by the controls below.
+**Production trading loop = one fresh Claude Code Agent Team per cycle.** Every cycle (period from central settings, §14.21, default 12 min) the scheduler fires a new `claude` process. The Lead boots the team, runs the §3 decision cycle, calls `clean up the team`, and exits. The next scheduled cycle starts a brand-new process with no in-process state from the previous one. Long-term memory persists in Postgres / S3; short-term memory dies with the process. This makes the §2 *"memory is the only coupling between tasks"* invariant **enforced by construction**, not by trusting a long-lived Lead to reset state correctly.
 
-**Bootstrap & lifecycle (production):**
+**Why per-cycle (rationale):**
+- Bug isolation: a misbehaving cycle cannot poison the next.
+- Memory leaks impossible (process dies).
+- Cloud-doc limitations of the experimental feature (no session resumption, fixed Lead, one team per session) become non-issues — every cycle is a fresh session by design.
+- Claude Code version upgrades are picked up automatically at the next cycle. If an upgrade breaks the team, exactly one cycle fails and the next one runs the previous (pinned) version after rollback.
+- Failure handling is trivial — a failed cycle does not run; the next one tries again. No supervisor with liveness probes, no auto-restart logic.
+
+**Bootstrap (single command per cycle, run by scheduler, not by a human):**
 
 ```bash
-# enabled per .claude/settings.json (§14.4)
-CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
-
-# launch (run by systemd / k8s, NOT a human terminal)
+# .claude/settings.json sets CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 (§14.4).
+# Run by cron / k8s CronJob / `/loop` skill.
 claude --teammate-mode in-process \
        --dangerously-skip-permissions \
-       -p "Bring up the trading-team. Lead role + spawn members per .claude/teams/trading-team.spec.json. Run cycles per §3 until shutdown signal."
+       -p "Bring up the trading-team per .claude/teams/trading-team.spec.json.
+           Run one decision cycle per §3 of specs.md.
+           On completion, run 'clean up the team' and exit."
 ```
 
-- **Single long-lived Lead session** per environment (paper, prod). Lead stays alive across cycles. Cycles re-use the same team — only the shared task list is reset at cycle close (§3 step 12).
-- **Supervisor restart contract.** External supervisor (systemd unit `trading-team.service` or k8s `Deployment` with liveness probe) detects Lead death, calls cleanup, restarts. New Lead = new team. Long-term memory in Postgres is unaffected. The cycle in flight at the time of the crash is **aborted** — all orders not yet placed are dropped; orders already in flight at the broker are managed by the deterministic position-manager (§9 reconciler + §6 stop-out rules), independent of the team.
-- **Cleanup discipline.** Lead-driven cleanup before any planned shutdown / deploy (Cloud-doc warning: never let a teammate run cleanup, leaves `~/.claude/teams/` inconsistent). The supervisor's pre-stop hook sends `clean up the team` to the Lead before SIGTERM.
+**Scheduler choice:**
+- **Production / paper-mode**: `cron` on the dedicated server, or k8s `CronJob` with `activeDeadlineSeconds` set to (cycle-period + 60s grace). Concurrency policy = `Forbid` so a slow cycle never overlaps with the next start.
+- **Local dev / smoke-runs**: the `/loop` skill (`/loop 12m run-trading-cycle`) for hands-on iteration without setting up cron.
+- The scheduler is the supervisor. A failed cycle is a non-event — no orders are placed, the next fire-time runs cleanly.
 
-**Hooks specifically for the team** (in `.claude/settings.json`, see §14.4 for general hooks):
-- `TeammateIdle` — exit code 2 to keep a member working if it stops without producing its task artifact (e.g. an aggregator that returns without writing `ConsensusProbability`).
-- `TaskCreated` — sanity-check that every task created by the Lead matches the §3 cycle schema (rejects malformed tasks before members see them).
-- `TaskCompleted` — verify task output (e.g. `Decision` artifact has all required fields per §14.12 Pydantic schema) before marking complete; exit code 2 to force the member to retry.
+**Cleanup discipline.** The Cloud-doc is explicit: *"Always use the lead to clean up. Teammates should not run cleanup."* Mechanisms to enforce this:
+1. The cycle's spawn prompt instructs the Lead to call `clean up the team` before exit.
+2. The `Stop` hook (§14.4) asserts cleanup was called; if not, forces it before allowing process exit.
+3. The next cycle's `SessionStart` hook (§14.4) sweeps any stale `~/.claude/teams/` directories left by a crashed prior cycle, before spawning the new team.
 
-**Subagents** (one-way fan-out, parent-only return — `code.claude.com/docs/en/sub-agents`): used by individual members for focused work where peer dialogue is not needed. Subagent definitions in `.claude/agents/` are reusable as both delegated subagents and (for ops/dev tasks) team members. Examples per member listed in §2.
+**Hooks specifically for the team** (in `.claude/settings.json`, see §14.4 table for full set):
+- `SessionStart` — janitor + version + spec checks before team spawn.
+- `TeammateIdle` — keep members working until artifact written; abort cycle after 3 idle escalations on the same task (single bad cycle is non-fatal, no kill-switch trip).
+- `TaskCreated` — schema-validate tasks before claim.
+- `TaskCompleted` — Pydantic-validate output artifacts before marking complete.
+- `Stop` — assert + force cleanup before exit.
 
-**Off-cycle teams (development + improvement).** The trading loop is the only team in the loop, but the same Claude Code feature is used in **separate sessions** for:
-- **Improvement-agent batches** (§15.3) — weekly batch runs a separate Improvement Team in its own Claude Code session (different `team-name`), spawned on schedule, cleaned up after the batch.
+**Subagents** (one-way fan-out, parent-only return — `code.claude.com/docs/en/sub-agents`): used by individual members for focused work where peer dialogue is not needed. Subagent definitions in `.claude/agents/` are reusable as both delegated subagents and team members. Examples per member listed in §2.
+
+**Off-cycle teams.** Same Claude Code feature, separate processes, separate `team-name`:
+- **Improvement-agent batches** (§15.1, §15.3) — scheduled separately from the trading cycle; the weekly batch runs its own Improvement Team session, cleans up, exits.
 - **Parallel debugging on alerts** — incident response spawns ad-hoc teams for competing-hypothesis investigation.
 - **PR review** — security-reviewer + risk-reviewer + test-runner as a 3-member team.
 - **Backtest fan-out** — one teammate per candidate strategy.
 
-These are temporally separate from the trading-loop team and run in their own Claude Code processes, so the "one team per session" limit is not violated.
+The "one team per session" Cloud-doc limit holds trivially since each session is one process and each process owns one team.
 
 **Decision rule (when to use what):**
 
@@ -845,10 +869,10 @@ These are temporally separate from the trading-loop team and run in their own Cl
 | Focused task, only the result matters, no peer dialogue | Subagent |
 | Workers must compare / challenge / coordinate | Agent Team |
 | Inside a member, focused fan-out (multiple queries, parallel scans) | Subagent (within member session) |
-| Production trading loop | The Trading Team (this section) |
-| Off-cycle improvement / debug / review | Separate Agent Team in its own Claude Code session |
+| Production trading cycle | The Trading Team (one fresh team per cycle, this section) |
+| Off-cycle improvement / debug / review | Separate Agent Team in its own Claude Code process |
 
-**Versioning & rollback.** Claude Code version pinned in `infra/`. Team-spec config (member roster, subagent definitions, system prompts) lives in `.claude/agents/` + `.claude/teams/trading-team.spec.json` in the repo (`config.json` itself is runtime state per Cloud-doc and not edited by hand). Any change to the team spec is a normal PR through §14.3 branch protection. If a Claude Code release introduces an Agent-Teams-breaking change, the pin keeps prod stable until the upgrade has passed paper-mode (§14.10).
+**Versioning & rollback.** Claude Code version pinned in `infra/` (e.g. via Docker image digest, not a floating tag). Team-spec source-of-truth (member roster, subagent definitions, system prompts) lives in `.claude/agents/` + `.claude/teams/trading-team.spec.json` in the repo. The runtime `config.json` written by Claude Code is ephemeral per cycle and not edited by hand (Cloud-doc rule). Any change to the team spec is a normal PR through §14.3 branch protection. If a Claude Code release introduces an Agent-Teams-breaking change, exactly one cycle fails before rollback; paper-mode (§14.10) catches this before prod via the upgrade-validation cycles run there.
 
 ---
 
@@ -994,7 +1018,7 @@ Result: no runaway self-modification. Human in loop on every merge that affects 
 - **Effective spread** — bid-ask spread adjusted for fee impact + depth at intended order size.
 - **Shadow mode** — strategy/agent running paper-trading on live data, for evaluation before capital allocation.
 - **Agent orchestration** — coordination of multiple specialized AI agents into an explicit task pipeline, with typed memory artifacts passed between tasks (Tier 1) and reflective memory accumulated across cycles (Tier 2). See §2.
-- **Team Lead Agent** — per-cycle orchestrator (§2). Initializes the shared task list, spawns Team Members, routes mailbox traffic, decides Review-gate short-circuit, persists artifacts at cycle close, tears down the short-term layer. Never executes orders directly.
+- **Team Lead Agent** — per-cycle orchestrator (§2). A fresh `claude` process spawned by the scheduler at each cycle: boots the team from the spec, initializes the shared task list, spawns Team Members, routes mailbox traffic, decides Review-gate short-circuit, persists artifacts to long-term stores, calls `clean up the team`, and exits. Lifetime = one cycle (~12 min). Never executes orders directly.
 - **Team Member Agent** — independent Claude session with its own context window, owns one Tier-1 stage. Communicates with peers via mailbox + shared task list. Pattern from `code.claude.com/docs/en/agent-teams`.
 - **Subagent** — focused worker spawned by a Team Member for one-way fan-out. Result returns to the parent only; no peer messaging, no shared task list. Cheaper than a Team Member because results summarize back into the parent context. Pattern from `code.claude.com/docs/en/sub-agents`.
 - **Short-term memory** — per-cycle, ephemeral: shared task list + mailbox + in-flight Pydantic artifacts + per-member context windows. Cleared at cycle close. Never read by future cycles.
