@@ -1,0 +1,62 @@
+[project]
+name = "polymarket-autonomous-trading"
+version = "0.0.0"
+description = "Autonomous Polymarket trading MVP"
+requires-python = ">=3.12,<3.13"
+authors = [{ name = "facchini-mika", email = "148874194+facchini-mika@users.noreply.github.com" }]
+
+[dependency-groups]
+dev = [
+  "ruff>=0.7",
+  "mypy>=1.13",
+  "pytest>=8",
+  "pytest-cov>=5",
+  "hypothesis>=6.115",
+  "pre-commit>=4",
+  "pydantic>=2.9",
+  "pydantic-settings>=2.6",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+  "D",
+  "COM812",
+  "ISC001",
+  "ANN401",
+  "TD002",
+  "TD003",
+  "FIX002",
+  "TRY003",
+  "EM101",
+  "EM102",
+  "S608",
+  "BLE001",
+  "PLR0913",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PLR2004", "ANN", "SLF001", "INP001"]
+"alembic/versions/**" = ["INP001", "D"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+enable_error_code = ["truthy-bool", "redundant-expr", "possibly-undefined"]
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config -ra"
+
+[tool.coverage.run]
+source = ["risk", "shared", "execution", "research"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
