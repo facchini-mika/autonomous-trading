@@ -1,263 +1,221 @@
-# Optimization — Tier 2 Code Evaluation + Tuning Loop
+# Optimization — MVP Self-Improvement Loop + Tier-2 Roadmap
 
-The Tier 2 evaluation block. **Single objective: maximize the system's net PnL over time.** Reads the outputs of Trading (`trading.md`) and Trade Evaluation (`trading_feedback.md`), proposes code/prompt/strategy/agent-roster changes, opens Git PRs for the operator to review and merge. Never self-merges, never touches live-trading endpoints.
+How the system learns from outcomes and turns that learning into change. Owns the MVP self-improvement loop (a single deterministic daily script + manual operator review), the authority boundary that isolates self-improvement code from the live-trading path, and — under §5 *Weiterer Ausbau* — the full Tier-2 Code Evaluation Team architecture that comes post-MVP.
 
-This file owns: the **Code Evaluation Team** roster, the explore-vs-exploit budget rule, the anti-whipsaw rule, the cadence of daily/weekly/monthly batches, the review counts that gate every kind of change, the prior-art reuse policy, the future-extensions roadmap, and the Tier 2 failure modes. It also documents the **Tuning Loop** that produces the Git PRs the operator merges.
-
----
-
-## 1. Purpose & Authority Boundary
-
-The Code Evaluation Team has **one objective: maximize the system's net PnL over time.** It pursues this on two parallel tracks every batch:
-
-- **Exploit** (`strategy-optimizer`) — refine the existing strategies, prompts, sizing, agent roster. Make what works work better.
-- **Explore** (`strategy-explorer`) — propose entirely new strategies, new trading agents, new market categories that are not yet in the system. Find new sources of edge.
-
-The team then **arbitrates between exploit and explore proposals** before passing the top-K queue to the operator (§3 budget rule).
-
-**Authority and limits:**
-
-| Capability | Allowed | Not allowed |
-|---|---|---|
-| Read `predictions`, `decisions`, `trades`, `positions`, `agent_performance`, `lessons`, `notes`, `beliefs`, `cycle_plan`, `operating_doctrine` | Yes | — |
-| Write `lessons`, `patterns`, `proposals` | Yes | — |
-| Open Git PRs on feature branches | Yes | — |
-| Self-merge a PR | — | Forbidden, mechanically enforced by branch protection (`engineering.md §5`) |
-| Modify live-trading state in any in-process way | — | Forbidden — no credentials for production CLOB endpoints |
-| Edit `risk/` directly | — | Forbidden — `engineering.md §6` hook blocks it |
-| Bypass the §7 review counts | — | Forbidden — branch protection on `main` enforces them |
-| Change `MAX_CAPITAL_EUR` (`engineering.md §10`) | Propose only | Two-human approval required to merge |
-
-The PR is the contract. Code change + rationale + paper-validation reference (when quantitative) lands in the operator's review queue. The operator is the merge gate.
+**What lives here:** the loop from outcomes back into prompts/code, plus the governance around it. **What does not live here:** how outcomes are measured (`trading_feedback.md`), schemas (`data_infrastructure.md`), risk limits (`engineering.md §1`), branch protection mechanics (`engineering.md §8`).
 
 ---
 
-## 2. Roster
+## MVP scope (this version of the doc)
 
-| Agent | Role | Trigger | Output |
-|---|---|---|---|
-| `risk-auditor` | Scan recent trades for risk-rule near-misses, anomalous fills, drawdown signals | Daily + on alert | `lessons` row |
-| `pattern-miner` | Cluster lessons into recurring patterns | Weekly | `patterns` row + supersedence links |
-| `strategy-optimizer` (**exploit**) | Make what works work better. Read agent_performance + losing trades + new patterns; propose **deltas to existing strategies / prompts / sizing / agent-roster** (parameter tuning, prompt rewrites, retiring underperforming agents, revising `operating_doctrine` — see `trading.md §2`). Each proposal cites the existing baseline it improves on. | Weekly + on doctrine-phase transition + after a drawdown alert | `proposals` row + draft Git PR for operator review |
-| `strategy-explorer` (**explore**) | Find new sources of edge. Survey resolved markets, missed opportunities, market types we don't trade yet, and §8 prior-art; propose **entirely new strategies, new trading agents (with full persona + prompt + tool allow-list), or new market categories** that are not currently in the system. Each proposal must include a paper-mode test plan and a kill-criterion (when to abandon). | Weekly | `proposals` row + draft Git PR for operator review |
-| `prior-art-scout` | Enforce §8 — search GitHub/PyPI/papers before custom builds; **proactively feeds candidate ideas to `strategy-explorer`**. | On every new-component PR open + weekly explore-batch | Prior-art note posted to PR + idea-list to `strategy-explorer` |
-| `meta-reviewer` | **Arbitrate exploit vs. explore.** Aggregate, dedupe, prioritize all proposals from both tracks; rank by expected PnL impact × confidence × paper-test feasibility; apply the explore-budget rule (§3) so neither track starves the other; route top-K queue to operator. | Weekly | Decision queue (Slack/email) — the operator's review queue, with each item labeled **`[exploit]`** or **`[explore]`** |
-
-**Team structure.** Code-evaluation agents form their own **Code Evaluation Team** — a *separate* Claude Code Agent Team session, distinct from both the Trading Team (`trading.md`, `orchestration.md §2`) and the Trade Evaluation Team (`trading_feedback.md §2`). The "one team per session" Cloud-doc constraint is respected because each Code-Evaluation batch runs in **its own Claude Code process**, on schedule, never simultaneously with another team's session.
-
-- A dedicated **Code-Evaluation Team Lead** orchestrates each scheduled batch (daily, weekly, monthly per §5). The Lead session is started by cron / scheduler (`schedule` skill or k8s `CronJob`), runs the batch, and cleans up (`clean up the team` per Cloud-doc) before exiting.
-- Members above are spawned per batch and tear down with the team at end of run; their short-term coordination uses the standard task-list + mailbox primitives.
-- `pattern-miner`, `strategy-optimizer`, and `strategy-explorer` may spawn subagents for fan-out (one subagent per lesson cluster, per existing strategy under review, per candidate new-strategy idea, per category being analyzed).
-- The Code Evaluation Team is **isolated from both the Trading Team and the Trade Evaluation Team** — separate Lead, separate task list, no shared mailbox. The only coupling is the long-term memory layer: Code-Evaluation agents *read* episodic + reflective + agent-performance tables and *write* `lessons` / `patterns` / `proposals` / Git PRs.
-- Permission mode: standard (no `--dangerously-skip-permissions`). The Code Evaluation Team has no live-trading endpoint access by design (`engineering.md §2` safety boundary), so blocking on permission prompts for unexpected tool use is acceptable behavior. If a batch hangs on a prompt, the scheduler kills it after a timeout and pages the operator.
-
-**Implementation flow for a code change.** When either `strategy-optimizer` (exploit) or `strategy-explorer` (explore) proposes a non-trivial change (parameter tweak, prompt rewrite, sizing delta, new strategy, new trading agent), it:
-1. Writes the `proposals` row with rationale and supporting `lessons` references.
-2. Creates a feature branch (`code-eval/YYYY-MM-DD-<short-slug>`) and commits the actual code change — new files for a new agent (`research/agents/<id>.py` + system prompt + `.claude/agents/<id>.md`), edited files for a tweak.
-3. If the change is quantitative (sizing, threshold, new strategy), drafts a paper-mode test plan as part of the PR description.
-4. Opens the PR via `gh pr create`, assigns the operator as reviewer, sets `meta-reviewer` as the agent reviewer.
-5. **Stops there.** No self-merge, no auto-deploy. The operator reviews and decides.
-
-**Long-term memory tables** that this team writes to:
-
-```sql
-lessons(id pk, time, source_agent_id, trigger_event_id, market_id?,
-        observation, hypothesis, action_taken, outcome, status,
-        parent_pattern_id?, tags jsonb)            -- append-only
-
-patterns(id pk, first_seen, last_seen, occurrences, description,
-         supporting_lesson_ids uuid[], confidence)
-
-proposals(id pk, time, source_agent_id,
-          target_kind ('prompt' | 'strategy' | 'code' | 'limit' | 'config'
-                       | 'operating_doctrine' | 'agent_roster'),
-          target_ref, current_value, proposed_value, rationale,
-          paper_validation_uri, pr_url?, status, decided_by, decided_at)
-```
-
-(Schemas owned by `data_infrastructure.md §1`.)
-
-- `lessons` append-only; supersedence via `status`, never deletion. Replay always possible.
-- `patterns` curated by `pattern-miner`; references the lessons that built it.
-- `proposals` drives the change pipeline (§7).
-- A `proposal` with `target_kind='operating_doctrine'` and an accepted `decided_by` writes a new `operating_doctrine` row (`trading.md §2`) and supersedes the prior active row. The trading layer reads the new doctrine on the next cycle's boot.
-- A `proposal` with `target_kind='agent_roster'` proposes adding a new trading agent to the `trading.md §2` ensemble (with full prompt + tool allow-list + persona definition in the PR), or retiring an existing one. Merge updates `.claude/agents/` and `.claude/teams/trading-team.spec.json`; effective at the next Trading-Team boot.
-
-All members are defined as Claude Code subagent definitions (`engineering.md §7`), reusable as both delegated subagents and Code-Evaluation-Team teammates.
+- **There is NO Code Evaluation Team in MVP.** No multi-agent roster, no daily/weekly Claude-Code-Agent-Team batches, no automated proposal drafting, no automated PR generation, no explore-vs-exploit budget-rule arbitration.
+- **Self-improvement = one daily Python script + manual operator review.** Deterministic, no LLM calls. Reads recent resolved predictions, emits structured `lessons` rows. The operator manually reads accumulated lessons and decides whether to change code, prompts, or limits — by hand, through normal Git PRs (per `engineering.md §8`).
+- **The MVP supports real_capital from day 1** (`TRADING_MODE` may be flipped to `real_capital`, per `engineering.md §4`). That makes the §2 Authority Boundary load-bearing in MVP, not aspirational: a buggy self-improvement path could cost real money, so manual operator review is the only safety-defensible feedback channel for now.
+- **Everything else is post-MVP** — see §5 *Weiterer Ausbau*. Consistent with `engineering.md §13 "Multi-team architecture"` and `engineering.md §13 "Strategy lifecycle governance"` deferrals.
 
 ---
 
-## 3. Explore vs. Exploit — Budget Rule
-
-The Code Evaluation Team must run **both tracks every batch** so the operator's review queue always contains a mix of refinements and new bets. `meta-reviewer` enforces this with a simple budget when ranking the weekly top-K (default K=5):
-
-- **At least 1 explore proposal** in the top-K (when `strategy-explorer` produced any).
-- **At least 2 exploit proposals** in the top-K (when `strategy-optimizer` produced any).
-- Remaining slots filled by raw expected-PnL × confidence ranking across both tracks.
-- Counter-rule: if the live system is in active drawdown (>10% from peak per `data_infrastructure.md §1` alerts) **or** has had ≥ 3 consecutive losing weeks, exploit is up-weighted — the queue tilts toward stabilizing what exists before chasing new edges. Inverse case (5+ green weeks, low capacity utilization): explore up-weighted.
-
-These ratios are tunables in the central settings file (`engineering.md §21`). The point is that the team is **structurally biased to do both**, not to drift into one mode and stay there.
-
-**Decision-record.** Each weekly batch closes with `meta-reviewer` writing a short markdown decision-record in `docs/code-eval/YYYY-WW.md` to the same feature branch as the proposals: how many proposals each track produced, how many made the top-K, why, and the explore/exploit weights applied. Audit trail for the operator.
-
-### 3.1 Multi-armed-bandit formalism (note)
-
-The fixed `(min_explore=1, min_exploit=2, drawdown-tilt)` rule above is a hand-engineered explore/exploit policy. The mathematically-grounded analogue is a **non-stationary multi-armed bandit**: treat `{exploit, explore}` as two arms, observe the realized reward per merged proposal (PnL change attributable, measured over a forward window), and select the next batch's arm allocation via:
-
-- **Discounted UCB** (Garivier & Moulines, 2011) — discount past rewards exponentially so old data fades.
-- **Sliding-Window UCB** — only consider rewards within a fixed window.
-- **f-Discounted Sliding-Window Thompson Sampling (f-dsw TS)** — Bayesian variant explicitly designed for non-stationary, concept-drifting environments.
-
-We **deliberately keep the explicit ratio rule** rather than promote to a formal MAB. Reasons: (a) operator interpretability — a fixed ratio is auditable at a glance; (b) the reward signal (PnL attribution per merged proposal) is delayed by weeks-to-months, so the arm-selection cadence is too slow to benefit from sophisticated MAB updates; (c) the counter-rules (drawdown tilt, sustained-outperformance tilt) already encode the most important non-stationary heuristic. The MAB formalism is the right fit if/when (a) reward attribution becomes faster and (b) the operator wants to delegate the ratio decision to the system. Until then, the citation is here as a roadmap pointer.
-
-Standard reference: Vermorel & Mohri, *Multi-armed bandit algorithms and empirical evaluation* (ECML 2005); Garivier & Moulines, *On Upper-Confidence Bound Policies for Switching Bandit Problems* (ALT 2011).
-
----
-
-## 4. Anti-Whipsaw Rule (5–7 day strategy lifetime minimum)
-
-A live strategy must run **≥ 5–7 days in `real_capital` mode** (default 5, central settings `STRATEGY_DISPLACEMENT_MIN_DAYS`) before `strategy-explorer` may propose a *replacement* strategy. **Refinements via `strategy-optimizer`** are NOT blocked.
-
-**What "replacement" means:**
-- Adding a new strategy that displaces an existing one in capital allocation (≥ 50% of the existing strategy's allocated capital).
-- Retiring a strategy entirely (`agent_roster` remove on a strategy-aligned agent).
-- Replacing the active `operating_doctrine` with a fundamentally different phased plan.
-
-**What "refinement" means** (not blocked by this rule):
-- Parameter tweaks on an existing strategy (e.g. edge threshold from 3% → 2.5%).
-- Prompt rewrites of an existing trading agent.
-- Sizing deltas within an existing strategy.
-- Adding an explanatory `lesson`-derived constraint to an agent's prompt.
-- `operating_doctrine` revision that adjusts an existing phase rather than replacing the structure.
-
-**Why the rule exists.** Without it, `strategy-explorer` could propose a new strategy every week, the operator could merge it, and the system would whipsaw between strategies before any of them accumulated enough live PnL data to evaluate. Five to seven days of `real_capital` running is the minimum required for the operator to form a defensible opinion on whether a strategy is delivering edge or noise. Coupled with the ≥ 30-day paper-mode minimum (`trading_feedback.md §7`), the full lifecycle becomes:
+## 1. MVP Self-Improvement Loop
 
 ```
-proposal accepted  →  ≥ 30d paper mode  →  flip to real_capital  →  ≥ 5–7d live  →  eligible for replacement
+[Trading Cycle]  ──predictions, decisions, paper_trades / real trades──►  [Postgres]
+                                                                              │
+[Trade Evaluation]  ──outcome, realized_pnl on resolved rows──►  [Postgres]   │
+   (trading_feedback.md)                                                      │
+                                                                              ▼
+                                              [Daily Lessons-Summary Script]
+                                              (deterministic Python, no LLM)
+                                                          │
+                                                          │ INSERT lessons row
+                                                          ▼
+                                                   [Postgres `lessons` table]
+                                                          │
+                                                          │ next cycle reads top-K
+                                                          ▼
+                                              [Trading Cycle agent prompt]
+                                              (critical-learning section,
+                                               trading.md §2)
+                                                          │
+                                                          │ operator periodically
+                                                          ▼
+                                          [Operator manual review of lessons]
+                                                          │
+                                                          │ decides → manual PR
+                                                          ▼
+                                          [engineering.md §8 branch protection]
+                                                          │
+                                                          ▼
+                                           [Code/prompt/limit change merged]
+                                                          │
+                                                          ▼
+                                                   [Next cycle uses it]
 ```
 
-**Enforcement mechanics.** `meta-reviewer` checks the timestamp of the most recent strategy displacement before accepting an `[explore]` proposal into the top-K. If the constraint is violated, the proposal is held in `proposals.status='deferred'` until the window has elapsed; an info-level alert tells the operator a deferral happened so they can override if there's a good reason (e.g. obvious fundamental break in the live strategy that warrants emergency replacement — the operator can flip the override flag in central settings).
+**Concrete MVP steps:**
+
+1. **Outcome ingestion** is owned by `trading_feedback.md` — when a Polymarket market resolves, `outcome` and `realized_pnl` get written on the matching `predictions` and trade rows. Not this file's job.
+
+2. **Daily lessons-summary script** (location decided at implementation; e.g. `research/skills/lessons_summary.py`):
+   - Triggered by `cron` once per day.
+   - Reads predictions resolved in the last 24h plus a small lookback window.
+   - For each, applies a simple surprise heuristic (e.g. `|p_consensus − outcome_as_int| > 0.3` OR realized PnL outside the expected band by > X%).
+   - Inserts a `lesson` row with `source_agent_id='daily_summary'`, the trigger event, a one-line observation, the realized outcome, and `status='open'`.
+   - Idempotent on `(prediction_id, day)` so re-runs are safe.
+   - **No LLM call**, no Anthropic / OpenAI dependency.
+
+3. **Next-cycle prompt injection.** At the start of each Trading Cycle, the agent prompt's *critical-learning section* (`trading.md §2`) pulls the top-K most recent / most-relevant `lessons` rows (filtered by `status='open'` and recency). The agent reads them as additional context.
+
+4. **Operator review.** The operator periodically (e.g. weekly) reviews accumulated lessons. If they suggest a code, prompt, or limit change is warranted, the operator drafts the PR by hand. The PR goes through `engineering.md §8` branch protection (≥ 1 reviewer; ≥ 2 humans on `risk/`). After merge, the next cycle uses the new code.
+
+That is the full MVP self-improvement loop.
 
 ---
 
-## 5. Learning Loop Cadence
+## 2. Authority Boundary (load-bearing in MVP — real money is in play)
 
-- **Daily**: `risk-auditor` scans last-24h trades; writes lessons for near-misses, outliers, slippage anomalies.
-- **Weekly batch** (Mon morning, off-cycle) — runs both tracks in parallel, then arbitrates:
+**Hard rules** that apply to any code in the self-improvement path (today: just the daily lessons-summary script):
+
+- **NEVER** modify `risk/` directly — `engineering.md §9` hook blocks AI edits; for the daily script, no write path to `risk/` exists by design.
+- **NEVER** touch live-trading credentials, the EIP-712 signing key, or the `PolymarketAdapter` write surface.
+- **NEVER** auto-merge, auto-push, or otherwise circumvent operator review.
+- **NEVER** mutate `predictions`, `decisions`, `trades`, `paper_trades`, `positions`, `agent_performance`, or `cycle_plan` rows. The daily script's only DB write target is `INSERT INTO lessons`.
+
+**Mechanical enforcement:**
+
+- **Postgres role separation.** The daily script connects with a Postgres role that has `SELECT` on the trading tables and `INSERT` on `lessons`, and **no other privileges**. `UPDATE` and `DELETE` are denied at the role level. The trading-cycle process uses a different role with the necessary write privileges. Phase-1-implementable: two DB roles + two `DATABASE_URL` values in `.env`.
+- **Branch protection** (`engineering.md §8`) is the merge gate. Nothing in the self-improvement path can self-merge.
+- **Capital gate** (`engineering.md §3` / `risk/capital_gate.py`) is the runtime backstop. Even if lessons content somehow corrupted an agent prompt, the deterministic capital gate caps total deployment.
+
+**Why this matters more in MVP than it would in a paper-only world.** With real capital flowing, a buggy "auto-improvement" path is a direct loss vector. MVP intentionally keeps the loop manual until enough operator-reviewed lessons have accumulated to justify automation — which is what the post-MVP roadmap in §5 builds on top.
+
+---
+
+## 3. Open-Source First / Prior-Art Reuse
+
+The load-bearing principle is owned by `data_infrastructure.md §0`. It applies here too: before writing the daily script (or any post-MVP component), search GitHub / PyPI / papers for an existing project; build on it via thin wrappers; pin versions in `pyproject.toml`; document any roll-our-own decision as an ADR in `docs/adr/`.
+
+For MVP: the daily script is small enough that there's likely no exact-fit OSS project — plain `psycopg` + simple Python suffices. The prompt-injection mechanism (top-K lessons → agent prompt) and the surprise heuristic are well-trodden patterns in the agent-reflection literature (Reflexion, Multi-Agent Reflexion); adopt the patterns, not unmaintained code.
+
+---
+
+## 4. Failure Modes (MVP)
+
+| Failure | Mitigation |
+|---|---|
+| Daily-script outage (cron miss, exception, crash) | Non-fatal — next day's run picks up the missed window via the lookback. Idempotency prevents duplicate `lessons`. |
+| Postgres outage | Daily script fails fast; trading cycle separately keeps running (degraded — no fresh lessons). Operator alerted via the standard structured-log alerting (`engineering.md §12`). |
+| Lessons table grows unboundedly | Periodic manual sift by the operator; ad-hoc `DELETE WHERE status='archived'` or similar. Automated retention is post-MVP. |
+| Operator overlooks important lessons | Symptom, not a system failure — MVP intentionally has no automated escalation. The operator is the sole reviewer; this is the price of "real money + safety margin." Post-MVP `meta-reviewer` (§5) is the eventual answer. |
+| Prompt injection via malicious lesson content | Daily script's lesson text is composed from deterministic templates + DB-typed fields, not free-form LLM output, so the surface is small. As post-MVP agent-generated lessons come online (§5), prompt-injection hardening becomes its own task. |
+
+---
+
+## 5. Weiterer Ausbau (post-MVP)
+
+Everything below is deferred until the MVP self-improvement loop has accumulated enough operator-reviewed lessons to justify automation. Each item is added when a measured limit forces it. Items grouped by area; consistent with `engineering.md §13`.
+
+### Code Evaluation Team (Tier 2)
+
+The full multi-agent system that automates what the operator does manually in MVP:
+
+- **Roster (6 roles):**
+  - `risk-auditor` — daily scan for risk-rule near-misses, anomalous fills, drawdown signals → writes `lessons`.
+  - `pattern-miner` — weekly clustering of lessons into recurring `patterns`.
+  - `strategy-optimizer` (**exploit**) — proposes deltas to existing strategies / prompts / sizing / agent-roster.
+  - `strategy-explorer` (**explore**) — proposes entirely new strategies, new trading agents, new market categories.
+  - `prior-art-scout` — enforces OSS-first / prior-art-reuse on every proposal; feeds candidates to `strategy-explorer`.
+  - `meta-reviewer` — arbitrates exploit vs. explore, ranks proposals, posts top-K to the operator queue.
+- **Runtime:** own Claude Code Agent Team (separate session, separate Lead, scheduled by cron / k8s `CronJob`), daily / weekly / monthly batches.
+- **Per-batch authority boundary, separate Postgres role, no live-trading endpoint access.**
+- Implementation flow: `proposal` row → feature branch (`code-eval/YYYY-MM-DD-<slug>`) → committed code change → `gh pr create` → operator merge gate.
+
+### Explore + Exploit budget rule
+
+- `meta-reviewer` enforces a fixed ratio when ranking weekly top-K (default K=5):
+  - ≥ 1 explore proposal in top-K (when `strategy-explorer` produced any).
+  - ≥ 2 exploit proposals in top-K (when `strategy-optimizer` produced any).
+  - Remaining slots filled by `expected_pnl × confidence`.
+- **Counter-rules:** drawdown > 10% from peak OR ≥ 3 losing weeks → exploit up-weighted; 5+ green weeks + low capacity utilization → explore up-weighted.
+- All ratios live in central settings (`engineering.md §10`).
+- **Decision-record:** each weekly batch closes with `meta-reviewer` writing `docs/code-eval/YYYY-WW.md` to the same feature branch.
+
+### Multi-armed-bandit formalism (note)
+
+The fixed `(min_explore=1, min_exploit=2, drawdown-tilt)` rule is a hand-engineered explore/exploit policy. The mathematically-grounded analogue is a non-stationary multi-armed bandit (Discounted UCB, Sliding-Window UCB, f-Discounted Sliding-Window Thompson Sampling). We deliberately keep the explicit ratio rule for operator interpretability and because reward attribution is too slow (weeks-to-months) for sophisticated MAB updates to pay off. Promotion to a formal MAB is on the roadmap if reward attribution becomes faster and the operator wants to delegate the ratio decision.
+
+References: Vermorel & Mohri, ECML 2005; Garivier & Moulines, ALT 2011.
+
+### Anti-Whipsaw Rule (≥ 5–7 days minimum live strategy lifetime)
+
+A live strategy must run **≥ 5–7 days in `real_capital` mode** (default 5, central settings `STRATEGY_DISPLACEMENT_MIN_DAYS`) before `strategy-explorer` may propose a *replacement*. Refinements via `strategy-optimizer` are NOT blocked.
+
+- **"Replacement"** = adding a new strategy that displaces ≥ 50% of an existing strategy's allocated capital, retiring a strategy entirely, or replacing the active `operating_doctrine` with a fundamentally different phased plan.
+- **"Refinement"** = parameter tweaks, prompt rewrites of an existing trading agent, sizing deltas, `operating_doctrine` revision adjusting an existing phase. Not blocked.
+- **Enforcement:** `meta-reviewer` checks the timestamp of the most recent strategy displacement; violations are deferred via `proposals.status='deferred'`. Operator override available via central-settings flag for emergencies.
+- Coupled with the ≥ 30-day paper-mode minimum (`trading_feedback.md §7`), the full lifecycle becomes:
+  ```
+  proposal accepted  →  ≥ 30d paper mode  →  flip to real_capital  →  ≥ 5–7d live  →  eligible for replacement
+  ```
+
+### Learning Loop Cadence
+
+- **Daily:** `risk-auditor` scans last-24h trades; writes lessons for near-misses, outliers, slippage anomalies.
+- **Weekly batch** (Monday morning, off-cycle):
   1. `pattern-miner` extracts patterns from the week's lessons.
-  2. **In parallel:**
-     - `strategy-optimizer` (**exploit**) generates proposals from new patterns + losing trades + agent_performance drift on existing strategies and agents.
-     - `strategy-explorer` (**explore**) surveys missed-edge markets + prior-art (with `prior-art-scout`) and proposes new strategies / new trading agents that don't exist yet.
-  3. `meta-reviewer` applies the §3 explore/exploit budget rule, ranks the combined proposal pool by expected PnL × confidence × paper-test feasibility, posts the top-K queue to the operator, and writes the weekly decision-record (§3).
-- **Monthly retrospective**: archived lessons (> 90d) compressed into per-category **LTKDs** (Long-Term Knowledge Documents) loaded as background for Code-Evaluation agents going forward. Stale/contradicted points pruned by `meta-reviewer`. Also: monthly review of which explore proposals merged in the last 90 days actually improved live PnL — feeds back into how aggressively `strategy-explorer` should propose vs. how cautiously `strategy-optimizer` should refine.
+  2. In parallel: `strategy-optimizer` and `strategy-explorer` each draft their proposals.
+  3. `meta-reviewer` applies the budget rule, ranks, posts top-K to the operator, writes the decision-record.
+- **Monthly retrospective:** archived lessons (> 90d) compressed into per-category LTKDs (Long-Term Knowledge Documents). Stale/contradicted points pruned by `meta-reviewer`. Also: monthly review of which explore-merged proposals actually improved live PnL.
 
-This compaction is essential — without it the lessons store grows unboundedly.
-
----
-
-## 6. Tuning Loop
-
-This is the **technical feedback loop** in the user's architecture diagram — the arrow from Optimization back into Trading via code changes (the "Tuning Loop"), distinct from the semantic Strategy Update Loop in `trading_feedback.md §6`.
+### Full Tuning Loop (Tier-2 form)
 
 ```
-[Trade Evaluation Team]
-    ↓ (lessons, patterns)
-[Code Evaluation Team weekly batch]
-    ↓ proposals + Git PRs (with actual code changes committed)
-[Operator review and merge]
-    ↓ merge
-[Repository main updated with new code / prompts / agent roster]
-    ↓
-[Next Trading Team boot at the cron tick after merge]
-    ↓ reads updated team-spec, agent-prompts, settings, operating_doctrine
-[Trading Team uses the new code]
+[Trade Eval Team]  ──lessons, patterns──►  [Code Eval Team weekly batch]
+                                                        │ proposals + Git PRs (with code changes)
+                                                        ▼
+                                              [Operator review and merge]
+                                                        │ merge
+                                                        ▼
+                                              [main branch updated]
+                                                        │
+                                                        ▼
+                                              [Next Trading-Team boot]
+                                              reads updated team-spec, agent prompts, settings
 ```
 
-**What flows through the Tuning Loop, that the Strategy Update Loop does NOT:**
+- **Critical property:** never bypasses the operator. Every change flows through a Git PR.
+- **Critical property:** touches code, not live state. Effective at the next Trading-Team boot — bounded blast radius (at most one cycle runs with a bad merge before the next tick can pick up a revert).
 
-| Change kind | Channel | Latency |
-|---|---|---|
-| Agent prompt rewrite | Tuning Loop (PR + merge) | days–weeks |
-| New trading agent added to ensemble | Tuning Loop (PR + merge, `.claude/agents/` + team spec) | days–weeks |
-| Existing strategy parameter tweak | Tuning Loop (PR + merge, central settings) | days–weeks |
-| New strategy added | Tuning Loop (PR + merge + ≥ 30d paper) | weeks |
-| Skill added to library (`trading.md §8`) | Tuning Loop (PR + merge) | days–weeks |
-| `operating_doctrine` revision | Tuning Loop (proposal merge writes new active row) | days |
-| Risk-limit value change (`engineering.md §1`) | Tuning Loop with §7 stricter review counts | days–weeks |
-
-**Critical property: the Tuning Loop never bypasses the operator.** Every change flows through a Git PR. The operator's review queue is the system's commit log of "what the autonomous team thinks should change."
-
-**Critical property: the Tuning Loop touches code, not live state.** Even after merge, the change does not affect the running cycle — it takes effect at the *next* Trading Team boot, which is the next cron tick after merge (max 12 minutes later). This means a bad merge has a bounded blast radius: at most one cycle runs with the bad change before the operator can revert and the next cron tick picks up the revert.
-
----
-
-## 7. Checks and Balances
-
-Every Code-Evaluation-agent change goes through the standard merge pipeline. **No Code-Evaluation agent may self-merge**; none may write to `risk/` (`engineering.md §6` hook). The PR is the contract: code change + rationale + paper-validation reference (when quantitative). The operator is the merge gate.
+### Checks and Balances (post-MVP detailed table)
 
 | Target of change | Required reviewers | Required tests/gates |
 |---|---|---|
-| **Exploit:** prompt rewrite (existing agent) | 1 agent reviewer + 1 human | ≥ 30d in paper mode (`trading_feedback.md §7`) |
-| **Exploit:** strategy-parameter tweak | 1 agent reviewer + 1 human | ≥ 30d in paper mode |
-| **Exploit:** retire trading agent (`agent_roster` remove) | `meta-reviewer` + 1 human | Justified by ≥ 60d underperformance vs. ensemble + redundancy with another agent |
-| **Exploit:** `operating_doctrine` revision (`trading.md §2`) | `meta-reviewer` + 1 human | Sanity-check on phase entry/exit conditions; live-trial in paper if quantitative |
-| **Explore:** new strategy | `meta-reviewer` + 2 humans | ≥ 30d in paper mode + risk review + explicit kill-criterion + §4 anti-whipsaw window elapsed since last displacement |
-| **Explore:** new trading agent (`agent_roster` add) | `meta-reviewer` + 2 humans | ≥ 30d in paper mode + persona / tool-allow-list review; pairwise correlation against existing roster measured; explicit kill-criterion |
+| Exploit: prompt rewrite (existing agent) | 1 agent reviewer + 1 human | ≥ 30d paper-mode (`trading_feedback.md §7`) |
+| Exploit: strategy-parameter tweak | 1 agent reviewer + 1 human | ≥ 30d paper-mode |
+| Exploit: retire trading agent (`agent_roster` remove) | `meta-reviewer` + 1 human | ≥ 60d underperformance + redundancy with another agent |
+| Exploit: `operating_doctrine` revision | `meta-reviewer` + 1 human | Sanity-check on phase entry/exit; live-trial in paper if quantitative |
+| Explore: new strategy | `meta-reviewer` + 2 humans | ≥ 30d paper + risk review + kill-criterion + anti-whipsaw window elapsed |
+| Explore: new trading agent | `meta-reviewer` + 2 humans | ≥ 30d paper + persona / tool-allow-list review + pairwise correlation + kill-criterion |
 | Code in `execution/` | `security-reviewer` + 2 humans | Tests + integration tests |
 | Risk limit (`risk/`) | **2 humans only** — no agent override | Property-based tests pass |
-| Hard cap `MAX_CAPITAL_EUR` | 2 humans + audit-log entry (`engineering.md §10`) | n/a |
+| `MAX_CAPITAL_EUR` | 2 humans + audit-log entry | n/a |
 
 Branch protection on `main` enforces these counts mechanically.
 
-**External validation of the autonomous-PR-with-human-review pattern.** Robeyns et al., *A Self-Improving Coding Agent* (ICLR 2025 SSI-FM workshop, arXiv:2504.15228), reports 17→53% on SWE Bench Verified for an agent that autonomously edits its own code; our PR-gated approach is the safety-bounded variant of that pattern — same loop (read state, diagnose, edit code, validate), with the operator review step in place of automatic self-merge. We do not adopt their auto-merge — the human review gate is the explicit safety boundary.
+External validation: Robeyns et al., *A Self-Improving Coding Agent* (ICLR 2025 SSI-FM, arXiv:2504.15228) — same loop pattern, with operator-merge in place of auto-merge.
 
----
+### Future Extensions
 
-## 8. Open-Source First / Prior-Art Reuse
+- **RL** (contingent on Anthropic managed fine-tuning for Opus): per-agent variants trained on resolved-prediction data with PnL-weighted reward.
+- **Meta-learning / prompt optimization:** automated prompt search (DSPy / TextGrad) using historical PnL/hit-rate as objective.
+- **Multi-model cloud ensemble:** add Claude-family models (Sonnet, Haiku) only if performance shows uncorrelated errors with Opus. Cloud-only rule (`trading.md §2`) is non-negotiable.
+- **Cross-venue arbitrage:** Kalshi + sportsbook integration; statistical arb engine (adapter pattern already in place — `data_infrastructure.md §2`).
+- **Real-time event-driven:** sub-second news → trade pipeline (lightweight classifier + dedicated agent).
+- **Privacy/security maturation:** HSM-backed signing (production hardware); SOC2-style controls if scaling to external capital; ZK proofs for prediction provenance (research).
+- **Scalar/categorical markets:** beyond binary; new aggregation logic.
+- **Skill-library expansion** (`trading.md §8`): more procedural knowledge crystallized into named skills as patterns mature.
+- **Formal MAB for explore/exploit ratio** (see above): replace the fixed rule with f-dsw Thompson Sampling once reward attribution becomes faster.
 
-Before any new component, do a prior-art search; prefer reuse over rewriting.
-
-- Search GitHub, PyPI/crates.io, recent papers (with code). `strategy-researcher` (`engineering.md §7`) + `prior-art-scout` (§2) lead.
-- Every PR introducing a non-trivial new component must include a `prior-art` note: what considered, what selected, and — if rewriting — explicit reason.
-- Bias: fork + minimal patches > rewrite. Forks declare upstream + sync cadence in `docs/forks.md`.
-- Examples to evaluate: Polymarket SDK clients (Python/TS), agent orchestration (`langgraph`, `dspy`, `pydantic-ai`), order management (`ccxt`).
-- License: production may depend only on MIT/BSD/Apache-2/MPL-2. Copyleft (GPL/AGPL) requires legal review + PR sign-off.
-
-**Concrete prior-art adopted.** From a survey of *Prediction Arena* (Arcada Labs, `predictionarena.ai`): the four-stage cycle spine Receive → Review → Analyze → Decide (`trading.md §5`); per-cycle prompt assembly with recent settlements/recent trades/previous-cycle reasoning/critical-learning section (`trading.md §2`); the **dual knowledge management** pattern from PA's Polymarket implementation — per-agent `manage_notes` scratchpad (~50 × ~200 words, LRU) for ad-hoc memory + structured `manage_beliefs` store typed by domain for first-class market views with revision history (`trading.md §2`, `data_infrastructure.md §1`); bid-based mark-to-market valuation (`trading_feedback.md §5`); the three-gate risk model — 15% per-market concentration + solvency + per-cycle spending cap (`engineering.md §1`); model-determined sizing within the gates (`trading.md §6`); marketable-limit immediate execution (`data_infrastructure.md §1`); the lean two-mode operation (paper / real-capital) replacing the deeper backtest harness (`engineering.md §11`).
-
-From other prior art:
-- **TradingAgents** (Tauric Research, arXiv:2412.20138, v0.2.0 Feb 2026) — the 7-role financial-LLM ensemble structure (Fundamentals/Sentiment/News/Technical Analyst, Researcher, Trader, Risk Manager) is direct prior art for our 7-persona ensemble in `trading.md §2`. We adapt the role taxonomy to prediction-market specifics; the structural pattern is confirmed.
-- **Voyager** (Wang et al., NeurIPS 2024) — the named-executable-skill-library pattern is the basis for the Strategy Skill Library in `trading.md §8`. Skills are versioned, named, callable by trading agents through a dedicated `call_skill` tool.
-- **Reflexion** (Shinn et al., NeurIPS 2023) and **Multi-Agent Reflexion** (MAR, 2025) — natural-language-reflections-as-episodic-memory is the basis for the `lessons` → `patterns` flow (`trading_feedback.md §4`, this file §2). Cross-agent critique is `meta-reviewer`'s role.
-- **Self-Improving Coding Agent** (Robeyns et al., arXiv:2504.15228, ICLR 2025 SSI-FM) — external validation that an agent editing its own code through PRs can yield substantial performance gains (17→53% on SWE Bench Verified). We adopt the loop, replace auto-merge with operator-merge.
-
-Rejected or independently re-derived: single-OpenAI-web-search tooling (we keep cloud-only Anthropic per `trading.md §2` with Tavily/Brave for search), pooled real-capital structure, single-model-per-cycle competition (we run a 7-persona ensemble of one model). The fresh-team-per-cycle process model (`orchestration.md §1`), `cycle_plan` + `operating_doctrine` memory layers (`trading.md §2`), and cloud-only rule are independently designed.
-
----
-
-## 9. Future Extensions
-
-**RL (v2 — contingent on Anthropic managed fine-tuning for Opus):** if/when exposed, train per-agent variants on resolved-prediction data with PnL-weighted reward. Maintain frozen reference copies for diversity. Shadow-A/B before promotion. Until then, learning loop = prompt optimization (below).
-
-**Meta-learning / prompt optimization:** automated prompt search (DSPy/TextGrad) using historical PnL/hit-rate as objective. Spawn mutated-prompt candidates in shadow paper; promote on 30d outperformance.
-
-**Multi-model cloud ensemble (v2):** add Claude-family models (Sonnet, Haiku) as supplementary backbones — only if performance shows uncorrelated errors with Opus. Cross-vendor cloud only if same test passes *and* audit/data-residency review approves; Claude family preferred. **`trading.md §2` cloud-only rule is non-negotiable** — no local/on-prem in any v2+. Each new model goes through 30d shadow (`trading_feedback.md §7`).
-
-**Cross-venue arbitrage:** Kalshi + sportsbook integration; statistical arb engine across venues. (Adapter pattern already in place — `data_infrastructure.md §1`.)
-
-**Real-time event-driven:** sub-second news → trade pipeline (lightweight classifier + dedicated agent); direct microstructure stream for thinner markets.
-
-**Privacy/security maturation:** HSM-backed signing (production hardware); SOC2-style controls if scaling to external capital; ZK proofs for prediction provenance (research).
-
-**Scalar/categorical markets:** beyond binary; new aggregation logic.
-
-**Skill-library expansion** (`trading.md §8`): as patterns mature, more procedural knowledge gets crystallized into named skills. Track skill invocation rates; retire skills no agent calls.
-
-**Formal MAB for explore/exploit ratio** (§3.1): if reward attribution becomes faster and operator wants to delegate the ratio decision, replace the fixed rule with f-dsw Thompson Sampling.
-
----
-
-## 10. Failure Modes — Tier 2
+### Tier-2 Failure Modes
 
 | Failure | Mitigation |
 |---|---|
@@ -268,18 +226,18 @@ Rejected or independently re-derived: single-OpenAI-web-search tooling (we keep 
 | Code-Evaluation agents converge on bad direction | Mandatory human-in-the-loop; 2-human rule on risk/strategy/explore |
 | `lessons` table self-contradicts | `status` field tracks supersession; `meta-reviewer` reconciles in monthly retro |
 | Anthropic outage stalls weekly batch | Batch is non-realtime; defer to next cycle, no live impact |
-| Code-Evaluation agent suggests bypassing `risk/` | `engineering.md §6` hook + import-linter prevent the diff existing |
-| Whipsaw violations (rapid strategy churn) | §4 enforces minimum strategy lifetime; `meta-reviewer` defers offending proposals; operator override available |
+| Code-Evaluation agent suggests bypassing `risk/` | `engineering.md §9` hook + `import-linter` prevent the diff existing |
+| Whipsaw violations (rapid strategy churn) | Anti-whipsaw rule above; `meta-reviewer` defers offending proposals |
 | Explore proposals with no kill-criterion slip through | PR template enforces kill-criterion field; `meta-reviewer` auto-rejects PRs missing it |
-| Capital-allocation feedback (`orchestration.md §3`) rewards luck not skill | Adaptation-quality bonus capped at +10%; primary signal is rolling 30d hit rate + PnL with adequate `n_samples` |
+| Capital-allocation feedback rewards luck not skill | Adaptation-quality bonus capped at +10%; primary signal is rolling 30d hit rate + PnL with adequate `n_samples` |
 
 ---
 
 ## See also
 
-- `trading.md` — the trading runtime that the Tuning Loop targets.
-- `trading_feedback.md` — Tier 1 evaluation that produces the `lessons` this team consumes.
-- `orchestration.md` — runtime topology and team mechanics.
-- `data_infrastructure.md` — schemas, prediction-market adapter, observability.
-- `engineering.md` — central settings, hooks, branch protection, review counts implementation.
+- `trading.md` — the trading runtime that the loop targets; the *critical-learning section* of the per-cycle prompt is the read-side of the loop.
+- `trading_feedback.md` — Tier 1 evaluation that writes `outcome` + `realized_pnl`; the upstream of the daily-lessons-summary script.
+- `data_infrastructure.md` — `lessons` schema (§1), OSS-first principle (§0).
+- `engineering.md` — central settings (§10), branch protection / PR review counts (§8), risk-layer protection (§3 + §9), `Weiterer Ausbau` master deferral list (§13).
+- `orchestration.md` — runtime topology (post-MVP team mechanics).
 - `specs.md` — architecture diagram and entry point.
