@@ -114,7 +114,7 @@ outcomes    ┘
 | **Long-term agent state** | `notes` (LRU scratchpad, §4) | cross-cycle, capped | Owning agent's next cycle; Code-Evaluation agents (§15) |
 | **Long-term agent state** | `beliefs` (typed, revisable with lineage, §4) | cross-cycle, indefinite | Owning agent's next cycle; Code-Evaluation agents |
 | **Long-term operational** | `cycle_plan` (single-row latest, forward-looking handoff, §4) | overwritten each cycle (history kept) | Next cycle's Team Lead at boot |
-| **Long-term operational** | `operating_doctrine` (active phased strategy with target date, §4) | revisable, lineage kept | Trading agents via §4 prompt; `strategy-improver` for revision |
+| **Long-term operational** | `operating_doctrine` (active phased strategy with target date, §4) | revisable, lineage kept | Trading agents via §4 prompt; `strategy-optimizer` for revision |
 | **Long-term episodic** | `predictions`, `decisions`, `trades`, `positions` (§8) | indefinite | All future cycles + Code-Evaluation agents |
 | **Long-term reflective** | `lessons` (append-only), `patterns` (curated), `proposals` (gated), LTKDs (quarterly) — §15.2/§15.3 | indefinite | Improvement agents; trading agents via critical-learning section in §4 prompt |
 
@@ -206,7 +206,7 @@ The short-term layer is **never** read by future cycles — it cleans up at cycl
    Reject any trade that fails any gate. Plus the constitutional `MAX_CAPITAL_EUR` hard cap (§14.8).
 7. **T+8m — Decide: Sizing.** Agent proposes notional. Risk-engine clips to the smaller of: concentration cap remaining, solvency headroom, per-cycle-cap remaining. No Kelly formula — sizing is the model's call within hard limits.
 8. **T+9m — Decide: Order placement.** Orders execute **immediately** (PA-style) as marketable limit orders at the current best ask (buy) or best bid (sell). No post-only default, no iceberg slicing, no TWAP. Internal idempotency key on every order. In paper mode (§14.9) the order is written to the paper-trading ledger instead.
-9. **T+11m45s — Persist & emit.** Lead persists in-flight artifacts (decisions, fills, reasoning links) to long-term stores (§8); writes any agent-initiated `notes` / `beliefs` / `lessons` updates; **writes a fresh `cycle_plan` row** (forward-looking handoff for the next cycle: top priorities, holds-with-rationale, pending settlements, identified-but-deferred opportunities, blockers) — synthesized by the Lead from the cycle's artifacts; emits cycle metrics. `operating_doctrine` is read-only here (only `strategy-improver` revises it, §15.1).
+9. **T+11m45s — Persist & emit.** Lead persists in-flight artifacts (decisions, fills, reasoning links) to long-term stores (§8); writes any agent-initiated `notes` / `beliefs` / `lessons` updates; **writes a fresh `cycle_plan` row** (forward-looking handoff for the next cycle: top priorities, holds-with-rationale, pending settlements, identified-but-deferred opportunities, blockers) — synthesized by the Lead from the cycle's artifacts; emits cycle metrics. `operating_doctrine` is read-only here (only `strategy-optimizer` revises it, §15.1).
 10. **T+11m55s — Cycle close.** Lead calls `clean up the team` (Cloud-doc warning: never let a member run cleanup), shutting down all members and the team config. Lead process exits. The next cycle is a brand-new `claude` process started by the scheduler at the next fire time — no shared in-process state with this cycle. All short-term memory (mailbox, task list, member context windows) dies with the process; only what was persisted in step 9 survives.
 
 ---
@@ -290,7 +290,7 @@ This is the explicit bridge between Tier-1 working memory and Tier-2 reflective 
 | `notes` (§4) | free-form, per-agent | trading agent | LRU-capped | Ad-hoc scratchpad, no schema |
 | `beliefs` (§4) | typed, structured, per-agent | trading agent | revisable, history kept | First-class views the agent operates *under* |
 | `cycle_plan` (§4) | portfolio-level, single active row | Team Lead at cycle close | overwritten next cycle, history kept | Forward-looking handoff between cycles |
-| `operating_doctrine` (§4) | portfolio-level, single active row with lineage | `strategy-improver` (proposed) + human (approved) | revisable, lineage kept | Currently in-force operative strategy |
+| `operating_doctrine` (§4) | portfolio-level, single active row with lineage | `strategy-optimizer` (proposed) + human (approved) | revisable, lineage kept | Currently in-force operative strategy |
 | `lessons` (§15.2) | post-hoc observation | Trade-Eval or Code-Eval agent | append-only | Reflective, written *about* the system |
 
 **Belief usage:**
@@ -320,7 +320,7 @@ The Lead synthesizes the plan from in-flight artifacts at step 12 (§3); it is n
 - `revised_at` / `revised_by` — author and timestamp; lineage via `supersedes_id`
 - `approved_by` — human approver (mandatory; revisions follow §15.4 review counts)
 
-Revision authored exclusively by `strategy-improver` (§15.1) as a `proposal`; merging a doctrine `proposal` writes a new active `operating_doctrine` row and supersedes the prior. Trading agents and the Lead read but never write.
+Revision authored exclusively by `strategy-optimizer` (§15.1, exploit track) as a `proposal`; merging a doctrine `proposal` writes a new active `operating_doctrine` row and supersedes the prior. Trading agents and the Lead read but never write.
 
 ---
 
@@ -832,7 +832,7 @@ Before any new component, do a prior-art search; prefer reuse over rewriting.
 
 - Canonical location: `shared/config/settings.py` (Pydantic Settings model) backed by `config/settings.toml` for the values themselves. Single source of truth.
 - All services and agents import from this module — no parallel constants, no scattered defaults, no magic numbers in business logic.
-- **Examples of values that MUST live there** (non-exhaustive): every limit in §6 (15% concentration cap, per-cycle spending cap), `TRADING_MODE` flag (§14.9), edge threshold (§5), cycle period and per-stage timeouts (§3), agent timeout (§3), reconciler interval / diff threshold (§9), retry/backoff parameters (§9), fee estimator constants, top-K for belief injection (§4), notes cap (§4), position-thesis adverse-move threshold (§4).
+- **Examples of values that MUST live there** (non-exhaustive): every limit in §6 (15% concentration cap, per-cycle spending cap), `TRADING_MODE` flag (§14.9), edge threshold (§5), cycle period and per-stage timeouts (§3), agent timeout (§3), reconciler interval / diff threshold (§9), retry/backoff parameters (§9), fee estimator constants, top-K for belief injection (§4), notes cap (§4), position-thesis adverse-move threshold (§4), Code-Eval explore/exploit budget ratios + drawdown-tilt and outperformance-tilt thresholds (§15.1.1), weekly-batch top-K size (§15.1.1).
 - **Risk-layer interaction (§14.7, §14.8).** The hardest gates (`MAX_CAPITAL_EUR`, kill-switch triggers, all `risk/`-owned limits) physically live inside `risk/` for protection. The settings file imports and re-exports them — it does **not duplicate** them. Users still see one file with all knobs; `risk/` retains its 2-human-review enforcement on the source.
 - **Validation.** Pydantic Settings + `mypy --strict`: missing or wrong-typed values fail at service startup, never silently at runtime.
 - **Change governance.** Edits to non-`risk/` settings require ≥ 1 reviewer + CI tests. Edits to `risk/`-owned values keep the §14.7/§14.8 stricter rules (≥ 2 reviewers, audit-log entry). `TRADING_MODE` paper → real_capital follows §14.9 review counts.
@@ -911,7 +911,7 @@ The "one team per session" Cloud-doc limit holds trivially since each session is
 The Trading Team (§2, §3, §4) decides what to trade. This section covers the **two further teams** that score the system after the fact and propose corrections:
 
 1. **Trade Evaluation Team (Tier 1)** — looks at the **trades**: when a market resolves, computes outcome + PnL + per-agent hit-rate, marks the position closed, emits raw observations into the long-term tables. Runs on a 1-min cron, fully deterministic-with-agent-shell (§15.0). Writes ground-truth data only — it does *not* propose code changes.
-2. **Code Evaluation Team (Tier 2, formerly "Improvement Team")** — looks at the **code, prompts, strategies, and agent roster** in light of Tier-1's outputs. Writes `lessons` / `patterns`, drafts `proposals`, **opens Git PRs that the operator reviews and merges**. Never self-merges, never touches live-trading endpoints.
+2. **Code Evaluation Team (Tier 2, formerly "Improvement Team")** — its **single objective is to maximize the system's net PnL over time**. It pursues this on two parallel tracks: (a) **exploit** — refine the existing strategies, prompts, sizing, agent roster (= make what works work better); (b) **explore** — propose entirely new strategies, new trading agents, new approaches that are not yet in the system (= find new sources of edge). Both tracks run every batch. The team then **arbitrates between exploit and explore proposals** before passing the top-K queue to the operator. Writes `lessons` / `patterns`, drafts `proposals`, **opens Git PRs that the operator reviews and merges**. Never self-merges, never touches live-trading endpoints.
 
 Both teams run on cloud-hosted Claude Opus (§4 hard rule). Both are isolated from the Trading Team — separate Claude Code sessions, separate schedules, no shared mailbox or task list. The only coupling is the long-term memory layer in Postgres / S3 (§8): Tier 1 writes ground truth, Tier 2 reads it and writes proposals.
 
@@ -959,19 +959,20 @@ A single-member team scheduled by cron / k8s `CronJob` every 1 minute. The Team 
 |---|---|---|---|
 | `risk-auditor` | Scan recent trades for risk-rule near-misses, anomalous fills, drawdown signals | Daily + on alert | `lessons` row |
 | `pattern-miner` | Cluster lessons into recurring patterns | Weekly | `patterns` row + supersedence links |
-| `strategy-improver` | Read losing trades + new patterns; propose prompt / strategy / sizing / **new-trading-agent** / agent-retire deltas; revise `operating_doctrine` (§4) when phase entry/exit conditions are met or target date is reached | Weekly + on doctrine-phase transition | `proposals` row + **draft Git PR with the actual code change** for the operator to review and merge; on merge of doctrine proposal: new `operating_doctrine` row supersedes prior |
-| `prior-art-scout` | Enforce §14.20 — search GitHub/PyPI/papers before custom builds | On every new-component PR open | Prior-art note posted to PR |
-| `meta-reviewer` | Aggregate, dedupe, prioritize all proposals; route top-K to operator | Weekly | Decision queue (Slack/email) — the operator's review queue |
+| `strategy-optimizer` (**exploit**) | Make what works work better. Read agent_performance + losing trades + new patterns; propose **deltas to existing strategies / prompts / sizing / agent-roster** (parameter tuning, prompt rewrites, retiring underperforming agents, revising `operating_doctrine` §4). Each proposal cites the existing baseline it improves on. | Weekly + on doctrine-phase transition + after a drawdown alert | `proposals` row + draft Git PR for operator review |
+| `strategy-explorer` (**explore**) | Find new sources of edge. Survey resolved markets, missed opportunities, market types we don't trade yet, and §14.20 prior-art; propose **entirely new strategies, new trading agents (with full persona + prompt + tool allow-list), or new market categories** that are not currently in the system. Each proposal must include a paper-mode test plan and a kill-criterion (when to abandon). | Weekly | `proposals` row + draft Git PR for operator review |
+| `prior-art-scout` | Enforce §14.20 — search GitHub/PyPI/papers before custom builds; **proactively feeds candidate ideas to `strategy-explorer`**. | On every new-component PR open + weekly explore-batch | Prior-art note posted to PR + idea-list to `strategy-explorer` |
+| `meta-reviewer` | **Arbitrate exploit vs. explore.** Aggregate, dedupe, prioritize all proposals from both tracks; rank by expected PnL impact × confidence × paper-test feasibility; apply the explore-budget rule (§15.1.1) so neither track starves the other; route top-K queue to operator. | Weekly | Decision queue (Slack/email) — the operator's review queue, with each item labeled **`[exploit]`** or **`[explore]`** |
 
 **Team structure.** Code-evaluation agents form their own **Code Evaluation Team** — a *separate* Claude Code Agent Team session, distinct from both the Trading Team (§2, §14.22) and the Trade Evaluation Team (§15.0). The "one team per session" Cloud-doc constraint is respected because each Code-Evaluation batch runs in **its own Claude Code process**, on schedule, never simultaneously with another team's session.
 
 - A dedicated **Code-Evaluation Team Lead** orchestrates each scheduled batch (daily, weekly, monthly per §15.3). The Lead session is started by cron / scheduler (`schedule` skill or k8s `CronJob`), runs the batch, and cleans up (`clean up the team` per Cloud-doc) before exiting.
 - Members above are spawned per batch and tear down with the team at end of run; their short-term coordination uses the standard task-list + mailbox primitives.
-- `pattern-miner` and `strategy-improver` may spawn subagents for fan-out (one subagent per lesson cluster, per category being analyzed).
+- `pattern-miner`, `strategy-optimizer`, and `strategy-explorer` may spawn subagents for fan-out (one subagent per lesson cluster, per existing strategy under review, per candidate new-strategy idea, per category being analyzed).
 - The Code Evaluation Team is **isolated from both the Trading Team and the Trade Evaluation Team** — separate Lead, separate task list, no shared mailbox. The only coupling is the long-term memory layer: Code-Evaluation agents *read* episodic + reflective + agent-performance tables and *write* `lessons` / `patterns` / `proposals` / Git PRs.
 - Permission mode: standard (no `--dangerously-skip-permissions`). The Code Evaluation Team has no live-trading endpoint access by design (§15.6 safety boundary), so blocking on permission prompts for unexpected tool use is acceptable behavior. If a batch hangs on a prompt, the scheduler kills it after a timeout and pages the operator.
 
-**Implementation flow for a code change.** When `strategy-improver` proposes a non-trivial change (new strategy, new trading agent, prompt rewrite, sizing delta), it:
+**Implementation flow for a code change.** When either `strategy-optimizer` (exploit) or `strategy-explorer` (explore) proposes a non-trivial change (parameter tweak, prompt rewrite, sizing delta, new strategy, new trading agent), it:
 1. Writes the `proposals` row with rationale and supporting `lessons` references.
 2. Creates a feature branch (`code-eval/YYYY-MM-DD-<short-slug>`) and commits the actual code change — new files for a new agent (`research/agents/<id>.py` + system prompt + `.claude/agents/<id>.md`), edited files for a tweak.
 3. If the change is quantitative (sizing, threshold, new strategy), drafts a paper-mode test plan as part of the PR description.
@@ -979,6 +980,19 @@ A single-member team scheduled by cron / k8s `CronJob` every 1 minute. The Team 
 5. **Stops there.** No self-merge, no auto-deploy. The operator reviews and decides.
 
 All members are defined as Claude Code subagent definitions (§14.5, `code.claude.com/docs/en/sub-agents`), reusable as both delegated subagents and Code-Evaluation-Team teammates (Cloud-doc: *Use subagent definitions for teammates*). Read-only access to live observational data (`predictions`, `decisions`, `trades`, snapshots, `agent_performance`); write access only to `lessons`, `patterns`, `proposals`, and Git via PR on feature branches.
+
+#### 15.1.1 Explore vs. exploit — budget rule
+
+The Code Evaluation Team must run **both tracks every batch** so the operator's review queue always contains a mix of refinements and new bets. `meta-reviewer` enforces this with a simple budget when ranking the weekly top-K (default K=5):
+
+- **At least 1 explore proposal** in the top-K (when `strategy-explorer` produced any).
+- **At least 2 exploit proposals** in the top-K (when `strategy-optimizer` produced any).
+- Remaining slots filled by raw expected-PnL × confidence ranking across both tracks.
+- Counter-rule: if the live system is in active drawdown (>10% from peak per §11 alerts) **or** has had ≥ 3 consecutive losing weeks, exploit is up-weighted — the queue tilts toward stabilizing what exists before chasing new edges. Inverse case (5+ green weeks, low capacity utilization): explore up-weighted.
+
+These ratios are tunables in the central settings file (§14.21). The point is that the team is **structurally biased to do both**, not to drift into one mode and stay there.
+
+**Decision-record.** Each weekly batch closes with `meta-reviewer` writing a short markdown decision-record in `docs/code-eval/YYYY-WW.md` to the same feature branch as the proposals: how many proposals each track produced, how many made the top-K, why, and the explore/exploit weights applied. Audit trail for the operator.
 
 ### 15.2 Shared Memory & Notes
 
@@ -1010,11 +1024,13 @@ Read API exposes these to all Code-Evaluation agents; write paths scoped by role
 ### 15.3 Learning Loop Cadence
 
 - **Daily**: `risk-auditor` scans last-24h trades; writes lessons for near-misses, outliers, slippage anomalies.
-- **Weekly batch** (Mon morning, off-cycle):
-  1. `pattern-miner` extracts patterns from week's lessons.
-  2. `strategy-improver` generates proposals from new patterns + losing trades.
-  3. `meta-reviewer` dedupes, prioritizes, posts top-K queue to operator.
-- **Monthly retrospective**: archived lessons (> 90d) compressed into per-category **LTKDs** (Long-Term Knowledge Documents) loaded as background for Code-Evaluation agents going forward. Stale/contradicted points pruned by `meta-reviewer`.
+- **Weekly batch** (Mon morning, off-cycle) — runs both tracks in parallel, then arbitrates:
+  1. `pattern-miner` extracts patterns from the week's lessons.
+  2. **In parallel:**
+     - `strategy-optimizer` (**exploit**) generates proposals from new patterns + losing trades + agent_performance drift on existing strategies and agents.
+     - `strategy-explorer` (**explore**) surveys missed-edge markets + prior-art (with `prior-art-scout`) and proposes new strategies / new trading agents that don't exist yet.
+  3. `meta-reviewer` applies the §15.1.1 explore/exploit budget rule, ranks the combined proposal pool by expected PnL × confidence × paper-test feasibility, posts the top-K queue to the operator, and writes the weekly decision-record (§15.1.1).
+- **Monthly retrospective**: archived lessons (> 90d) compressed into per-category **LTKDs** (Long-Term Knowledge Documents) loaded as background for Code-Evaluation agents going forward. Stale/contradicted points pruned by `meta-reviewer`. Also: monthly review of which explore proposals merged in the last 90 days actually improved live PnL — feeds back into how aggressively `strategy-explorer` should propose vs. how cautiously `strategy-optimizer` should refine.
 
 This compaction is essential — without it the lessons store grows unboundedly.
 
@@ -1024,12 +1040,12 @@ Every Code-Evaluation-agent change goes through the standard merge pipeline. **N
 
 | Target of change | Required reviewers | Required tests/gates |
 |---|---|---|
-| Prompt (agent template) | 1 agent reviewer + 1 human | ≥ 30d in paper mode (§14.9/§14.10) |
-| Strategy parameter | 1 agent reviewer + 1 human | ≥ 30d in paper mode |
-| New strategy | `meta-reviewer` + 2 humans | ≥ 30d in paper mode + risk review |
-| **New trading agent** (`agent_roster` add) | `meta-reviewer` + 2 humans | ≥ 30d in paper mode + persona / tool-allow-list review; pairwise correlation against existing 7 measured |
-| **Retire trading agent** (`agent_roster` remove) | `meta-reviewer` + 1 human | Justified by ≥ 60d underperformance vs. ensemble + redundancy with another agent |
-| `operating_doctrine` revision (§4) | `meta-reviewer` + 1 human | Sanity-check on phase entry/exit conditions; live-trial in paper if quantitative |
+| **Exploit:** prompt rewrite (existing agent) | 1 agent reviewer + 1 human | ≥ 30d in paper mode (§14.9/§14.10) |
+| **Exploit:** strategy-parameter tweak | 1 agent reviewer + 1 human | ≥ 30d in paper mode |
+| **Exploit:** retire trading agent (`agent_roster` remove) | `meta-reviewer` + 1 human | Justified by ≥ 60d underperformance vs. ensemble + redundancy with another agent |
+| **Exploit:** `operating_doctrine` revision (§4) | `meta-reviewer` + 1 human | Sanity-check on phase entry/exit conditions; live-trial in paper if quantitative |
+| **Explore:** new strategy | `meta-reviewer` + 2 humans | ≥ 30d in paper mode + risk review + explicit kill-criterion |
+| **Explore:** new trading agent (`agent_roster` add) | `meta-reviewer` + 2 humans | ≥ 30d in paper mode + persona / tool-allow-list review; pairwise correlation against existing roster measured; explicit kill-criterion |
 | Code in `execution/` | `security-reviewer` + 2 humans | Tests + integration tests |
 | Risk limit (`risk/`) | **2 humans only** — no agent override | Property-based tests pass |
 | Hard cap `MAX_CAPITAL_EUR` | 2 humans + audit-log entry (§14.8) | n/a |
@@ -1096,7 +1112,10 @@ Result: no runaway self-modification. Human in loop on every merge that affects 
 - **Agent orchestration** — coordination of multiple specialized AI agents into an explicit task pipeline, with typed memory artifacts passed between tasks (Tier 1) and reflective memory accumulated across cycles (Tier 2). See §2.
 - **Trading Team** — the per-cycle Claude Code Agent Team that decides and places trades (§2, §3). One fresh team per 12-min cycle.
 - **Trade Evaluation Team (Tier 1)** — separate Agent Team scheduled every 1 min; ingests resolved markets and writes ground-truth outcomes + PnL + agent-performance to the long-term tables (§15.0). Single member: `evaluator`. Has no live-trading credentials.
-- **Code Evaluation Team (Tier 2, formerly "Improvement Team")** — separate Agent Team scheduled in daily/weekly batches; reads Trade-Evaluation outputs and trading memory, proposes code/prompt/strategy/agent-roster changes, opens Git PRs for the operator to review and merge (§15.1). Has no live-trading credentials. Never self-merges.
+- **Code Evaluation Team (Tier 2, formerly "Improvement Team")** — separate Agent Team scheduled in daily/weekly batches; reads Trade-Evaluation outputs and trading memory, proposes code/prompt/strategy/agent-roster changes, opens Git PRs for the operator to review and merge (§15.1). Has no live-trading credentials. Never self-merges. Single objective: **maximize the system's net PnL over time** via two parallel tracks — exploit (refine existing) and explore (try new).
+- **Exploit (Code-Eval track)** — `strategy-optimizer` agent. Refines what already exists: tunes parameters, rewrites prompts, retires underperforming agents, revises `operating_doctrine`. Lower-risk, narrower-impact proposals. (§15.1)
+- **Explore (Code-Eval track)** — `strategy-explorer` agent. Proposes things that do not yet exist: new strategies, new trading agents, new market categories. Each proposal must include a paper-mode test plan and an explicit kill-criterion. Higher-risk, wider-impact proposals. (§15.1)
+- **Explore/exploit budget rule** — `meta-reviewer` enforces a minimum of both tracks in every weekly top-K queue, with the ratio adjusting based on live system performance (drawdown → exploit-heavy; sustained outperformance → explore-heavy). Tunables in §14.21. (§15.1.1)
 - **Team Lead Agent** — per-cycle orchestrator (§2). A fresh `claude` process spawned by the scheduler at each cycle: boots the team from the spec, initializes the shared task list, spawns Team Members, routes mailbox traffic, persists artifacts to long-term stores, calls `clean up the team`, and exits. Lifetime = one cycle (~12 min). Never executes orders directly.
 - **Team Member Agent** — independent Claude session with its own context window, owns one Tier-1 stage. Communicates with peers via mailbox + shared task list. Pattern from `code.claude.com/docs/en/agent-teams`.
 - **Subagent** — focused worker spawned by a Team Member for one-way fan-out. Result returns to the parent only; no peer messaging, no shared task list. Cheaper than a Team Member because results summarize back into the parent context. Pattern from `code.claude.com/docs/en/sub-agents`.
