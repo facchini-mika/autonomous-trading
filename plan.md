@@ -59,7 +59,7 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 
 **Manuelle Operator-Steps (außerhalb Repo):**
 - `gh` CLI vorhanden + authentifiziert.
-- Branch-Protection auf `main` über `gh api`: required reviews ≥1 default, ≥2 für `risk/**` und `MAX_CAPITAL_EUR`-Touches via CODEOWNERS; required checks `ruff`/`mypy`/`gitleaks`/`trufflehog`/`pytest` (letzteres ab Phase 3 grün); keine direkten Pushes; kein Force-Push.
+- Branch-Protection auf `main` über `gh api`: `required_approving_review_count: 0` (Single-Operator-Projekt; GitHub erlaubt kein Self-Approval, daher ist 0 die einzig konsistente Wahl — Risk-Sensitivity läuft über die Audit-Log-Disziplin, siehe `engineering.md §3, §4, §8`); required status checks `lint`/`type-check`/`gitleaks`/`trufflehog` ab Phase 1, `pytest`/`import-linter`/`risk/`-Coverage ab Phase 3; `enforce_admins: true`; keine direkten Pushes; kein Force-Push; keine Branch-Deletes.
 
 **CI-Stufung über die Phasen** (verhindert dass Phase-1-Repo nicht baubar ist):
 - Phase 1: ruff + mypy + gitleaks + trufflehog (grün auf leerem Repo).
@@ -67,7 +67,7 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 - Phase 4: + Hypothesis-Property-Tests, + härtere `import-linter`-Layer-Regeln.
 - Phase 5: + E2E-Paper-Cycle-Job (Postgres-Service-Container, Fake-Gamma + Fake-CLOB).
 
-**Solo-Operator-Pattern für 2-Human-Approval:** Branch-Protection erzwingt 2 Reviews. Operator self-approved zweimal mit getrennten qualitativen Reviews + AUDIT_LOG.md-Eintrag. Audit-Spur ist die Disziplin-Verifikation.
+**Single-Operator-Audit-Pattern:** GitHub erlaubt kein Self-Approval, daher steht Branch-Protection auf `required_approving_review_count: 0`. Risk-sensitive PRs (Touches `risk/**`, `MAX_CAPITAL_EUR` oder `TRADING_MODE`-Flip) verlangen einen `AUDIT_LOG.md`-Eintrag, der den Safety-Review des Operators dokumentiert (was ändert sich, was kann schiefgehen, warum trotzdem sicher). Der Audit-Log ist der Second-Review-Trail; CI kann ihn nicht erzwingen, Operator-Disziplin schon.
 
 **Exit:** Erster trivialer PR (ADR `0001-phasing.md`) gemerged, alle Gates grün, AUDIT_LOG-Initialeintrag.
 
@@ -254,6 +254,6 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 ## Risiken & offene Punkte
 
 - **EIP-712-Roundtrip vor erstem real_capital-Cycle ungetestet außer Mock.** Phase 6-Eintrittsbedingung: einmaliger manueller Sandbox-Roundtrip mit Test-Key.
-- **Solo-Operator-2-Reviewer-Pattern** ist organisatorische Disziplin. AUDIT_LOG ist die einzige Spur.
+- **Single-Operator-Audit-Pattern** ist organisatorische Disziplin: GitHub kann es nicht erzwingen (Self-Approval verboten, daher 0 Required Approvals); `AUDIT_LOG.md`-Einträge bei `risk/**`-, `MAX_CAPITAL_EUR`- oder `TRADING_MODE`-Touches sind die einzige Spur.
 - **`MAX_CAPITAL_EUR=0` blockt real_capital-Orders by design.** Operator muss aktiv setzen — Feature, kein Bug.
 - **Polymarket-API-Versions-Drift:** `py-clob-client`-Pin in `pyproject.toml` essenziell; manueller Smoke vor jedem Bump.

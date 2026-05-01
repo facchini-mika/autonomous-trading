@@ -29,7 +29,7 @@ Three deterministic gates plus the constitutional capital cap. All limits are pl
 2. **Solvency** — available cash (paper-cash in `paper` mode, USDC in `real_capital` mode) ≥ proposed notional + estimated fees + open-order reservations.
 3. **Per-cycle spending cap** — total notional opened this cycle ≤ cycle cap (default 25% of equity, central setting §10).
 
-**Constitutional cap (§3).** `MAX_CAPITAL_EUR` is a hard, two-human-approval-only ceiling on gross deployed capital. Independent of all other gates. In MVP this is the paper-cash budget; on the `paper → real_capital` switch it becomes the real-USDC ceiling.
+**Constitutional cap (§3).** `MAX_CAPITAL_EUR` is a hard ceiling on gross deployed capital, gated by the audit-log self-review pattern (§3, §8). Independent of all other gates. In MVP this is the paper-cash budget; on the `paper → real_capital` switch it becomes the real-USDC ceiling.
 
 **Manual kill-switch (§2).** Operator halts all new orders by flipping a row in `system_state` (`data_infrastructure.md §1`). No automatic drawdown trip-wires in MVP — drawdown is monitored, the operator decides whether to flip.
 
@@ -73,7 +73,7 @@ MAX_CAPITAL_EUR: Final = <TBD_BY_OPERATOR>
 ```
 
 - The order-submission path rejects any order pushing gross deployed capital above `MAX_CAPITAL_EUR`.
-- Constant changed only via PR; in `real_capital` mode this requires ≥ 2 reviewer approvals + an audit-log entry. Decreases also gated to ≥ 1 reviewer.
+- Constant changed only via PR. **Single-operator gate:** every change — increase or decrease — requires an `AUDIT_LOG.md` entry documenting what changed, what could go wrong, and why it's still safe. CI cannot enforce the audit entry; operator discipline does. (If a second human ever joins, raise branch-protection `required_approving_review_count` back to ≥1 and require their approval for increases.)
 
 ---
 
@@ -88,7 +88,7 @@ TRADING_MODE = "paper" | "real_capital"
 Engineering owns the **governance** of this flag — what the runtime does with it is in `trading.md` and `data_infrastructure.md §2`.
 
 - **Default `paper`.** A clean checkout cannot trade real capital without an explicit settings-file change.
-- **Switching is manual.** PR with ≥ 1 reviewer approval (real → paper, defensive direction) or ≥ 2 reviewer approvals (paper → real_capital, offensive direction); audit-log entry on merge. **Never via env var, never at runtime.**
+- **Switching is manual.** PR with an `AUDIT_LOG.md` entry on merge. The entry must document the operator's safety review — what's changing, what could go wrong, why it's still safe. **Never via env var, never at runtime.** (Single-operator project — see §3, §8; if a second human ever joins, additionally require their approval for `paper → real_capital`.)
 - **No backtest harness.** Polymarket markets are too short-lived; paper-mode is the validation gate (`trading_feedback.md §4` owns the promotion criteria).
 
 ---
@@ -151,10 +151,10 @@ Personal/transient → `CLAUDE.local.md` (gitignored).
 
 - **`gh` CLI** required locally — token-cheaper for AI use.
 - **Branch protection on `main`:**
-  - Required PR review (≥ 1 human reviewer; **≥ 2 humans for any change touching `risk/`** or `MAX_CAPITAL_EUR`).
-  - Required status checks: `pytest`, `ruff`, `mypy --strict`, `gitleaks`.
-  - No direct pushes, no force-push.
-- Solo operator note: the operator is both author and reviewer for MVP. The ≥ 2-human rule on `risk/` is a placeholder enforced by branch protection — the operator self-approves twice with two distinct reviews and an audit-log note. Treated as a real gate, not a formality.
+  - `required_approving_review_count: 0` — single-operator project; GitHub forbids self-approval, so the platform-enforced approval count must be 0 for any PR to merge. Risk-sensitivity is enforced via the audit-log self-review pattern instead (see below).
+  - Required status checks: `lint` (ruff), `type-check` (mypy --strict), `gitleaks`, `trufflehog` from Phase 1; `pytest` + `import-linter` + `risk/`-100%-coverage from Phase 3.
+  - `enforce_admins: true`, no direct pushes, no force-push, no deletions.
+- **Single-operator audit pattern.** The operator is both author and reviewer. For any PR touching `risk/**`, `MAX_CAPITAL_EUR`, or flipping `TRADING_MODE`, an `AUDIT_LOG.md` entry is mandatory and must document: what changed, what could go wrong, why it's still safe. CI cannot enforce the audit entry; the operator's discipline does. The audit log is the second-review trail. If a second human operator ever joins, raise `required_approving_review_count` to ≥1 and require their approval on the same set of paths.
 
 ---
 

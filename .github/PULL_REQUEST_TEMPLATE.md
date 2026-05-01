@@ -1,6 +1,9 @@
 <!--
 PR title format for plan-aligned work: `Phase N: <topic>`.
 Never push directly to main. Never force-push. Never use --no-verify.
+Single-operator project: branch protection enforces 4 CI gates and 0 required
+approvals (GitHub forbids self-approval). Risk-sensitivity is enforced via
+the AUDIT_LOG.md self-review pattern below.
 -->
 
 ## Summary
@@ -9,10 +12,13 @@ Never push directly to main. Never force-push. Never use --no-verify.
 
 ## Risk-sensitive checklist
 
-- [ ] **TRADING_MODE flip?** If yes: paper → real_capital requires ≥2 reviewer approvals **and** an `AUDIT_LOG.md` entry; real_capital → paper requires ≥1 reviewer + `AUDIT_LOG.md`. (See `engineering.md §4`.)
-- [ ] **`MAX_CAPITAL_EUR` touched?** If yes: increases require ≥2 reviewer approvals; decreases require ≥1; both require an `AUDIT_LOG.md` entry. (See `engineering.md §3`.)
-- [ ] **Touches `risk/**`?** If yes: ≥2 reviewer approvals (CODEOWNERS-enforced). Solo-operator: two distinct qualitative self-reviews + `AUDIT_LOG.md` entry.
-- [ ] **Strategy logic changed?** If yes: document an explicit kill-criterion in this PR's description (when to roll back, what metric/threshold triggers it).
+For every box checked, an `AUDIT_LOG.md` entry is **mandatory** and must
+document: what changed, what could go wrong, why it's still safe.
+
+- [ ] **`TRADING_MODE` flip?** (`paper` ↔ `real_capital`) — see `engineering.md §4`.
+- [ ] **`MAX_CAPITAL_EUR` touched?** (any change, increase or decrease) — see `engineering.md §3`.
+- [ ] **Touches `risk/**`?** — see `engineering.md §3`.
+- [ ] **Strategy logic changed?** Document an explicit kill-criterion in this PR's description (when to roll back, what metric/threshold triggers it).
 
 ## Test plan
 

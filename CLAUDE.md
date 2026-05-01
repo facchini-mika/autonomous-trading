@@ -24,13 +24,22 @@ Read `engineering.md` first. Build roadmap: `plan.md`.
 ## Default trading mode
 Default `TRADING_MODE` is `paper`. A clean checkout cannot trade real capital
 without an explicit settings change. Switching `paper -> real_capital` requires
-a PR with >=2 reviewer approvals and an `AUDIT_LOG.md` entry. See `engineering.md §4`.
+a PR with an `AUDIT_LOG.md` entry that documents the operator's safety review
+(see "Reviewer rule" below). See `engineering.md §4`.
 
 ## Reviewer rule
-Any change touching `risk/**` or the `MAX_CAPITAL_EUR` constant requires
->=2 human reviewer approvals on the PR (enforced by `CODEOWNERS` + branch
-protection from Phase 1+) plus an `AUDIT_LOG.md` entry. Solo-operator pattern:
-self-approve twice with two distinct qualitative reviews. See `engineering.md §3, §8`.
+This is a **single-operator project**. There is exactly one human, who is
+both author and reviewer. GitHub forbids self-approving one's own PR, so the
+platform-enforced approval count for normal PRs is **0**; the four CI gates
+(`lint`, `type-check`, `gitleaks`, `trufflehog`) are the merge prerequisites.
+
+Risk-sensitive PRs — any change touching `risk/**`, the `MAX_CAPITAL_EUR`
+constant, or a `TRADING_MODE` flip — additionally require an `AUDIT_LOG.md`
+entry that documents the operator's safety review (what was changed, what
+could go wrong, why it's still safe). The audit-log entry is the second-
+review trail; CI cannot enforce it, the operator's discipline does. If the
+project ever gains a second human operator, raise `required_approving_review_count`
+in branch protection back to ≥1. See `engineering.md §3, §4, §8`.
 
 ## Repo layout
 See `engineering.md §5` for the canonical tree:

@@ -57,12 +57,17 @@ gate, so the repository is always buildable:
   yet exist) is resolved with `try/except ImportError: sys.exit(0)`
   wrappers in the relevant hooks. The wrappers are removed as the last
   step of Phase 3.
-- The 2-reviewer rule for `risk/**` and `MAX_CAPITAL_EUR` cannot be
-  technically enforced by GitHub branch protection alone in a solo-operator
-  setup (no second human owner). It is therefore upheld via audit
-  discipline: two distinct qualitative self-reviews + an `AUDIT_LOG.md`
-  entry. The `CODEOWNERS` file still requires owner review; the
-  audit-log entry is the second-reviewer evidence trail.
+- This is a **single-operator project**. GitHub forbids self-approval, so
+  any `required_approving_review_count ≥ 1` makes every PR un-mergeable
+  except by admin bypass. A doctrine that relies on bypass is dishonest,
+  so branch protection runs with `required_approving_review_count: 0`.
+  Risk-sensitivity for `risk/**`, `MAX_CAPITAL_EUR`, and `TRADING_MODE`
+  flips is enforced by the audit-log self-review pattern: each such PR
+  must add an `AUDIT_LOG.md` entry that documents what changed, what
+  could go wrong, and why it's still safe. CI cannot enforce the audit
+  entry; operator discipline does. (See ADR 0002 if and when a second
+  human ever joins — at that point `required_approving_review_count`
+  goes back to ≥1.)
 - `MAX_CAPITAL_EUR` defaults to `0` and only an explicit ≥2-reviewer PR
   can raise it. A clean checkout cannot trade real capital.
 
