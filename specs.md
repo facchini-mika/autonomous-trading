@@ -1,22 +1,48 @@
-# Polymarket Autonomous Trading System — Specifications
+# Polymarket Autonomous Trading System
 
-**This spec has been split into four component files matching the system architecture.** This file is kept as a thin redirect so existing references in `CLAUDE.md`, hooks, project memory, and prior commit messages continue to resolve.
+The system is split into four component files matching the four-block architecture below. This file is the entry point.
 
-## Where to read
+## Architecture
 
-Start with **[index.md](./index.md)** — architecture diagram, glossary, navigation, and the old-§-to-new-file mapping table for chasing legacy references.
+```mermaid
+flowchart LR
+    Strategie[Strategie]
+    AgentAufbau[Agent-Aufbau]
+    Daten[Daten]
+    Trading[Trading]
+    Polymarket[Polymarket / Kalshi]
+    TradingFeedback[Trading Feedback]
+    Optimierung[Optimierung]
+    HumanReview[Human Review]
+    Learnings[Learnings]
+    Results[Results]
+    Infrastruktur[Infrastruktur]
 
-The four component files:
+    Strategie --> Trading
+    AgentAufbau --> Trading
+    Daten --> Trading
+    Trading --> Polymarket
+    Polymarket --> TradingFeedback
+    TradingFeedback --> Learnings
+    TradingFeedback --> Results
+    Results --> Optimierung
+    Optimierung -. Tuning Loop .-> Trading
+    Learnings -. Strategy Update Loop .-> Strategie
+    Optimierung <--> HumanReview
+    Infrastruktur -.- Trading
+    Infrastruktur -.- TradingFeedback
+    Infrastruktur -.- Optimierung
+```
+
+Two feedback loops, two cadences:
+- **Strategy Update Loop** (semantic, minutes–days): outcomes → `lessons` / `patterns` → next-cycle prompt context. Never changes code. Owned by `trading_feedback.md §6`.
+- **Tuning Loop** (technical, days–weeks): patterns → Git PRs → operator review → merge → next cycle uses new code. Owned by `optimization.md §6`.
+
+## Files
 
 | File | Owns |
 |---|---|
-| [trading.md](./trading.md) | The executing trading instance — per-cycle Trading Team, 7-persona agent ensemble, strategy layer, decision logic, per-trade gates as the trading layer sees them, the Strategy Skill Library |
-| [infrastructure.md](./infrastructure.md) | Platform layer — prediction-market interface (Polymarket primary, Kalshi via shared adapter), data layer + all schemas, execution mechanics, observability, safety controls, central settings, hooks, secret management |
-| [trading_feedback.md](./trading_feedback.md) | Tier 1 evaluation — Trade Evaluation Team (1-min cron), result computation, learning generation, evaluation metrics, paper-mode promotion guidance, Strategy Update Loop |
-| [optimization.md](./optimization.md) | Tier 2 evaluation — Code Evaluation Team (daily/weekly batches), exploit + explore tracks, anti-whipsaw rule, Tuning Loop, review counts, prior-art reuse, future extensions |
-
-## Why this is split
-
-The four-block architecture (Trading / Infrastructure / Trading Feedback / Optimization) maps one-to-one to these files. The two feedback loops (Strategy Update Loop, Tuning Loop) are explicit subsections in the corresponding files. The split keeps each block reviewable in isolation and makes single-concept changes touch a single file.
-
-See `index.md §4` for the full mapping from old `specs.md §X.Y` references to their new locations.
+| [trading.md](./trading.md) | Per-cycle Trading Team, 7-persona ensemble, strategy layer, decision logic, per-trade gates, Strategy Skill Library |
+| [infrastructure.md](./infrastructure.md) | Prediction-market interface (Polymarket/Kalshi adapter), data layer + all schemas, execution, observability, safety controls, central settings, hooks |
+| [trading_feedback.md](./trading_feedback.md) | Tier 1 — Trade Evaluation Team (1-min cron), result computation, learning generation, evaluation metrics, paper-mode promotion |
+| [optimization.md](./optimization.md) | Tier 2 — Code Evaluation Team (daily/weekly), exploit + explore tracks, anti-whipsaw rule, review counts, prior-art reuse |

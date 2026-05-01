@@ -280,4 +280,4 @@ Rejected or independently re-derived: single-OpenAI-web-search tooling (we keep 
 - `trading.md` — the trading runtime that the Tuning Loop targets.
 - `trading_feedback.md` — Tier 1 evaluation that produces the `lessons` this team consumes.
 - `infrastructure.md` — schemas, central settings, hooks, branch protection, all infrastructure mechanics.
-- `index.md` — diagram, glossary, navigation.
+- `specs.md` — architecture diagram and entry point.

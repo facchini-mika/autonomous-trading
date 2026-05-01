@@ -220,4 +220,4 @@ The Tier 1 team is the simpler of the two evaluation teams — it has narrow sco
 - `trading.md` — the trading runtime that produces what is evaluated here.
 - `infrastructure.md` — schemas, scheduler mechanics, observability, safety boundary specifics.
 - `optimization.md` — Tier 2 evaluation, where lessons are turned into patterns, proposals, and Git PRs.
-- `index.md` — diagram, glossary, navigation.
+- `specs.md` — architecture diagram and entry point.

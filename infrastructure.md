@@ -449,8 +449,7 @@ autonomous_trading/
 ├── infrastructure.md # this document
 ├── trading_feedback.md
 ├── optimization.md
-├── index.md         # diagram + glossary + navigation
-└── specs.md         # thin redirect for backward compatibility
+└── specs.md         # entry point with architecture diagram
 ```
 
 `risk/` is *protected code* — see §8.7.
@@ -467,7 +466,7 @@ Mandatory:
   - **NEVER** modify code under `risk/` outside Plan Mode with explicit approval
   - **NEVER** push directly to `main` or `--force` push
 - Repo conventions (commit format, branch naming, PR template ref)
-- Pointer to `index.md` as architectural overview, plus the four component spec files
+- Pointer to `specs.md` as architectural overview, plus the four component spec files
 - `@docs/risk-rules.md` import for hard risk rules
 
 Personal/transient → `CLAUDE.local.md` (gitignored). Global → `~/.claude/CLAUDE.md`.
@@ -748,4 +747,4 @@ The "one team per session" Cloud-doc limit holds trivially since each session is
 - `trading.md` — the trading runtime that consumes this infrastructure.
 - `trading_feedback.md` — Tier 1 evaluation, paper-mode promotion guidance.
 - `optimization.md` — Tier 2 code evaluation, governance for code changes (§7 review counts).
-- `index.md` — diagram, glossary, navigation.
+- `specs.md` — architecture diagram and entry point.

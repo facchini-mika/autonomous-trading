@@ -1,6 +1,6 @@
 # Trading — The Executing Trading Instance
 
-The runtime that decides what to trade and places orders. One block of the four-block architecture (see `index.md`).
+The runtime that decides what to trade and places orders. One block of the four-block architecture (see `specs.md`).
 
 **What lives here:** the per-cycle Trading Team, the 7-persona agent ensemble, the strategy layer, the decision logic, and the per-trade gates as the trading layer sees them. **What does not live here:** schemas, risk limit values, execution mechanics, and observability — those are owned by `infrastructure.md`. Evaluation and learning loops are in `trading_feedback.md` (Tier 1) and `optimization.md` (Tier 2).
 
@@ -272,4 +272,4 @@ This gives a concrete inspectable artifact between abstract `lessons`/`patterns`
 - `infrastructure.md` — schemas, data layer, execution engine, risk-limit values, central settings, ops, safety controls.
 - `trading_feedback.md` — Tier 1 evaluation, results, learnings, paper-mode promotion, the Strategy Update Loop that flows back into agent prompts.
 - `optimization.md` — Tier 2 code evaluation, exploit/explore tracks, anti-whipsaw rule (§3.1 above is the trading-side reference), the Tuning Loop that produces the Git PRs the operator merges.
-- `index.md` — architecture diagram, glossary, old→new mapping.
+- `specs.md` — architecture diagram and entry point.
