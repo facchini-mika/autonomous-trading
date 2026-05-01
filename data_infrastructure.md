@@ -6,20 +6,31 @@ Where data lives, how the prediction market is accessed, and how the system is o
 
 ---
 
+## MVP scope (this version of the doc)
+
+To start as simply as possible:
+- **Single market venue:** Polymarket only (CLOB + Gamma). Kalshi and any multi-venue support are deferred until post-MVP.
+- **Single information-intake channel for everything that is not market data:** OpenAI's web search (Responses API + `web_search_preview`), invoked via the `web_search` skill. **No** NewsAPI, GDELT, X/Twitter, Reddit, Tavily/Brave, FRED, or per-domain feeds in MVP. The agent searches the web through one tool and reads the synthesized result.
+- **Internal data:** market data from Polymarket, plus our own resolved-market archive for performance tracking. Nothing else.
+
+Anything below that contradicts this MVP scope is aspirational and applies post-MVP.
+
+---
+
 ## 0. Build on existing OSS first (load-bearing principle)
 
 Before writing any adapter, data-fetcher, market-client, parser, signer, or pipeline component: **search GitHub / PyPI for an existing project and build on it.** Do not reimplement what is already maintained. Specifically — but not exclusively — relevant to the components specified below:
 
 | Component | Existing projects to evaluate first |
 |---|---|
-| Polymarket CLOB client (REST + WS, EIP-712 signing) | `Polymarket/py-clob-client` (official Python client), `Polymarket/clob-client` (TS reference) |
+| Polymarket CLOB client (REST + WS, EIP-712 signing) | `Polymarket/py-clob-client` (official Python client) |
 | Polymarket Gamma API client | The official Polymarket monorepo + community wrappers; raw REST is fine if no library fits |
-| Kalshi client | `Kalshi-Exchange/kalshi-python`, `kalshi/trade-api-clients` |
-| News + web search | OpenAI web search API (Prediction-Arena reference), Tavily SDK, Brave Search SDK, GDELT-DOC client |
-| Time-series storage helpers | `timescale/python-tsv2`, official TimescaleDB tutorials/migrations |
-| EIP-712 signing | `web3.py` (eth_account), `ethers-rs` for hot path |
-| Reconciliation patterns / order idempotency | Reference Hummingbot, freqtrade, or any well-known broker-integration codebase |
-| Observability instrumentation | `structlog`, `opentelemetry-python` SDK, official Sentry SDK |
+| Web search (the MVP intake channel) | OpenAI Responses API with `web_search_preview` tool — Prediction-Arena reference |
+| EIP-712 signing | `web3.py` (eth_account); deferred until first `real_capital` switch |
+| Observability instrumentation | `structlog` for structured logs |
+| Reconciliation patterns / order idempotency | Reference reads: freqtrade or Hummingbot — patterns only, not deps |
+
+Post-MVP additions (Kalshi clients, time-series helpers, Sentry/OpenTelemetry, multi-source news SDKs) follow the same workflow once they enter scope.
 
 **Workflow:**
 1. Before opening a PR that adds an integration, link the upstream OSS project considered (or rejected, with reason) in the PR description.
@@ -33,19 +44,16 @@ This rule is the dual of `engineering.md §21`: §21 prevents tunable-sprawl, §
 
 ## 1. Data Layer
 
-**Sources:**
+**Sources (MVP):**
 
 | Source | Type | Use |
 |---|---|---|
 | Polymarket CLOB API (WS + REST) | Market | Orderbook, trades, fills |
 | Polymarket Gamma API | Market metadata | Resolution criteria, end dates, categories |
-| NewsAPI / GDELT | News | Real-time + historical news flow |
-| X / Twitter API (filtered) | Social | High-signal accounts, breaking news |
-| Reddit (selected subs) | Social | Vertical community sentiment |
-| Tavily / Brave Search | Web | Open-ended research queries |
-| Kalshi public API | Market | Cross-market reference (read-only v1) |
-| FRED, sports stats APIs | Domain | Macro and sports priors |
+| OpenAI web search (Responses API + `web_search_preview`) | Research | **The only news/social/macro/web-context intake.** Invoked via `research/skills/web_search.py`. Replaces every other open-web source for the MVP. |
 | Internal: resolved markets archive | Performance tracking | Per-agent hit-rate / PnL evaluation |
+
+**Post-MVP candidates** (none active in MVP): NewsAPI / GDELT, X / Twitter, Reddit, Tavily / Brave, Kalshi public API, FRED, sports stats APIs. Each is added only when a measured gap in MVP performance demands it, and goes through the §0 OSS-first workflow.
 
 **Storage:**
 
@@ -127,7 +135,7 @@ proposals(id pk, time, source_agent_id,
 
 ## 2. Prediction-Market Interface (adapter abstraction)
 
-The trading and evaluation layers must be venue-agnostic where the abstraction is feasible. **Polymarket is the primary venue (v1)**; Kalshi is a secondary read-only reference. The interface below makes adding a venue an additive change, not a rewrite.
+**MVP:** Polymarket is the **only** venue. The Protocol below still exists so post-MVP additions (Kalshi, etc.) are additive changes, not rewrites — but no other adapter ships in MVP.
 
 ```python
 class PredictionMarketAdapter(Protocol):
@@ -152,11 +160,12 @@ class PredictionMarketAdapter(Protocol):
     def get_order_status(self, order_id: str) -> OrderStatus: ...
 ```
 
-**Implementations:**
+**MVP implementations:**
 
 - **`PolymarketAdapter`** — primary. WebSocket subscribed to orderbooks for tracked markets (open positions + active candidates). REST for orders + account state. EIP-712 typed-data signing; private key in cloud KMS or hardware key (YubiHSM). Network: Polygon mainnet; gas in MATIC. Settlement: USDC.e. Polymarket Gamma API for resolution lookup. **Full read-and-write** — used by Trading Team in `real_capital` mode.
-- **`KalshiAdapter`** — secondary, read-only v1. `get_universe`, `get_orderbook`, `get_market_metadata`, `get_resolved_markets` only; `place_order` raises `NotImplementedError`. Reserved for cross-venue price comparison if/when the explore track promotes a strategy that needs it.
 - **`PaperTradingAdapter`** — wraps `PolymarketAdapter` for read paths but redirects `place_order` / `cancel_order` to a Postgres `paper_trades` ledger. Selected automatically when `TRADING_MODE='paper'` (`engineering.md §11`).
+
+**Post-MVP:** `KalshiAdapter` (read-only cross-venue reference) — added only if and when an explore-track strategy needs it.
 
 **Composition.** The `execution-engine` service holds exactly one `PredictionMarketAdapter` instance, selected at startup based on `TRADING_MODE`. The Trade Evaluation Team holds a read-only adapter (rejects write methods at the type-stub level). The Code Evaluation Team holds **no adapter** — it has no live-trading capability by design (`optimization.md §1`).
 
