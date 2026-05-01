@@ -1,0 +1,14 @@
+name: risk-coverage
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  risk-coverage:
+    name: risk-coverage
+    if: false  # Skeleton — activated in Phase 3 once risk/ exists.
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "placeholder — Phase 3 will enable pytest --cov=risk --cov-fail-under=100"

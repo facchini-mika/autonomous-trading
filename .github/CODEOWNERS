@@ -1,0 +1,16 @@
+# CODEOWNERS — combined with branch-protection ("Require review from Code
+# Owners") this enforces that risk-sensitive paths require an owner review.
+#
+# Solo-operator note: GitHub cannot enforce ≥2 reviewers on a per-path basis
+# when the only owner is the PR author. The 2-reviewer rule for risk/** and
+# for MAX_CAPITAL_EUR is therefore upheld via audit discipline: two distinct
+# qualitative self-reviews + an AUDIT_LOG.md entry. See CLAUDE.md "Reviewer
+# rule" and engineering.md §3.
+
+* @facchini-mika
+
+# Risk-sensitive code (engineering.md §3)
+/risk/ @facchini-mika
+
+# MAX_CAPITAL_EUR carrier (lands in Phase 3)
+/shared/config/settings.py @facchini-mika
