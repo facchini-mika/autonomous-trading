@@ -18,13 +18,15 @@ Deploy capital on Polymarket binary prediction markets to generate risk-adjusted
 
 ## 2. System Architecture
 
-**Tier 1 — Per-cycle pipeline.** Sequence of tasks, each owned by an agent/service. Memory passed as typed artifacts and persisted (fully replayable):
+**Tier 1 — Per-cycle pipeline.** Sequence of tasks coordinated by a **Team Lead Agent**, executed by **Team-Member Agents** (each its own context window), some of which spawn **Subagents** for parallel sub-tasks. Memory passed as typed artifacts and persisted (fully replayable):
 
 ```
+[Team Lead Agent]           → drives cycle clock; spawns members; assigns + monitors tasks; synthesizes
+        ↓
 [market-scanner]            → universe of candidate markets
 [portfolio-reviewer]        → PortfolioState  (positions, cash, PnL, drawdown, remaining capacity per scope)
-[research-orchestrator]     → ResearchBundle  (news, history, related markets; in S3)
-[trading agents — §4]       → Prediction      (p_yes, confidence, reasoning) per agent
+[research-orchestrator]     → ResearchBundle  (news, history, related markets; in S3)   ← spawns subagents
+[trading agents — §4]       → Prediction      (p_yes, confidence, reasoning) per agent  ← may spawn subagents
 [aggregator]                → ConsensusProbability  (calibrated, with disagreement metric)
 [risk-engine]               → Decision        (action, size, gate results, rationale)
 [execution-engine]          → Trades + fills
@@ -33,7 +35,7 @@ Deploy capital on Polymarket binary prediction markets to generate risk-adjusted
 
 The four-stage shape — **Receive (market-scanner) → Review (portfolio-reviewer) → Analyze (research + agents + aggregator) → Decide (risk-engine + execution)** — mirrors the canonical Prediction Arena cycle, generalized to a multi-agent ensemble. Review precedes Analyze deliberately: if portfolio state already triggers a §6 trip-wire or exhausts capacity, the cycle skips expensive research entirely.
 
-**Tier 2 — Cross-cycle reflection (§15).** Improvement agents read Tier-1 memory asynchronously and emit higher-order memory that flows back via prompt/strategy/config updates after human approval:
+**Tier 2 — Cross-cycle reflection (§15).** Improvement agents read Tier-1 memory asynchronously and emit higher-order memory that flows back via prompt/strategy/config updates after human approval. The improvement layer is its own **Improvement Team** (§15.1) — separate Team Lead, separate task list — running off-cycle from trading:
 
 ```
 predictions ┐
@@ -42,11 +44,67 @@ trades      │    (append)      (curated)      (gated)
 outcomes    ┘
 ```
 
-**Memory taxonomy (8 layers):**
+**Agent-Team topology (Lead + Members + Subagents).** The architectural pattern is taken from Claude Code's Agent Teams (`code.claude.com/docs/en/agent-teams`): one **Team Lead Agent** + multiple **Team-Member Agents** sharing a task list and a mailbox + per-member **Subagents** for focused fanout. This is a *pattern adoption*: the production runtime implements it on top of the raw Anthropic API with custom orchestration. The experimental Claude Code Agent Teams feature itself is used in **development workflows** (§14, §15) but is **not the production runtime** — it is documented as experimental, lacks session resumption, and supports only one team per session, none of which is acceptable for a 24/7 trading loop.
+
+**Topology:**
+
+```
+┌────────────────── Team Lead Agent (per cycle) ──────────────────┐
+│  - drives cycle clock (§3); initializes shared task list         │
+│  - spawns members at the right time, passes typed artifacts      │
+│  - decides Review-gate short-circuit (§3 step 2)                 │
+│  - synthesizes intermediate results + member disagreements       │
+│  - emits cycle-close artifacts; never executes orders directly   │
+└──────────────────────────────────────────────────────────────────┘
+                              │
+        ┌─── shared task list + mailbox (short-term) ───┐
+        ▼                                                ▼
+[Team Members]                                  [each in own context window]
+  · market-scanner
+  · portfolio-reviewer
+  · research-orchestrator     ─┐
+  · trading-agent-{id} (×7)    │ may spawn Subagents (one-way fanout, results
+  · aggregator                 │ return to parent member only)
+  · risk-engine                │
+  · execution-engine          ─┘
+  · evaluator
+```
+
+**Member Subagents** (focused, fan-out only — *no* mailbox, *no* shared task list, results return to parent member only):
+
+| Team member | Subagents (typical) |
+|---|---|
+| `research-orchestrator` | `news-fetcher`, `web-searcher`, `historical-analogue-finder`, `related-market-scanner`, `social-sentiment-extractor` — one per research dimension, fired in parallel per candidate market |
+| `domain-router` (trading agent) | Per-domain sub-prompts (`politics-sub`, `crypto-sub`, `sports-sub`, `macro-sub`) so the parent context stays lean |
+| `historical-analogue` (trading agent) | `analogue-finder`, `analogue-weighter` |
+| `risk-engine` | `slippage-simulator`, `correlation-cluster-checker` for compute-heavy gate evaluations |
+| `evaluator` | `outcome-fetcher`, `pnl-aggregator` |
+| `safety-watchdog` | `reconciliation-diff-explainer` (only on triggered alerts) |
+
+**Cloud-doc constraint mirrored in production:** subagents may not spawn further teams (only the Lead manages the team). They may, however, fan out into nested subagents within their own session (e.g. one `web-searcher` per query), which is the right primitive for parallelizable I/O-bound work.
+
+**Why members vs subagents:** members coordinate (mailbox + shared list, can challenge each other, peer-visible); subagents fan out (parent-only return, cheaper because results summarize back into the parent's context). Same rule as in the Cloud doc — choose by whether workers need to talk to each other.
+
+**Memory split: short-term (per cycle) vs long-term (across cycles).** Every cycle, the Team Lead provisions a fresh short-term layer that is discarded at cycle close. Long-term memory persists across cycles as the durable record of the system's accumulated knowledge.
+
+| Scope | Mechanism | Lifetime | Read by |
+|---|---|---|---|
+| **Short-term coordination** | **Shared task list** (per-cycle, file-locked, states `pending`/`in_progress`/`completed`, with explicit dependencies — e.g. `agent-inference` blocks on `research-bundle-ready`) | one cycle | Lead + all members of the same cycle |
+| **Short-term coordination** | **Mailbox** (auto-delivered messages between members, used for clarifications, partial-result hand-offs, aggregator disagreement-flagging) | one cycle | Sender + named recipient(s) |
+| **Short-term hand-off** | **In-flight typed artifacts** in process memory: `PortfolioState`, `ResearchBundle`, `Prediction`, `ConsensusProbability`, `Decision` | one cycle (persisted on close to §8 for replay only) | Downstream members of same cycle |
+| **Short-term reasoning** | **Per-member context window** | one cycle (member shutdown) | Owning member only |
+| **Long-term agent state** | `notes` (LRU scratchpad, §4) | cross-cycle, capped | Owning agent's next cycle; improvement agents (§15) |
+| **Long-term agent state** | `beliefs` (typed, revisable with lineage, §4) | cross-cycle, indefinite | Owning agent's next cycle; improvement agents |
+| **Long-term episodic** | `predictions`, `decisions`, `trades`, `positions` (§8) | indefinite | All future cycles + improvement agents |
+| **Long-term reflective** | `lessons` (append-only), `patterns` (curated), `proposals` (gated), LTKDs (quarterly) — §15.2/§15.3 | indefinite | Improvement agents; trading agents via critical-learning section in §4 prompt |
+
+The short-term layer is **never** read by future cycles — it cleans up at cycle close. The long-term layer is **never** used for in-cycle coordination — it carries only what future cycles need. Crossing this boundary requires an explicit write into one of the long-term stores (e.g. an agent calling `manage_beliefs.create` or the evaluator inserting a row into `predictions`).
+
+**Memory taxonomy (8 layers, full detail):**
 
 | Layer | Where | Lifetime | Purpose |
 |---|---|---|---|
-| Working | Research bundle in S3; in-flight prediction in process memory | one cycle | Pass context within a cycle |
+| Working / Short-term | Shared task list + mailbox (Lead-managed); in-flight Pydantic artifacts in process memory; per-member context window | one cycle | Inter-member coordination + hand-offs within a cycle |
 | Agent notes | Per-agent `notes` table (max 50 × ~200 words, LRU) | cross-cycle, capped | Trading agent's scratchpad — ad-hoc reminders + provisional flags |
 | Agent beliefs | Per-agent `beliefs` table, typed by domain | cross-cycle, revisable, full lineage | Structured market views — calibration-tracked (§4 + §8) |
 | Episodic | `predictions`, `decisions`, `trades`, `positions` (§8) | indefinite | Per-event ground truth; replay/audit |
@@ -125,7 +183,7 @@ outcomes    ┘
 9. **T+8m — Decide: Sizing.** Quarter-Kelly within remaining caps from `PortfolioState`.
 10. **T+9m — Decide: Order placement.** Limit, post-only when viable. Iceberg slicing for size > $500.
 11. **T+10–11m — Fill monitoring.** Track partial fills. Cancel/replace on > 1% adverse move.
-12. **T+12m — Cycle close.** Persist decisions, fills, reasoning links. Emit metrics. Next cycle.
+12. **T+12m — Cycle close.** Lead persists in-flight artifacts (decisions, fills, reasoning links) to long-term stores (§8); writes any agent-initiated `notes` / `beliefs` / `lessons` updates; emits cycle metrics; **tears down the short-term layer** (clears mailbox, archives the cycle's task list, shuts down team members). Next cycle starts with a fresh Team Lead and fresh short-term layer.
 
 ---
 
@@ -721,6 +779,30 @@ Before any new component, do a prior-art search; prefer reuse over rewriting.
 
 This rule is the dual of §14.7 risk-layer protection: §14.7 prevents the AI from changing the *hardest* limits without humans; §14.21 prevents anyone (human or AI) from scattering tunables so widely that no single file shows the full operating envelope.
 
+### 14.22 Agent Teams & Subagents in Development
+
+The §2 Lead + Members + Subagents topology is implemented in production with custom orchestration (the Anthropic API directly), because Claude Code's Agent Teams feature is documented as **experimental** with limitations unsuitable for a 24/7 trading loop (no session resumption, one team per session, lead can't be promoted/transferred — see `code.claude.com/docs/en/agent-teams#limitations`).
+
+For **development and operations** workflows, Claude Code's Agent Teams *is* used directly:
+
+- **Improvement-agent batches** (§15.3) — the weekly batch (`pattern-miner` → `strategy-improver` → `meta-reviewer`) is a natural fit for Agent Teams: parallel exploration, members challenge each other's lessons, mailbox communication for adversarial review of proposed prompts.
+- **Parallel debugging / incident response** — when investigating a live alert (e.g. reconciliation diff > $10), spawn a team with competing hypotheses per the Cloud-doc *competing hypotheses* pattern.
+- **PR review on `risk/` and `execution/`** — security-reviewer + risk-reviewer + test-runner as a 3-member team rather than sequential subagent calls.
+- **Backtest fan-out** — multiple paper-strategy backtests in parallel, one teammate per strategy, lead synthesizes the comparison.
+
+**Subagents** (one-way fan-out, parent-only return — `code.claude.com/docs/en/sub-agents`) are used everywhere a focused worker is enough and inter-agent dialogue is not needed: each `risk-reviewer`, `strategy-researcher`, `backtest-runner`, `security-reviewer` (§14.5). A subagent definition is reusable as both a delegated subagent *and* an agent-team teammate (Cloud-doc: *Use subagent definitions for teammates*).
+
+**Decision rule:**
+
+| Situation | Use |
+|---|---|
+| Focused task, only the result matters | Subagent |
+| Parallel exploration where workers must compare/challenge | Agent Team |
+| Inside a teammate, focused fan-out (multiple queries, parallel scans) | Subagent (within teammate session) |
+| Production trading hot path | Custom orchestration (the *pattern* of Agent Teams, not the experimental feature) |
+
+Enabling Agent Teams in dev: set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in `.claude/settings.json` (§14.4), require Claude Code v2.1.32+. Cleanup discipline: always `clean up the team` via the Lead before ending a session (Cloud-doc warning) to avoid orphaned `~/.claude/teams/` entries.
+
 ---
 
 ## 15. Self-Improvement & Continuous Learning
@@ -743,7 +825,16 @@ Both run on cloud-hosted Claude Opus per §4 (hard rule). Diversity in role + pr
 | `prior-art-scout` | Enforce §14.20 — search GitHub/PyPI/papers before custom builds | On every new-component PR open | Prior-art note posted to PR |
 | `meta-reviewer` | Aggregate, dedupe, prioritize all proposals; route top-K to operator | Weekly | Decision queue (Slack/email) |
 
-All defined as Claude Code subagents (§14.5) with read-only access to live observational data (`predictions`, `decisions`, `trades`, snapshots, calibration history) and write access only to `lessons`, `patterns`, `proposals`, and Git via PR on feature branches.
+**Team structure.** Improvement agents form their own **Improvement Team** following the same Lead + Members + Subagents pattern as the trading team (§2):
+
+- A dedicated **Improvement Team Lead** orchestrates each scheduled batch (hourly, daily, weekly, monthly per §15.3).
+- The members above are spawned per batch; their short-term coordination uses the same shared-task-list + mailbox primitives as Tier-1.
+- `pattern-miner` and `strategy-improver` may spawn subagents for fan-out (e.g. one subagent per lesson cluster, one per category being analyzed).
+- The Improvement Team is **isolated from the Trading Team** — separate Lead, separate task list, no shared mailbox. The only coupling is the long-term memory layer: improvement agents *read* episodic + reflective tables and *write* `lessons` / `patterns` / `proposals` / Git PRs.
+
+In **development**, this team can be instantiated using Claude Code's experimental Agent Teams feature (`code.claude.com/docs/en/agent-teams`); in **production** it runs as scheduled workers on the same custom orchestration as Tier-1.
+
+All members are defined as Claude Code subagents (§14.5) — reusable subagent definitions per `code.claude.com/docs/en/sub-agents` — with read-only access to live observational data (`predictions`, `decisions`, `trades`, snapshots, calibration history) and write access only to `lessons`, `patterns`, `proposals`, and Git via PR on feature branches.
 
 ### 15.2 Shared Memory & Notes
 
@@ -857,7 +948,12 @@ Result: no runaway self-modification. Human in loop on every merge that affects 
 - **Effective spread** — bid-ask spread adjusted for fee impact + depth at intended order size.
 - **Shadow mode** — strategy/agent running paper-trading on live data, for evaluation before capital allocation.
 - **Agent orchestration** — coordination of multiple specialized AI agents into an explicit task pipeline, with typed memory artifacts passed between tasks (Tier 1) and reflective memory accumulated across cycles (Tier 2). See §2.
-- **Working memory** — context that lives only for one trading cycle (research bundle, in-flight prediction).
+- **Team Lead Agent** — per-cycle orchestrator (§2). Initializes the shared task list, spawns Team Members, routes mailbox traffic, decides Review-gate short-circuit, persists artifacts at cycle close, tears down the short-term layer. Never executes orders directly.
+- **Team Member Agent** — independent Claude session with its own context window, owns one Tier-1 stage. Communicates with peers via mailbox + shared task list. Pattern from `code.claude.com/docs/en/agent-teams`.
+- **Subagent** — focused worker spawned by a Team Member for one-way fan-out. Result returns to the parent only; no peer messaging, no shared task list. Cheaper than a Team Member because results summarize back into the parent context. Pattern from `code.claude.com/docs/en/sub-agents`.
+- **Short-term memory** — per-cycle, ephemeral: shared task list + mailbox + in-flight Pydantic artifacts + per-member context windows. Cleared at cycle close. Never read by future cycles.
+- **Long-term memory** — across cycles, durable: `notes`, `beliefs`, `predictions`, `decisions`, `trades`, `positions`, `lessons`, `patterns`, `proposals`, LTKDs. Carries everything future cycles depend on.
+- **Working memory** — historical synonym for short-term memory in §2 taxonomy; superseded by the explicit short-term/long-term split.
 - **Episodic memory** — per-event durable records (predictions, decisions, trades, positions) used for replay/audit.
 - **Reflective memory** — observations + hypotheses written by improvement agents into `lessons` after the fact.
 - **Belief** — typed structured statement an agent currently holds about how a market or class behaves. In `beliefs` table; performance-tracked (hit rate) when falsifiable; revisions preserve full lineage. Distinct from `predictions` (per-market per-cycle), `notes` (ad-hoc), `lessons` (post-hoc, by improvement agents).
