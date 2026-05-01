@@ -18,10 +18,18 @@ Deploy capital on Polymarket binary prediction markets to generate risk-adjusted
 
 ## 2. System Architecture
 
-**Tier 1 — Per-cycle pipeline.** Sequence of tasks coordinated by a **Team Lead Agent**, executed by **Team-Member Agents** (each its own context window), some of which spawn **Subagents** for parallel sub-tasks. Memory passed as typed artifacts and persisted (fully replayable):
+**Three independent teams**, each running as its own Claude Code Agent Team in its own scheduled `claude` process. They never share a session, only the long-term memory layer (§8). Decoupled scheduling is the point — a stuck team cannot block the others.
+
+| Team | Schedule | Purpose | Writes to | Reads |
+|---|---|---|---|---|
+| **Trading Team** (§2 Tier 1, §3) | every 12 min | Decide which markets to trade and place orders | `predictions`, `decisions`, `trades`, `positions`, `cycle_plan`, `notes`, `beliefs` | everything |
+| **Trade Evaluation Team** (§15 Tier 1) | every 1 min on resolution event | Score the past: when a market resolves, compute outcome, PnL, per-agent hit-rate; mark the corresponding position closed; emit raw observations | `predictions.outcome`, `trades.realized_pnl`, `positions` (closed), `agent_performance` | resolved markets, open positions |
+| **Code Evaluation Team** (§15 Tier 2, formerly "Improvement Team") | hourly / daily / weekly batches | Score the system: read Trade-Evaluation outputs and trading memory, propose code/prompt/strategy/agent-roster changes, **open PRs for human review** — never self-merge | `lessons`, `patterns`, `proposals`, Git PRs on feature branches | everything except live-trading endpoints |
+
+**Tier 1 — Trading Team per-cycle pipeline.** Sequence of tasks coordinated by the **Trading-Team Lead**, executed by **Team-Member Agents** (each its own context window), some of which spawn **Subagents** for parallel sub-tasks. Memory passed as typed artifacts and persisted (fully replayable):
 
 ```
-[Team Lead Agent]           → drives cycle clock; spawns members; assigns + monitors tasks; synthesizes
+[Trading-Team Lead]         → drives cycle clock; spawns members; assigns + monitors tasks; synthesizes
         ↓
 [market-scanner]            → universe of all tradable markets (PA-style: no filter)
 [portfolio-reviewer]        → PortfolioState  (positions, cash, PnL, last 10 settlements + trades)
@@ -29,16 +37,17 @@ Deploy capital on Polymarket binary prediction markets to generate risk-adjusted
 [aggregator]                → ConsensusProbability  (mean of p_raw, with disagreement metric)
 [risk-engine]               → Decision        (action, size, gate results, rationale)
 [execution-engine]          → Trades + fills (paper or real-capital, §14.9)
-[evaluator (on resolve)]    → Outcome + PnL + per-agent hit-rate / PnL update
 ```
 
 The four-stage shape — **Receive (market-scanner) → Review (portfolio-reviewer) → Analyze (agents call research tools, then aggregator) → Decide (risk-engine + execution)** — mirrors the canonical Prediction Arena cycle, generalized to a multi-agent ensemble. Review precedes Analyze deliberately: the portfolio snapshot is consumed by both the agent prompts and the risk gates, so it must exist before either runs.
 
-**Tier 2 — Cross-cycle reflection (§15).** Improvement agents read Tier-1 memory asynchronously and emit higher-order memory that flows back via prompt/strategy/config updates after human approval. The improvement layer is its own **Improvement Team** (§15.1) — separate Team Lead, separate task list — running off-cycle from trading:
+The **`evaluator` is no longer a Trading-Team member** — it is the Trade Evaluation Team (§15), running on a separate 1-minute schedule because market resolutions arrive asynchronously to trading cycles (UMA oracle, hours to days after a market closes).
+
+**Tier 2 — cross-cycle reflection (§15).** The Code Evaluation Team reads the outputs of the other two teams and proposes structured changes — never to live state, always as PRs that the operator reviews and merges:
 
 ```
 predictions ┐
-decisions   ├──→  lessons  ──→  patterns  ──→  proposals  ──→  Git PRs / config / prompt updates
+decisions   ├──→  lessons  ──→  patterns  ──→  proposals  ──→  Git PRs (operator reviews and merges)
 trades      │    (append)      (curated)      (gated)
 outcomes    ┘
 ```
@@ -68,14 +77,13 @@ outcomes    ┘
                               │
         ┌─── shared task list + mailbox (short-term) ───┐
         ▼                                                ▼
-[Team Members]                                  [each in own context window]
+[Trading-Team Members]                          [each in own context window]
   · market-scanner
   · portfolio-reviewer
   · trading-agent-{id} (×7)   ─┐ each agent calls research tools (web_search,
   · aggregator                 │ news_fetch, analogue_lookup, related_market_scan)
   · risk-engine                │ inline during inference; may spawn Subagents
   · execution-engine          ─┘ for I/O-bound fan-out (one-way, parent-only)
-  · evaluator
 ```
 
 **Member Subagents** (focused, fan-out only — *no* mailbox, *no* shared task list, results return to parent member only):
@@ -84,8 +92,8 @@ outcomes    ┘
 |---|---|
 | Any trading agent | `web-searcher`, `news-fetcher`, `analogue-finder`, `related-market-scanner` — fanned out for I/O-bound research on the markets the agent chooses to focus on |
 | `domain-router` (trading agent) | Per-domain sub-prompts (`politics-sub`, `crypto-sub`, `sports-sub`, `macro-sub`) so the parent context stays lean |
-| `evaluator` | `outcome-fetcher`, `pnl-aggregator` |
 | `safety-watchdog` | `reconciliation-diff-explainer` (only on triggered alerts) |
+| `evaluator` (Trade Evaluation Team — §15) | `outcome-fetcher`, `pnl-aggregator`, `agent-performance-updater` |
 
 **Cloud-doc constraints (binding because the feature is the runtime):**
 - Subagents may not spawn further teams (only the Lead manages the team). They may fan out into nested subagents within their own session (e.g. one `web-searcher` per query) — this is the right primitive for parallelizable I/O-bound work.
@@ -103,14 +111,14 @@ outcomes    ┘
 | **Short-term coordination** | **Mailbox** (auto-delivered messages between members, used for clarifications, partial-result hand-offs, aggregator disagreement-flagging) | one cycle | Sender + named recipient(s) |
 | **Short-term hand-off** | **In-flight typed artifacts** in process memory: `PortfolioState`, `Prediction`, `ConsensusProbability`, `Decision` | one cycle (persisted on close to §8 for replay only) | Downstream members of same cycle |
 | **Short-term reasoning** | **Per-member context window** | one cycle (member shutdown) | Owning member only |
-| **Long-term agent state** | `notes` (LRU scratchpad, §4) | cross-cycle, capped | Owning agent's next cycle; improvement agents (§15) |
-| **Long-term agent state** | `beliefs` (typed, revisable with lineage, §4) | cross-cycle, indefinite | Owning agent's next cycle; improvement agents |
+| **Long-term agent state** | `notes` (LRU scratchpad, §4) | cross-cycle, capped | Owning agent's next cycle; Code-Evaluation agents (§15) |
+| **Long-term agent state** | `beliefs` (typed, revisable with lineage, §4) | cross-cycle, indefinite | Owning agent's next cycle; Code-Evaluation agents |
 | **Long-term operational** | `cycle_plan` (single-row latest, forward-looking handoff, §4) | overwritten each cycle (history kept) | Next cycle's Team Lead at boot |
 | **Long-term operational** | `operating_doctrine` (active phased strategy with target date, §4) | revisable, lineage kept | Trading agents via §4 prompt; `strategy-improver` for revision |
-| **Long-term episodic** | `predictions`, `decisions`, `trades`, `positions` (§8) | indefinite | All future cycles + improvement agents |
+| **Long-term episodic** | `predictions`, `decisions`, `trades`, `positions` (§8) | indefinite | All future cycles + Code-Evaluation agents |
 | **Long-term reflective** | `lessons` (append-only), `patterns` (curated), `proposals` (gated), LTKDs (quarterly) — §15.2/§15.3 | indefinite | Improvement agents; trading agents via critical-learning section in §4 prompt |
 
-The short-term layer is **never** read by future cycles — it cleans up at cycle close. The long-term layer is **never** used for in-cycle coordination — it carries only what future cycles need. Crossing this boundary requires an explicit write into one of the long-term stores (e.g. an agent calling `manage_beliefs.create` or the evaluator inserting a row into `predictions`).
+The short-term layer is **never** read by future cycles — it cleans up at cycle close. The long-term layer is **never** used for in-cycle coordination — it carries only what future cycles need. Crossing this boundary requires an explicit write into one of the long-term stores (e.g. an agent calling `manage_beliefs.create` or the Trade Evaluation Team's `evaluator` updating `predictions.outcome` on resolution).
 
 **Memory taxonomy (10 layers, full detail):**
 
@@ -122,15 +130,15 @@ The short-term layer is **never** read by future cycles — it cleans up at cycl
 | Cycle plan | `cycle_plan` table, single active row, portfolio-level (§4) | overwritten each cycle, history retained | Forward-looking handoff: next-cycle priorities, holds-with-rationale, pending settlements, blockers |
 | Operating doctrine | `operating_doctrine` table, single active row with lineage (§4) | revisable (weeks–months), lineage retained | Currently-active phased strategy with target date — directive, not retrospective |
 | Episodic | `predictions`, `decisions`, `trades`, `positions` (§8) | indefinite | Per-event ground truth; replay/audit |
-| Reflective | `lessons` (§15.2) | indefinite (compacted) | Observations + hypotheses by improvement agents |
+| Reflective | `lessons` (§15.2) | indefinite (compacted) | Observations + hypotheses by Code-Evaluation agents |
 | Pattern | `patterns` (§15.2) | indefinite (curated) | Recurring observations clustered from lessons |
 | Proposal | `proposals` (§15.2) | indefinite | Pending/accepted/rejected change requests |
-| Long-term | LTKDs (§15.3) | indefinite (revised quarterly) | Compressed background context for improvement-agent prompts |
+| Long-term | LTKDs (§15.3) | indefinite (revised quarterly) | Compressed background context for Code-Evaluation-agent prompts |
 
 **Design implications:**
 - Memory is the only coupling between tasks → swapping any agent is local.
 - Within the prediction stage, trading agents do **not** share memory in real time (§4 independence). Diversity is the value there. Orchestration applies *between* stages, not within parallel prediction.
-- Reflection is asynchronous + human-gated (§15.4). Trading hot path never waits on improvement agents.
+- Reflection is asynchronous + human-gated (§15.4). Trading hot path never waits on Code-Evaluation agents.
 - Every artifact has a Pydantic schema (§14.12). No untyped dicts cross task boundaries.
 
 **Layered service view.** Four logical layers, services on async message bus, isolated failure + independent scaling.
@@ -158,7 +166,7 @@ The short-term layer is **never** read by future cycles — it cleans up at cycl
 | `position-manager` | Maintain real-time portfolio state |
 | `reconciler` | Cross-check internal state vs broker truth |
 | `meta-allocator` | Per-agent capital weights |
-| `evaluator` | Compute metrics on resolved markets |
+| `evaluator` (Trade Evaluation Team) | Compute outcome + PnL + per-agent hit-rate on resolved markets; runs on its own 1-min schedule, not inside the Trading-Team cycle |
 | `safety-watchdog` | Enforce kill switch, drawdown, sanity limits |
 
 **Design principles:**
@@ -178,9 +186,10 @@ The short-term layer is **never** read by future cycles — it cleans up at cycl
 |---|---|---|
 | Snapshot | 1 s | Update orderbook for active positions |
 | Reconcile | 30 s | Match internal positions to broker truth |
-| Decision | 12 min | Full scan → decide → execute |
-| Allocation | 24 h | Rebalance per-agent capital |
-| Resolution | 1 min | Detect resolved markets, finalize PnL |
+| Decision | 12 min | Full scan → decide → execute (Trading Team, §3) |
+| Resolution | 1 min | Detect resolved markets, finalize outcome + PnL + per-agent hit-rate (Trade Evaluation Team, §15) |
+| Allocation | 24 h | Rebalance per-agent capital (`meta-allocator`, deterministic, not a Claude team) |
+| Code-Eval batches | hourly / daily / weekly | Read trade outputs, propose code/prompt/strategy/agent changes as Git PRs (Code Evaluation Team, §15) |
 
 **Decision cycle (T = scheduler fire time, i.e. a fresh `claude` process started).** The four-stage spine is **Receive → Review → Analyze → Decide** (PA-pattern); a Boot phase runs first, and Cycle-close tears the team down. Steps below are the concrete sub-stages.
 
@@ -258,7 +267,7 @@ class Agent:
 
 This is the explicit bridge between Tier-1 working memory and Tier-2 reflective memory. Every decision is conditioned on a defined, audit-inspectable slice of past experience.
 
-**Agent notes (per-agent scratchpad).** Private `notes` store via `manage_notes` tool (read/write/search/edit). Bounded: max 50 × ~200 words, LRU. Used by the agent itself for patterns spotted during reasoning, reminders for next cycle, tentative hypotheses too provisional for `lessons`. Private to one agent (no cross-agent leakage during prediction — preserves §4 independence) but readable by improvement agents (§15) for pattern mining.
+**Agent notes (per-agent scratchpad).** Private `notes` store via `manage_notes` tool (read/write/search/edit). Bounded: max 50 × ~200 words, LRU. Used by the agent itself for patterns spotted during reasoning, reminders for next cycle, tentative hypotheses too provisional for `lessons`. Private to one agent (no cross-agent leakage during prediction — preserves §4 independence) but readable by Code-Evaluation agents (§15) for pattern mining.
 
 **Agent beliefs (structured market views).** Typed `beliefs` store via `manage_beliefs` tool (`create`, `revise`, `retire`, `search`). A belief is a structured statement the agent currently holds. Fields:
 - `domain` — `market_structure` / `strategy` / `event` / `risk` / `sentiment`
@@ -282,7 +291,7 @@ This is the explicit bridge between Tier-1 working memory and Tier-2 reflective 
 | `beliefs` (§4) | typed, structured, per-agent | trading agent | revisable, history kept | First-class views the agent operates *under* |
 | `cycle_plan` (§4) | portfolio-level, single active row | Team Lead at cycle close | overwritten next cycle, history kept | Forward-looking handoff between cycles |
 | `operating_doctrine` (§4) | portfolio-level, single active row with lineage | `strategy-improver` (proposed) + human (approved) | revisable, lineage kept | Currently in-force operative strategy |
-| `lessons` (§15.2) | post-hoc observation | improvement agent | append-only | Reflective, written *about* the system |
+| `lessons` (§15.2) | post-hoc observation | Trade-Eval or Code-Eval agent | append-only | Reflective, written *about* the system |
 
 **Belief usage:**
 - Injected per cycle as *"your active beliefs about this market/category"* — top-K by relevance + recency.
@@ -292,7 +301,7 @@ This is the explicit bridge between Tier-1 working memory and Tier-2 reflective 
 
 This makes the agent's *implicit world model* explicit, inspectable, and (for falsifiable beliefs with `p_estimate`) hit-rate-trackable.
 
-**Cycle plan (forward-looking handoff).** Single-row portfolio-level artifact written at the very end of each cycle by the Team Lead, read by the *next* cycle's Lead at boot. Solves the gap that fresh-team-per-cycle (§2) creates: the next process knows nothing about what the previous one was about to do. Distinct from `notes` (per-agent, retrospective) and `lessons` (reflective, written by improvement agents). Fields:
+**Cycle plan (forward-looking handoff).** Single-row portfolio-level artifact written at the very end of each cycle by the Team Lead, read by the *next* cycle's Lead at boot. Solves the gap that fresh-team-per-cycle (§2) creates: the next process knows nothing about what the previous one was about to do. Distinct from `notes` (per-agent, retrospective) and `lessons` (reflective, written by Code-Evaluation agents). Fields:
 - `written_at` / `written_by_cycle_id`
 - `next_priorities` — ordered list of concrete actions for the next cycle
 - `holds_with_rationale` — for each currently-open position: 1-line reason to hold rather than close
@@ -303,7 +312,7 @@ This makes the agent's *implicit world model* explicit, inspectable, and (for fa
 
 The Lead synthesizes the plan from in-flight artifacts at step 12 (§3); it is not produced by an LLM call, it's a deterministic summarization of the cycle's `Decision`/`PortfolioState`/aggregator outputs (with one short LLM-written rationale field per priority/hold). Always exactly one active row.
 
-**Operating doctrine (current operative strategy).** Single active row, revisable with full lineage (analogous to `beliefs`). Distinct from LTKDs (§15.3, retrospective background context for improvement agents) and `proposals` (§15.2, change requests). This is the **currently in-force operative strategy** that trading agents condition on. Fields:
+**Operating doctrine (current operative strategy).** Single active row, revisable with full lineage (analogous to `beliefs`). Distinct from LTKDs (§15.3, retrospective background context for Code-Evaluation agents) and `proposals` (§15.2, change requests). This is the **currently in-force operative strategy** that trading agents condition on. Fields:
 - `target_date` — horizon the doctrine is written against
 - `phases` — ordered list of phases, each with `name`, `entry_condition`, `exit_condition`, `actions`, `forbidden`
 - `current_phase` — the phase active right now (re-evaluated each cycle by the Lead against the `entry_condition`/`exit_condition` of adjacent phases; transitions are logged to `decisions`-style audit)
@@ -759,7 +768,7 @@ There is **no automated CI gate** that blocks the promotion — the operator own
   4. **Network egress allowlist** — the production server can only reach Polymarket CLOB, Anthropic API, configured data sources; everything else is blocked at the firewall, so even a malformed tool call cannot exfiltrate or hit unintended endpoints.
   5. **Filesystem isolation** — production server writes only to repo-local `~/.claude/`, the Postgres/Redis network sockets, and S3 (scoped IAM). No general filesystem access.
   6. **Bounded lifetime** — every cycle process exits after ~12 min by design; a process that fails to exit is killed by the scheduler (e.g. cron + timeout, k8s `activeDeadlineSeconds`).
-- The trading-cycle Lead is the **only** environment where `--dangerously-skip-permissions` is acceptable. Every other Claude Code session (dev, improvement-team batches, debug) keeps standard permissions.
+- The trading-cycle Lead is the **only** environment where `--dangerously-skip-permissions` is acceptable. Every other Claude Code session (dev, Trade-Evaluation runs, Code-Evaluation batches, debug) keeps standard permissions.
 
 ### 14.15 Workflow Discipline
 
@@ -875,7 +884,8 @@ claude --teammate-mode in-process \
 **Subagents** (one-way fan-out, parent-only return — `code.claude.com/docs/en/sub-agents`): used by individual members for focused work where peer dialogue is not needed. Subagent definitions in `.claude/agents/` are reusable as both delegated subagents and team members. Examples per member listed in §2.
 
 **Off-cycle teams.** Same Claude Code feature, separate processes, separate `team-name`:
-- **Improvement-agent batches** (§15.1, §15.3) — scheduled separately from the trading cycle; the weekly batch runs its own Improvement Team session, cleans up, exits.
+- **Trade Evaluation Team** (§15.0) — runs every 1 min on its own cron; ingests resolved markets and writes ground-truth fields. Single-member team, cleans up after each tick.
+- **Code Evaluation Team batches** (§15.1, §15.3) — scheduled separately from the trading cycle; daily/weekly batches each run their own Code-Evaluation Team session, clean up, exit.
 - **Parallel debugging on alerts** — incident response spawns ad-hoc teams for competing-hypothesis investigation.
 - **PR review** — security-reviewer + risk-reviewer + test-runner as a 3-member team.
 - **Backtest fan-out** — one teammate per candidate strategy.
@@ -896,34 +906,79 @@ The "one team per session" Cloud-doc limit holds trivially since each session is
 
 ---
 
-## 15. Self-Improvement & Continuous Learning
+## 15. Evaluation & Self-Improvement (two tiers)
 
-Trading agents (§4) make individual market decisions. This **meta-layer** observes outcomes and improves agents/strategies/code over time. Two distinct populations:
+The Trading Team (§2, §3, §4) decides what to trade. This section covers the **two further teams** that score the system after the fact and propose corrections:
 
-1. **Trading agents** (§4) — produce P(YES) in the live cycle.
-2. **Improvement agents** (this section) — operate on code, prompts, strategies, configs. Never touch live trading endpoints.
+1. **Trade Evaluation Team (Tier 1)** — looks at the **trades**: when a market resolves, computes outcome + PnL + per-agent hit-rate, marks the position closed, emits raw observations into the long-term tables. Runs on a 1-min cron, fully deterministic-with-agent-shell (§15.0). Writes ground-truth data only — it does *not* propose code changes.
+2. **Code Evaluation Team (Tier 2, formerly "Improvement Team")** — looks at the **code, prompts, strategies, and agent roster** in light of Tier-1's outputs. Writes `lessons` / `patterns`, drafts `proposals`, **opens Git PRs that the operator reviews and merges**. Never self-merges, never touches live-trading endpoints.
 
-Both run on cloud-hosted Claude Opus per §4 (hard rule). Diversity in role + prompt, not in model. Multi-agent with explicit roles, shared memory, human-in-the-loop checks.
+Both teams run on cloud-hosted Claude Opus (§4 hard rule). Both are isolated from the Trading Team — separate Claude Code sessions, separate schedules, no shared mailbox or task list. The only coupling is the long-term memory layer in Postgres / S3 (§8): Tier 1 writes ground truth, Tier 2 reads it and writes proposals.
 
-### 15.1 Improvement Agent Roster
+```
+┌───────────────────────┐    1 min    ┌────────────────────┐  weekly  ┌─────────────────────┐
+│ Trading Team          │    ──────►  │ Trade Evaluation   │  ──────► │ Code Evaluation     │
+│ (12-min cycle, §3)    │             │ Team (Tier 1)      │          │ Team (Tier 2)       │
+│ writes: trades,       │             │ writes: outcomes,  │          │ writes: lessons,    │
+│ predictions, decisions│             │ PnL, agent_perf    │          │ patterns, proposals,│
+└───────────────────────┘             └────────────────────┘          │ Git PRs             │
+                                                                       └──────────┬──────────┘
+                                                                                  │ PR
+                                                                                  ▼
+                                                                        ┌─────────────────────┐
+                                                                        │  Operator reviews   │
+                                                                        │  and merges (§15.4) │
+                                                                        └─────────────────────┘
+```
+
+### 15.0 Trade Evaluation Team (Tier 1)
+
+A single-member team scheduled by cron / k8s `CronJob` every 1 minute. The Team Lead boots, the `evaluator` member runs, the team cleans up.
+
+**Member:** `evaluator`. **Subagents:** `outcome-fetcher` (queries Polymarket Gamma API for resolved markets), `pnl-aggregator` (computes realized PnL per fill), `agent-performance-updater` (refreshes `agent_performance.hit_rate_30d`, `pnl_30d`, `n_samples`).
+
+**Inputs (read):**
+- `predictions` rows with `outcome IS NULL` whose `market_id` is in a freshly resolved state on Polymarket.
+- Open `positions` rows whose `market_id` is now resolved.
+- The matching `decisions` and `trades` rows for context.
+
+**Outputs (write):**
+- `predictions.outcome`, `predictions.pnl_realized` (set per resolved row).
+- `trades.realized_pnl`, `trades.status` ("settled").
+- `positions` row marked closed; aggregate realized PnL recorded.
+- `agent_performance` row inserted (rolling 30d window, recomputed from the freshly-resolved set).
+- A `lesson` row with `source_agent_id='evaluator'` if the resolution surprised the ensemble (`|p_consensus − outcome| > 0.3`) — strictly observational, no prescriptive content.
+
+**What it does NOT do:** propose code changes, write proposals, modify prompts, touch the trading-team configuration. Tier 1 is ground-truth ingestion only. Prescription is Tier 2's job.
+
+**Permission mode:** standard (no `--dangerously-skip-permissions`). The team has read access to Polymarket Gamma API (read-only resolution lookup) but no signing keys and no order-placement endpoints. A hung prompt halts the team — the next 1-min run picks up where it left off.
+
+### 15.1 Code Evaluation Team Roster (Tier 2)
 
 | Agent | Role | Trigger | Output |
 |---|---|---|---|
 | `risk-auditor` | Scan recent trades for risk-rule near-misses, anomalous fills, drawdown signals | Daily + on alert | `lessons` row |
 | `pattern-miner` | Cluster lessons into recurring patterns | Weekly | `patterns` row + supersedence links |
-| `strategy-improver` | Read losing trades + new patterns; propose prompt/strategy/sizing deltas; revise `operating_doctrine` (§4) when phase entry/exit conditions are met or target date is reached | Weekly + on doctrine-phase transition | `proposals` row + draft PR; on merge of doctrine proposal: new `operating_doctrine` row supersedes prior |
+| `strategy-improver` | Read losing trades + new patterns; propose prompt / strategy / sizing / **new-trading-agent** / agent-retire deltas; revise `operating_doctrine` (§4) when phase entry/exit conditions are met or target date is reached | Weekly + on doctrine-phase transition | `proposals` row + **draft Git PR with the actual code change** for the operator to review and merge; on merge of doctrine proposal: new `operating_doctrine` row supersedes prior |
 | `prior-art-scout` | Enforce §14.20 — search GitHub/PyPI/papers before custom builds | On every new-component PR open | Prior-art note posted to PR |
-| `meta-reviewer` | Aggregate, dedupe, prioritize all proposals; route top-K to operator | Weekly | Decision queue (Slack/email) |
+| `meta-reviewer` | Aggregate, dedupe, prioritize all proposals; route top-K to operator | Weekly | Decision queue (Slack/email) — the operator's review queue |
 
-**Team structure.** Improvement agents form their own **Improvement Team** — a *separate* Claude Code Agent Team session, distinct from the Trading Team (§2, §14.22). The "one team per session" Cloud-doc constraint is respected because the Improvement Team runs in **its own Claude Code process**, on schedule, never simultaneously inside the trading-loop session.
+**Team structure.** Code-evaluation agents form their own **Code Evaluation Team** — a *separate* Claude Code Agent Team session, distinct from both the Trading Team (§2, §14.22) and the Trade Evaluation Team (§15.0). The "one team per session" Cloud-doc constraint is respected because each Code-Evaluation batch runs in **its own Claude Code process**, on schedule, never simultaneously with another team's session.
 
-- A dedicated **Improvement Team Lead** orchestrates each scheduled batch (hourly, daily, weekly, monthly per §15.3). The Lead session is started by cron / scheduler (`schedule` skill or k8s `CronJob`), runs the batch, and cleans up (`clean up the team` per Cloud-doc) before exiting.
+- A dedicated **Code-Evaluation Team Lead** orchestrates each scheduled batch (daily, weekly, monthly per §15.3). The Lead session is started by cron / scheduler (`schedule` skill or k8s `CronJob`), runs the batch, and cleans up (`clean up the team` per Cloud-doc) before exiting.
 - Members above are spawned per batch and tear down with the team at end of run; their short-term coordination uses the standard task-list + mailbox primitives.
 - `pattern-miner` and `strategy-improver` may spawn subagents for fan-out (one subagent per lesson cluster, per category being analyzed).
-- The Improvement Team is **isolated from the Trading Team** — separate Lead, separate task list, no shared mailbox. The only coupling is the long-term memory layer: improvement agents *read* episodic + reflective tables and *write* `lessons` / `patterns` / `proposals` / Git PRs.
-- Permission mode: standard (no `--dangerously-skip-permissions`). The Improvement Team has no live-trading endpoint access by design (§15.6 safety boundary), so blocking on permission prompts for unexpected tool use is acceptable behavior. If a batch hangs on a prompt, the scheduler kills it after a timeout and pages the operator.
+- The Code Evaluation Team is **isolated from both the Trading Team and the Trade Evaluation Team** — separate Lead, separate task list, no shared mailbox. The only coupling is the long-term memory layer: Code-Evaluation agents *read* episodic + reflective + agent-performance tables and *write* `lessons` / `patterns` / `proposals` / Git PRs.
+- Permission mode: standard (no `--dangerously-skip-permissions`). The Code Evaluation Team has no live-trading endpoint access by design (§15.6 safety boundary), so blocking on permission prompts for unexpected tool use is acceptable behavior. If a batch hangs on a prompt, the scheduler kills it after a timeout and pages the operator.
 
-All members are defined as Claude Code subagent definitions (§14.5, `code.claude.com/docs/en/sub-agents`), reusable as both delegated subagents and Improvement-Team teammates (Cloud-doc: *Use subagent definitions for teammates*). Read-only access to live observational data (`predictions`, `decisions`, `trades`, snapshots, agent-performance history); write access only to `lessons`, `patterns`, `proposals`, and Git via PR on feature branches.
+**Implementation flow for a code change.** When `strategy-improver` proposes a non-trivial change (new strategy, new trading agent, prompt rewrite, sizing delta), it:
+1. Writes the `proposals` row with rationale and supporting `lessons` references.
+2. Creates a feature branch (`code-eval/YYYY-MM-DD-<short-slug>`) and commits the actual code change — new files for a new agent (`research/agents/<id>.py` + system prompt + `.claude/agents/<id>.md`), edited files for a tweak.
+3. If the change is quantitative (sizing, threshold, new strategy), drafts a paper-mode test plan as part of the PR description.
+4. Opens the PR via `gh pr create`, assigns the operator as reviewer, sets `meta-reviewer` as the agent reviewer.
+5. **Stops there.** No self-merge, no auto-deploy. The operator reviews and decides.
+
+All members are defined as Claude Code subagent definitions (§14.5, `code.claude.com/docs/en/sub-agents`), reusable as both delegated subagents and Code-Evaluation-Team teammates (Cloud-doc: *Use subagent definitions for teammates*). Read-only access to live observational data (`predictions`, `decisions`, `trades`, snapshots, `agent_performance`); write access only to `lessons`, `patterns`, `proposals`, and Git via PR on feature branches.
 
 ### 15.2 Shared Memory & Notes
 
@@ -938,17 +993,19 @@ patterns(id pk, first_seen, last_seen, occurrences, description,
          supporting_lesson_ids uuid[], confidence)
 
 proposals(id pk, time, source_agent_id,
-          target_kind ('prompt' | 'strategy' | 'code' | 'limit' | 'config' | 'operating_doctrine'),
+          target_kind ('prompt' | 'strategy' | 'code' | 'limit' | 'config'
+                       | 'operating_doctrine' | 'agent_roster'),
           target_ref, current_value, proposed_value, rationale,
-          paper_validation_uri, status, decided_by, decided_at)
+          paper_validation_uri, pr_url?, status, decided_by, decided_at)
 ```
 
 - `lessons` append-only; supersedence via `status`, never deletion. Replay always possible.
 - `patterns` curated by `pattern-miner`; references the lessons that built it.
 - `proposals` drives the change pipeline (§15.4).
 - A `proposal` with `target_kind='operating_doctrine'` and an accepted `decided_by` write a new `operating_doctrine` row (§4) and supersede the prior active row. The trading layer reads the new doctrine on the next cycle's boot.
+- A `proposal` with `target_kind='agent_roster'` proposes adding a new trading agent to the §4 ensemble (with full prompt + tool allow-list + persona definition in the PR), or retiring an existing one. Merge updates `.claude/agents/` and `.claude/teams/trading-team.spec.json`; effective at the next Trading-Team boot.
 
-Read API exposes these to all improvement agents; write paths scoped by role.
+Read API exposes these to all Code-Evaluation agents; write paths scoped by role.
 
 ### 15.3 Learning Loop Cadence
 
@@ -957,19 +1014,21 @@ Read API exposes these to all improvement agents; write paths scoped by role.
   1. `pattern-miner` extracts patterns from week's lessons.
   2. `strategy-improver` generates proposals from new patterns + losing trades.
   3. `meta-reviewer` dedupes, prioritizes, posts top-K queue to operator.
-- **Monthly retrospective**: archived lessons (> 90d) compressed into per-category **LTKDs** (Long-Term Knowledge Documents) loaded as background for improvement agents going forward. Stale/contradicted points pruned by `meta-reviewer`.
+- **Monthly retrospective**: archived lessons (> 90d) compressed into per-category **LTKDs** (Long-Term Knowledge Documents) loaded as background for Code-Evaluation agents going forward. Stale/contradicted points pruned by `meta-reviewer`.
 
 This compaction is essential — without it the lessons store grows unboundedly.
 
 ### 15.4 Checks and Balances
 
-Every improvement-agent change goes through standard merge pipeline. **No improvement agent may self-merge**; none may write to `risk/` (§14.4 hook).
+Every Code-Evaluation-agent change goes through the standard merge pipeline. **No Code-Evaluation agent may self-merge**; none may write to `risk/` (§14.4 hook). The PR is the contract: code change + rationale + paper-validation reference (when quantitative). The operator is the merge gate.
 
 | Target of change | Required reviewers | Required tests/gates |
 |---|---|---|
 | Prompt (agent template) | 1 agent reviewer + 1 human | ≥ 30d in paper mode (§14.9/§14.10) |
 | Strategy parameter | 1 agent reviewer + 1 human | ≥ 30d in paper mode |
 | New strategy | `meta-reviewer` + 2 humans | ≥ 30d in paper mode + risk review |
+| **New trading agent** (`agent_roster` add) | `meta-reviewer` + 2 humans | ≥ 30d in paper mode + persona / tool-allow-list review; pairwise correlation against existing 7 measured |
+| **Retire trading agent** (`agent_roster` remove) | `meta-reviewer` + 1 human | Justified by ≥ 60d underperformance vs. ensemble + redundancy with another agent |
 | `operating_doctrine` revision (§4) | `meta-reviewer` + 1 human | Sanity-check on phase entry/exit conditions; live-trial in paper if quantitative |
 | Code in `execution/` | `security-reviewer` + 2 humans | Tests + integration tests |
 | Risk limit (`risk/`) | **2 humans only** — no agent override | Property-based tests pass |
@@ -980,18 +1039,17 @@ Branch protection on `main` enforces these counts mechanically.
 ### 15.5 Capital-Allocation Feedback
 
 Meta-allocator (§6) factors:
-1. **Trading-performance Sharpe** (existing, primary).
-2. **Adaptation quality** — share of agent's lessons that became merged proposals with positive paper outcome (small bonus, capped +10% of base allocation).
+1. **Trading-performance** (rolling 30d hit rate + PnL — primary).
+2. **Adaptation quality** — share of an agent's `lessons` that became merged proposals with positive paper outcome (small bonus, capped +10% of base allocation).
 
-Rewards trading agents whose failure modes were genuinely informative — closes loop between trading + improvement layers.
+Rewards trading agents whose failure modes were genuinely informative — closes the loop between the Trading Team and the Code Evaluation Team.
 
 ### 15.6 Safety Boundary
 
-Strict separation between improvement layer and live hot path:
-- Improvement agents have **no credentials** for production CLOB endpoints.
-- Their proposals materialize as Git PRs + `proposals` rows — never direct in-process state changes.
-- Read all observational data; write only `lessons`, `patterns`, `proposals`, PR commits on feature branches.
-- §12 kill switch + §6 risk limits unaffected by any improvement-agent action.
+Strict separation between the evaluation tiers and the live hot path:
+- **Trade Evaluation Team (Tier 1):** has read-only access to Polymarket Gamma API for resolution lookup; **no signing keys, no order endpoints**. Writes only ground-truth fields on existing rows (`outcome`, `realized_pnl`, `agent_performance`).
+- **Code Evaluation Team (Tier 2):** has **no credentials** for production CLOB endpoints. Its proposals materialize as Git PRs + `proposals` rows — never direct in-process state changes. Reads all observational data; writes only `lessons`, `patterns`, `proposals`, PR commits on feature branches.
+- §12 kill switch + §6 risk limits unaffected by any evaluation-team action.
 
 Result: no runaway self-modification. Human in loop on every merge that affects live behavior.
 
@@ -999,14 +1057,15 @@ Result: no runaway self-modification. Human in loop on every merge that affects 
 
 | Failure | Mitigation |
 |---|---|
-| Improvement agent overfits to recent noise | Require ≥ 90d data + significance threshold per proposal |
+| Code-Evaluation agent overfits to recent noise | Require ≥ 90d data + significance threshold per proposal |
 | `patterns` table bloats with low-value entries | Quarterly `meta-reviewer` prune; confidence-decay on stale patterns |
 | Adversarial drift (proposes prompts that game metric) | All metrics validated on held-out forward window before promotion |
 | Proposal queue grows into noise | `meta-reviewer` suppresses low-priority; operator sees top-K only |
-| Improvement agents converge on bad direction | Mandatory human-in-the-loop; 2-human rule on risk/strategy |
+| Code-Evaluation agents converge on bad direction | Mandatory human-in-the-loop; 2-human rule on risk/strategy |
 | `lessons` table self-contradicts | `status` field tracks supersession; `meta-reviewer` reconciles in monthly retro |
 | Anthropic outage stalls weekly batch | Batch is non-realtime; defer to next cycle, no live impact |
-| Improvement agent suggests bypassing `risk/` | §14.4 hook + import-linter prevent the diff existing |
+| Code-Evaluation agent suggests bypassing `risk/` | §14.4 hook + import-linter prevent the diff existing |
+| Trade Evaluation Team falls behind (resolutions not picked up for hours) | Alert at queue-depth > N; operator can manually trigger a catch-up run; 1-min cron means natural recovery on next tick |
 
 ---
 
@@ -1035,6 +1094,9 @@ Result: no runaway self-modification. Human in loop on every merge that affects 
 - **Resolution risk** — risk that a market resolves contrary to obvious outcome due to ambiguous criteria, oracle dispute, or delay.
 - **Paper mode / real-capital mode** — the two operational modes of the system (§14.9). Paper writes orders to a paper-trading ledger; real-capital routes them to the Polymarket CLOB. Switching is a manual settings-file change.
 - **Agent orchestration** — coordination of multiple specialized AI agents into an explicit task pipeline, with typed memory artifacts passed between tasks (Tier 1) and reflective memory accumulated across cycles (Tier 2). See §2.
+- **Trading Team** — the per-cycle Claude Code Agent Team that decides and places trades (§2, §3). One fresh team per 12-min cycle.
+- **Trade Evaluation Team (Tier 1)** — separate Agent Team scheduled every 1 min; ingests resolved markets and writes ground-truth outcomes + PnL + agent-performance to the long-term tables (§15.0). Single member: `evaluator`. Has no live-trading credentials.
+- **Code Evaluation Team (Tier 2, formerly "Improvement Team")** — separate Agent Team scheduled in daily/weekly batches; reads Trade-Evaluation outputs and trading memory, proposes code/prompt/strategy/agent-roster changes, opens Git PRs for the operator to review and merge (§15.1). Has no live-trading credentials. Never self-merges.
 - **Team Lead Agent** — per-cycle orchestrator (§2). A fresh `claude` process spawned by the scheduler at each cycle: boots the team from the spec, initializes the shared task list, spawns Team Members, routes mailbox traffic, persists artifacts to long-term stores, calls `clean up the team`, and exits. Lifetime = one cycle (~12 min). Never executes orders directly.
 - **Team Member Agent** — independent Claude session with its own context window, owns one Tier-1 stage. Communicates with peers via mailbox + shared task list. Pattern from `code.claude.com/docs/en/agent-teams`.
 - **Subagent** — focused worker spawned by a Team Member for one-way fan-out. Result returns to the parent only; no peer messaging, no shared task list. Cheaper than a Team Member because results summarize back into the parent context. Pattern from `code.claude.com/docs/en/sub-agents`.
@@ -1042,6 +1104,6 @@ Result: no runaway self-modification. Human in loop on every merge that affects 
 - **Long-term memory** — across cycles, durable: `notes`, `beliefs`, `predictions`, `decisions`, `trades`, `positions`, `lessons`, `patterns`, `proposals`, LTKDs. Carries everything future cycles depend on.
 - **Working memory** — historical synonym for short-term memory in §2 taxonomy; superseded by the explicit short-term/long-term split.
 - **Episodic memory** — per-event durable records (predictions, decisions, trades, positions) used for replay/audit.
-- **Reflective memory** — observations + hypotheses written by improvement agents into `lessons` after the fact.
-- **Belief** — typed structured statement an agent currently holds about how a market or class behaves. In `beliefs` table; performance-tracked (hit rate) when falsifiable; revisions preserve full lineage. Distinct from `predictions` (per-market per-cycle), `notes` (ad-hoc), `lessons` (post-hoc, by improvement agents).
+- **Reflective memory** — observations + hypotheses written by Code-Evaluation agents into `lessons` after the fact.
+- **Belief** — typed structured statement an agent currently holds about how a market or class behaves. In `beliefs` table; performance-tracked (hit rate) when falsifiable; revisions preserve full lineage. Distinct from `predictions` (per-market per-cycle), `notes` (ad-hoc), `lessons` (post-hoc, by Code-Evaluation agents).
 - **Dual knowledge management** — pattern of giving an agent both unstructured `notes` and structured `beliefs` as separate memory stores, each with its own tool API + lifetime. Adopted from Prediction Arena.
