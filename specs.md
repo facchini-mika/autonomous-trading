@@ -109,18 +109,22 @@ outcomes    ┘
 | **Short-term reasoning** | **Per-member context window** | one cycle (member shutdown) | Owning member only |
 | **Long-term agent state** | `notes` (LRU scratchpad, §4) | cross-cycle, capped | Owning agent's next cycle; improvement agents (§15) |
 | **Long-term agent state** | `beliefs` (typed, revisable with lineage, §4) | cross-cycle, indefinite | Owning agent's next cycle; improvement agents |
+| **Long-term operational** | `cycle_plan` (single-row latest, forward-looking handoff, §4) | overwritten each cycle (history kept) | Next cycle's Team Lead at boot |
+| **Long-term operational** | `operating_doctrine` (active phased strategy with target date, §4) | revisable, lineage kept | Trading agents via §4 prompt; `strategy-improver` for revision |
 | **Long-term episodic** | `predictions`, `decisions`, `trades`, `positions` (§8) | indefinite | All future cycles + improvement agents |
 | **Long-term reflective** | `lessons` (append-only), `patterns` (curated), `proposals` (gated), LTKDs (quarterly) — §15.2/§15.3 | indefinite | Improvement agents; trading agents via critical-learning section in §4 prompt |
 
 The short-term layer is **never** read by future cycles — it cleans up at cycle close. The long-term layer is **never** used for in-cycle coordination — it carries only what future cycles need. Crossing this boundary requires an explicit write into one of the long-term stores (e.g. an agent calling `manage_beliefs.create` or the evaluator inserting a row into `predictions`).
 
-**Memory taxonomy (8 layers, full detail):**
+**Memory taxonomy (10 layers, full detail):**
 
 | Layer | Where | Lifetime | Purpose |
 |---|---|---|---|
 | Working / Short-term | Shared task list + mailbox (Lead-managed); in-flight Pydantic artifacts in process memory; per-member context window | one cycle | Inter-member coordination + hand-offs within a cycle |
 | Agent notes | Per-agent `notes` table (max 50 × ~200 words, LRU) | cross-cycle, capped | Trading agent's scratchpad — ad-hoc reminders + provisional flags |
 | Agent beliefs | Per-agent `beliefs` table, typed by domain | cross-cycle, revisable, full lineage | Structured market views — calibration-tracked (§4 + §8) |
+| Cycle plan | `cycle_plan` table, single active row, portfolio-level (§4) | overwritten each cycle, history retained | Forward-looking handoff: next-cycle priorities, holds-with-rationale, pending settlements, blockers |
+| Operating doctrine | `operating_doctrine` table, single active row with lineage (§4) | revisable (weeks–months), lineage retained | Currently-active phased strategy with target date — directive, not retrospective |
 | Episodic | `predictions`, `decisions`, `trades`, `positions` (§8) | indefinite | Per-event ground truth; replay/audit |
 | Reflective | `lessons` (§15.2) | indefinite (compacted) | Observations + hypotheses by improvement agents |
 | Pattern | `patterns` (§15.2) | indefinite (curated) | Recurring observations clustered from lessons |
@@ -186,7 +190,7 @@ The short-term layer is **never** read by future cycles — it cleans up at cycl
 
 **Decision cycle (T = scheduler fire time, i.e. a fresh `claude` process started).** The four-stage spine is **Receive → Review → Analyze → Decide** (PA-pattern); a Boot phase runs first, and Cycle-close tears the team down. Steps below are the concrete sub-stages.
 
-0. **T+0–15s — Boot.** Scheduler starts a fresh Claude Code process with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and `--dangerously-skip-permissions`. A janitor first sweeps stale `~/.claude/teams/{team-name}/` directories left by a previous cycle that crashed without cleanup. Lead loads CLAUDE.md, MCP servers, hooks, the team-spec from `.claude/teams/trading-team.spec.json` (§14.22), then spawns members per the spec — each loads its subagent definitions and waits idle for tasks. Long-term memory pointers (current `MAX_CAPITAL_EUR`, latest calibration curves, recent settlement IDs) are read from Postgres and exposed to the Lead. Boot completes when every member reports idle.
+0. **T+0–15s — Boot.** Scheduler starts a fresh Claude Code process with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and `--dangerously-skip-permissions`. A janitor first sweeps stale `~/.claude/teams/{team-name}/` directories left by a previous cycle that crashed without cleanup. Lead loads CLAUDE.md, MCP servers, hooks, the team-spec from `.claude/teams/trading-team.spec.json` (§14.22), then spawns members per the spec — each loads its subagent definitions and waits idle for tasks. Long-term memory pointers (current `MAX_CAPITAL_EUR`, latest calibration curves, recent settlement IDs) are read from Postgres and exposed to the Lead. The Lead also reads the **previous cycle's `cycle_plan`** (forward-looking handoff: priorities, holds, blockers) and the **active `operating_doctrine`** row (current phase + target date) from Postgres — both are propagated to members via the §4 prompt context. Boot completes when every member reports idle.
 1. **T+15s — Receive: Universe snapshot.** Filter: 24h vol ≥ $10k; bid-ask depth ≥ $1k within ±1% of mid; end date > 24h and < 365d; not in cooldown.
 2. **T+25s — Review: Portfolio & Performance.** `portfolio-reviewer` builds `PortfolioState`: current positions, cash, unrealized PnL, realized PnL (today, 7d, 30d), drawdown vs peak, daily loss vs cap, gross + per-category exposure, last 10 settlements + last 10 closed trades, rolling per-agent hit rate / PnL / Sharpe. Computes remaining capacity per scope against §6 limits. **Gate:** if any §6 trip-wire is active (15% drawdown kill-switch, 5% daily-loss cap, gross-exposure cap), the cycle either skips new orders entirely or restricts to position-reducing trades — research dispatch is short-circuited. The artifact is consumed by triage, risk-engine, and (subset) injected into agent prompts (§4).
 3. **T+35s — Triage.** Cheap heuristic edge estimate (price vs base rate, related markets, momentum), filtered by remaining-capacity from `PortfolioState`. Top-K (K=20) advance.
@@ -198,7 +202,7 @@ The short-term layer is **never** read by future cycles — it cleans up at cycl
 9. **T+8m — Decide: Sizing.** Quarter-Kelly within remaining caps from `PortfolioState`.
 10. **T+9m — Decide: Order placement.** Limit, post-only when viable. Iceberg slicing for size > $500.
 11. **T+10–11m — Fill monitoring.** Track partial fills. Cancel/replace on > 1% adverse move.
-12. **T+11m45s — Persist & emit.** Lead persists in-flight artifacts (decisions, fills, reasoning links) to long-term stores (§8); writes any agent-initiated `notes` / `beliefs` / `lessons` updates; emits cycle metrics.
+12. **T+11m45s — Persist & emit.** Lead persists in-flight artifacts (decisions, fills, reasoning links) to long-term stores (§8); writes any agent-initiated `notes` / `beliefs` / `lessons` updates; **writes a fresh `cycle_plan` row** (forward-looking handoff for the next cycle: top priorities, holds-with-rationale, pending settlements, identified-but-deferred opportunities, blockers) — synthesized by the Lead from the cycle's artifacts; emits cycle metrics. `operating_doctrine` is read-only here (only `strategy-improver` revises it, §15.1).
 13. **T+11m55s — Cycle close.** Lead calls `clean up the team` (Cloud-doc warning: never let a member run cleanup), shutting down all members and the team config. Lead process exits. The next cycle is a brand-new `claude` process started by the scheduler at the next fire time — no shared in-process state with this cycle. All short-term memory (mailbox, task list, member context windows) dies with the process; only what was persisted in step 12 survives.
 
 ---
@@ -249,8 +253,11 @@ class Agent:
 - **Recent settlements** (from `PortfolioState`) — last 10 resolved markets with realized PnL
 - **Recent closed trades** (from `PortfolioState`) — last 10 trades with realized PnL
 - **Previous-cycle reasoning** — agent's own prior reasoning on same market/category
+- **Previous cycle's `cycle_plan`** — operational handoff: priorities, holds-with-rationale, identified-but-deferred opportunities, blockers (e.g. settlement bottleneck). Read-only context for the agent.
+- **Active `operating_doctrine`** — current phase, phase-specific actions, target date, key risks. Directive: agent's actions should be coherent with the current phase.
 - **Critical-learning section** — curated `lessons`/`patterns` excerpts (§15.2): losing patterns to avoid, winning patterns to replicate, position-management reminders. Curated weekly by `meta-reviewer`; injected per cycle by research-orchestrator.
 - The agent's most recent `notes`
+- The agent's active `beliefs` for this market / category / open positions (top-K by relevance + recency)
 - Step-by-step trading protocol
 
 This is the explicit bridge between Tier-1 working memory and Tier-2 reflective memory. Every decision is conditioned on a defined, audit-inspectable slice of past experience.
@@ -259,7 +266,8 @@ This is the explicit bridge between Tier-1 working memory and Tier-2 reflective 
 
 **Agent beliefs (structured market views).** Typed `beliefs` store via `manage_beliefs` tool (`create`, `revise`, `retire`, `search`). A belief is a structured statement the agent currently holds. Fields:
 - `domain` — `market_structure` / `strategy` / `event` / `risk` / `sentiment`
-- `scope` — `global` / `category` / specific market id
+- `scope` — `global` / `category` / `market` / `position` (a position scope binds the belief to an open position via `scope_ref = market_id` — the *thesis* for why we're holding it)
+- `scope_ref` — category id, market id, or position market id depending on `scope`
 - `statement` — short claim, ≤ 100 words
 - `p_estimate` — optional probability for falsifiable beliefs (e.g. *"Fed pauses in December"* → P ≈ 0.7)
 - `confidence` — agent's own confidence
@@ -267,13 +275,17 @@ This is the explicit bridge between Tier-1 working memory and Tier-2 reflective 
 - `supersedes_id` — id of prior belief revised (lineage preserved; nothing deleted)
 - `status` — `active` / `superseded` / `retired`
 
-**Beliefs vs notes vs lessons vs predictions:**
+**Position-thesis beliefs (special case).** When a trading agent's prediction directly drives a position open, the execution-engine writes a `scope=position` belief alongside the `decisions` row, copying the agent's reasoning summary as the `statement` and the entry edge as `p_estimate`. On every subsequent cycle while the position is open, the per-cycle prompt for the originating agent injects this belief automatically; if the market price has moved > X% (default 15%, central settings §14.21) against the entry, the belief is auto-flagged for `revise` or `retire`. This closes the loop "why am I still holding this?" — every open position has a tracked, calibration-eligible thesis.
+
+**Beliefs vs notes vs lessons vs predictions vs cycle_plan vs operating_doctrine:**
 
 | Layer | Granularity | Author | Lifetime | Use |
 |---|---|---|---|---|
 | `predictions` (§8) | per-market, per-cycle | trading agent | event-bound | Direct probability now; consumed by aggregator |
-| `notes` (§4) | free-form | trading agent | LRU-capped | Ad-hoc scratchpad, no schema |
-| `beliefs` (§4) | typed, structured | trading agent | revisable, history kept | First-class views the agent operates *under* |
+| `notes` (§4) | free-form, per-agent | trading agent | LRU-capped | Ad-hoc scratchpad, no schema |
+| `beliefs` (§4) | typed, structured, per-agent | trading agent | revisable, history kept | First-class views the agent operates *under* |
+| `cycle_plan` (§4) | portfolio-level, single active row | Team Lead at cycle close | overwritten next cycle, history kept | Forward-looking handoff between cycles |
+| `operating_doctrine` (§4) | portfolio-level, single active row with lineage | `strategy-improver` (proposed) + human (approved) | revisable, lineage kept | Currently in-force operative strategy |
 | `lessons` (§15.2) | post-hoc observation | improvement agent | append-only | Reflective, written *about* the system |
 
 **Belief usage:**
@@ -283,6 +295,27 @@ This is the explicit bridge between Tier-1 working memory and Tier-2 reflective 
 - Improvement agents (§15) mine beliefs across the agent population for convergent/divergent views, surface stale beliefs, lift recurring true beliefs into shared `patterns`.
 
 This makes the agent's *implicit world model* explicit, inspectable, and calibration-trackable.
+
+**Cycle plan (forward-looking handoff).** Single-row portfolio-level artifact written at the very end of each cycle by the Team Lead, read by the *next* cycle's Lead at boot. Solves the gap that fresh-team-per-cycle (§2) creates: the next process knows nothing about what the previous one was about to do. Distinct from `notes` (per-agent, retrospective) and `lessons` (reflective, written by improvement agents). Fields:
+- `written_at` / `written_by_cycle_id`
+- `next_priorities` — ordered list of concrete actions for the next cycle
+- `holds_with_rationale` — for each currently-open position: 1-line reason to hold rather than close
+- `pending_settlements` — markets awaiting resolution that will free capital / trigger PnL recognition
+- `opportunities_deferred` — opportunities identified this cycle but not actionable (e.g. capital locked) with the trigger condition under which to revisit
+- `blockers` — operational constraints (e.g. capital lock from large open position, data-source outage)
+- `superseded_at` — set when the next cycle writes its own plan (history retained for audit/replay)
+
+The Lead synthesizes the plan from in-flight artifacts at step 12 (§3); it is not produced by an LLM call, it's a deterministic summarization of the cycle's `Decision`/`PortfolioState`/aggregator outputs (with one short LLM-written rationale field per priority/hold). Always exactly one active row.
+
+**Operating doctrine (current operative strategy).** Single active row, revisable with full lineage (analogous to `beliefs`). Distinct from LTKDs (§15.3, retrospective background context for improvement agents) and `proposals` (§15.2, change requests). This is the **currently in-force operative strategy** that trading agents condition on. Fields:
+- `target_date` — horizon the doctrine is written against
+- `phases` — ordered list of phases, each with `name`, `entry_condition`, `exit_condition`, `actions`, `forbidden`
+- `current_phase` — the phase active right now (re-evaluated each cycle by the Lead against the `entry_condition`/`exit_condition` of adjacent phases; transitions are logged to `decisions`-style audit)
+- `key_risks` — risks the doctrine explicitly anticipates
+- `revised_at` / `revised_by` — author and timestamp; lineage via `supersedes_id`
+- `approved_by` — human approver (mandatory; revisions follow §15.4 review counts)
+
+Revision authored exclusively by `strategy-improver` (§15.1) as a `proposal`; merging a doctrine `proposal` writes a new active `operating_doctrine` row and supersedes the prior. Trading agents and the Lead read but never write.
 
 ---
 
@@ -394,7 +427,7 @@ Weights tuned monthly via attribution. New strategies → 30d shadow before live
 | Store | Tech | Data |
 |---|---|---|
 | Time series | TimescaleDB | `market_snapshots` (1s active, 1m archive) |
-| Relational | Postgres 16 | `markets`, `predictions`, `decisions`, `trades`, `positions`, `agent_state` |
+| Relational | Postgres 16 | `markets`, `predictions`, `decisions`, `trades`, `positions`, `agent_state`, `cycle_plan`, `operating_doctrine` |
 | Hot state | Redis 7 | open positions, current quotes, kill switch flag, rate limits |
 | Object | S3-compatible (MinIO local, S3 prod) | raw articles, agent reasoning traces, screenshots |
 
@@ -422,17 +455,32 @@ positions(market_id fk, side, size, avg_price, unrealized_pnl, realized_pnl,
 agent_performance(agent_id, time, hit_rate_30d, sharpe_30d, pnl_30d,
                   isotonic_curve_uri, n_samples)
 
-beliefs(id pk, time, agent_id, domain, scope, scope_ref,
-        statement, p_estimate?, confidence, evidence_uri,
+beliefs(id pk, time, agent_id, domain,
+        scope ('global'|'category'|'market'|'position'),
+        scope_ref, statement, p_estimate?, confidence, evidence_uri,
         supersedes_id?, status, last_updated)             -- per-agent structured views
 
 notes(id pk, time, agent_id, body, tags jsonb, last_accessed)   -- per-agent scratchpad (LRU)
+
+cycle_plan(id pk, written_at, written_by_cycle_id,
+           next_priorities jsonb, holds_with_rationale jsonb,
+           pending_settlements jsonb, opportunities_deferred jsonb,
+           blockers jsonb, superseded_at?)                -- portfolio-level forward-looking handoff;
+                                                         -- exactly one row with superseded_at IS NULL
+
+operating_doctrine(id pk, created_at, target_date,
+                   phases jsonb, current_phase, key_risks jsonb,
+                   revised_at, revised_by, approved_by,
+                   supersedes_id?, status)                -- current operative strategy with lineage;
+                                                         -- exactly one row with status='active'
 ```
 
 **Retention:**
 - Snapshots: 90d hot → continuous-aggregate to 1h cold for 5y.
 - Trades, decisions, predictions: indefinite.
 - Reasoning traces: 1y hot → cold S3.
+- `cycle_plan`: latest active row hot; superseded rows kept 90d (replay/audit), then archived to cold S3.
+- `operating_doctrine`: full lineage indefinite (operative-state record).
 
 ---
 
@@ -892,7 +940,7 @@ Both run on cloud-hosted Claude Opus per §4 (hard rule). Diversity in role + pr
 | `risk-auditor` | Scan recent trades for risk-rule near-misses, anomalous fills, drawdown precursors | Daily + on alert | `lessons` row |
 | `calibration-refiner` | Detect performance drift per trading agent; suggest isotonic recalibration on the latest resolved window | Hourly + on agent suspend | PR updating calibration curve |
 | `pattern-miner` | Cluster lessons into recurring patterns | Weekly | `patterns` row + supersedence links |
-| `strategy-improver` | Read losing trades + new patterns; propose prompt/strategy/sizing deltas | Weekly + after drawdown trip-wire (§6) | `proposals` row + draft PR with backtest |
+| `strategy-improver` | Read losing trades + new patterns; propose prompt/strategy/sizing deltas; revise `operating_doctrine` (§4) when phase entry/exit conditions are met or target date is reached | Weekly + after drawdown trip-wire (§6) + on doctrine-phase transition | `proposals` row + draft PR with backtest; on merge of doctrine proposal: new `operating_doctrine` row supersedes prior |
 | `prior-art-scout` | Enforce §14.20 — search GitHub/PyPI/papers before custom builds | On every new-component PR open | Prior-art note posted to PR |
 | `meta-reviewer` | Aggregate, dedupe, prioritize all proposals; route top-K to operator | Weekly | Decision queue (Slack/email) |
 
@@ -919,7 +967,7 @@ patterns(id pk, first_seen, last_seen, occurrences, description,
          supporting_lesson_ids uuid[], confidence)
 
 proposals(id pk, time, source_agent_id,
-          target_kind ('prompt' | 'strategy' | 'code' | 'limit' | 'config'),
+          target_kind ('prompt' | 'strategy' | 'code' | 'limit' | 'config' | 'operating_doctrine'),
           target_ref, current_value, proposed_value, rationale,
           backtest_result_uri, status, decided_by, decided_at)
 ```
@@ -927,6 +975,7 @@ proposals(id pk, time, source_agent_id,
 - `lessons` append-only; supersedence via `status`, never deletion. Replay always possible.
 - `patterns` curated by `pattern-miner`; references the lessons that built it.
 - `proposals` drives the change pipeline (§15.4).
+- A `proposal` with `target_kind='operating_doctrine'` and an accepted `decided_by` write a new `operating_doctrine` row (§4) and supersede the prior active row. The trading layer reads the new doctrine on the next cycle's boot.
 
 Read API exposes these to all improvement agents; write paths scoped by role.
 
@@ -951,6 +1000,7 @@ Every improvement-agent change goes through standard merge pipeline. **No improv
 | Prompt (agent template) | 1 agent reviewer + 1 human | Backtest + 30d paper (§14.10) |
 | Strategy parameter | 1 agent reviewer + 1 human | Backtest + 30d paper |
 | New strategy | `meta-reviewer` + 2 humans | Backtest + 30d paper + risk review |
+| `operating_doctrine` revision (§4) | `meta-reviewer` + 1 human | Backtest if quantitative; sanity-check on phase entry/exit conditions |
 | Code in `execution/` | `security-reviewer` + 2 humans | Tests + integration tests |
 | Risk limit (`risk/`) | **2 humans only** — no agent override | Property-based tests pass |
 | Hard cap `MAX_CAPITAL_EUR` | 2 humans + audit-log entry (§14.8) | n/a |
