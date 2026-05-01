@@ -2,7 +2,7 @@
 
 Where data lives, how the prediction market is accessed, and how the system is observed. Owns: data sources, all storage tiers, all long-term-memory schemas, retention, the Polymarket / Kalshi adapter abstraction, order placement mechanics, idempotency + reconciliation, failure handling, slippage tracking, and the full observability stack.
 
-**What lives here:** schemas, sources, adapters, observability. **What does not live here:** runtime topology (`orchestration.md`), risk limits or safety controls (`engineering.md §1`–§2), secrets or central settings (`engineering.md §12`, §21).
+**What lives here:** schemas, sources, adapters, observability. **What does not live here:** runtime topology (`orchestration.md`), risk limits or safety controls (`engineering.md §1`–§2), secrets (`engineering.md §7`) or central settings (`engineering.md §10`).
 
 ---
 
@@ -39,7 +39,7 @@ Post-MVP additions (Kalshi clients, time-series helpers, Sentry/OpenTelemetry, m
 3. Pin OSS versions in `pyproject.toml`; never vendor copies into the repo.
 4. If we genuinely have to roll our own (the OSS lib is dead, unsafe, or wrong-shape), document the decision as an ADR in `docs/adr/`.
 
-This rule is the dual of `engineering.md §21`: §21 prevents tunable-sprawl, §0 prevents *implementation*-sprawl. Both keep the system small enough for a solo operator to maintain.
+This rule is the dual of `engineering.md §10`: §10 prevents tunable-sprawl, §0 prevents *implementation*-sprawl. Both keep the system small enough for a solo operator to maintain.
 
 ---
 
@@ -170,7 +170,7 @@ class PredictionMarketAdapter(Protocol):
 **MVP implementations:**
 
 - **`PolymarketAdapter`** — primary. WebSocket subscribed to orderbooks for tracked markets (open positions + active candidates). REST for orders + account state. EIP-712 typed-data signing; private key in cloud KMS or hardware key (YubiHSM). Network: Polygon mainnet; gas in MATIC. Settlement: USDC.e. Polymarket Gamma API for resolution lookup. **Full read-and-write** — used by Trading Team in `real_capital` mode.
-- **`PaperTradingAdapter`** — wraps `PolymarketAdapter` for read paths but redirects `place_order` / `cancel_order` to a Postgres `paper_trades` ledger. Selected automatically when `TRADING_MODE='paper'` (`engineering.md §11`).
+- **`PaperTradingAdapter`** — wraps `PolymarketAdapter` for read paths but redirects `place_order` / `cancel_order` to a Postgres `paper_trades` ledger. Selected automatically when `TRADING_MODE='paper'` (`engineering.md §4`).
 
 **Post-MVP:** `KalshiAdapter` (read-only cross-venue reference) — added only if and when an explore-track strategy needs it.
 

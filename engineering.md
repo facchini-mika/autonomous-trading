@@ -89,7 +89,7 @@ Engineering owns the **governance** of this flag — what the runtime does with 
 
 - **Default `paper`.** A clean checkout cannot trade real capital without an explicit settings-file change.
 - **Switching is manual.** PR with ≥ 1 reviewer approval (real → paper, defensive direction) or ≥ 2 reviewer approvals (paper → real_capital, offensive direction); audit-log entry on merge. **Never via env var, never at runtime.**
-- **No backtest harness.** Polymarket markets are too short-lived; paper-mode is the validation gate (`trading_feedback.md §7` owns the promotion criteria).
+- **No backtest harness.** Polymarket markets are too short-lived; paper-mode is the validation gate (`trading_feedback.md §4` owns the promotion criteria).
 
 ---
 
@@ -298,7 +298,7 @@ Everything below is deferred until the MVP prototype runs paper-mode and shows s
 - Drawdown trip-wires for the kill switch (today: monitored, operator decides).
 - Circuit-breaker on consecutive cycle-failures setting the system to monitor-only mode.
 
-**Strategy lifecycle governance** — owned by `optimization.md §4` + `trading_feedback.md §7`:
+**Strategy lifecycle governance** — owned by `optimization.md §5` + `trading_feedback.md §4`:
 - Anti-whipsaw rule (≥ 5–7d in `real_capital` before a strategy may be replaced).
 - Paper-mode promotion guidance (≥ 30d in paper before flipping to `real_capital`).
 

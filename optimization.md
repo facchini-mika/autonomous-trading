@@ -103,7 +103,7 @@ For MVP: the daily script is small enough that there's likely no exact-fit OSS p
 | Failure | Mitigation |
 |---|---|
 | Daily-script outage (cron miss, exception, crash) | Non-fatal — next day's run picks up the missed window via the lookback. Idempotency prevents duplicate `lessons`. |
-| Postgres outage | Daily script fails fast; trading cycle separately keeps running (degraded — no fresh lessons). Operator alerted via the standard structured-log alerting (`engineering.md §12`). |
+| Postgres outage | Daily script fails fast; trading cycle separately keeps running (degraded — no fresh lessons). Operator alerted via the standard structured-log alerting (`data_infrastructure.md §3`). |
 | Lessons table grows unboundedly | Periodic manual sift by the operator; ad-hoc `DELETE WHERE status='archived'` or similar. Automated retention is post-MVP. |
 | Operator overlooks important lessons | Symptom, not a system failure — MVP intentionally has no automated escalation. The operator is the sole reviewer; this is the price of "real money + safety margin." Post-MVP `meta-reviewer` (§5) is the eventual answer. |
 | Prompt injection via malicious lesson content | Daily script's lesson text is composed from deterministic templates + DB-typed fields, not free-form LLM output, so the surface is small. As post-MVP agent-generated lessons come online (§5), prompt-injection hardening becomes its own task. |
@@ -152,7 +152,7 @@ A live strategy must run **≥ 5–7 days in `real_capital` mode** (default 5, c
 - **"Replacement"** = adding a new strategy that displaces ≥ 50% of an existing strategy's allocated capital, retiring a strategy entirely, or replacing the active `operating_doctrine` with a fundamentally different phased plan.
 - **"Refinement"** = parameter tweaks, prompt rewrites of an existing trading agent, sizing deltas, `operating_doctrine` revision adjusting an existing phase. Not blocked.
 - **Enforcement:** `meta-reviewer` checks the timestamp of the most recent strategy displacement; violations are deferred via `proposals.status='deferred'`. Operator override available via central-settings flag for emergencies.
-- Coupled with the ≥ 30-day paper-mode minimum (`trading_feedback.md §7`), the full lifecycle becomes:
+- Coupled with the ≥ 30-day paper-mode minimum (`trading_feedback.md §4`), the full lifecycle becomes:
   ```
   proposal accepted  →  ≥ 30d paper mode  →  flip to real_capital  →  ≥ 5–7d live  →  eligible for replacement
   ```
@@ -189,7 +189,7 @@ A live strategy must run **≥ 5–7 days in `real_capital` mode** (default 5, c
 
 | Target of change | Required reviewers | Required tests/gates |
 |---|---|---|
-| Exploit: prompt rewrite (existing agent) | 1 agent reviewer + 1 human | ≥ 30d paper-mode (`trading_feedback.md §7`) |
+| Exploit: prompt rewrite (existing agent) | 1 agent reviewer + 1 human | ≥ 30d paper-mode (`trading_feedback.md §4`) |
 | Exploit: strategy-parameter tweak | 1 agent reviewer + 1 human | ≥ 30d paper-mode |
 | Exploit: retire trading agent (`agent_roster` remove) | `meta-reviewer` + 1 human | ≥ 60d underperformance + redundancy with another agent |
 | Exploit: `operating_doctrine` revision | `meta-reviewer` + 1 human | Sanity-check on phase entry/exit; live-trial in paper if quantitative |

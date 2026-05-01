@@ -165,7 +165,7 @@ Deferred until MVP is stable and a measured gap demands the addition. Each item 
 - `strategy-explorer` (in `optimization.md §5`) proposes new strategies.
 - Per-strategy PnL tracking; capital allocation per strategy.
 - Anti-whipsaw rule (`optimization.md §5`): ≥ 5–7d real_capital lifetime before strategy displacement.
-- Paper-mode promotion gate (`trading_feedback.md §7`): ≥ 30d in paper before flipping to real_capital for any new strategy.
+- Paper-mode promotion gate (`trading_feedback.md §4`): ≥ 30d in paper before flipping to real_capital for any new strategy.
 
 **Multi-cadence loops (extends §5).**
 - 1s snapshot loop for active-position orderbooks.

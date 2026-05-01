@@ -165,7 +165,7 @@ Three processes, three Postgres roles, no shared in-process state. The Polymarke
 | Lead hangs (e.g. Anthropic API outage) | Killed by scheduler timeout (`cron` + `timeout` wrapper, default cycle period + 60s grace). Stale `~/.claude/teams/` left behind is swept by the next cycle's `SessionStart` janitor. |
 | Member returns malformed artifact | `TaskCompleted` hook (`engineering.md §9`) Pydantic-validates and forces retry on schema mismatch. After repeated failure, the cycle aborts; no orders placed; next cycle runs. |
 | Outcome-ingestion or lessons-summary script crashes | Non-fatal. Idempotent, picks up from `system_state.last_outcome_ingestion_at` (or equivalent for lessons). Next cron tick runs. |
-| Postgres outage | All three processes fail fast on connect. Operator alerted via standard structured-log alerting (`engineering.md §12`). No state corruption. |
+| Postgres outage | All three processes fail fast on connect. Operator alerted via standard structured-log alerting (`data_infrastructure.md §3`). No state corruption. |
 
 There is no automatic recovery beyond "next cron tick"; that is by design — it keeps the runtime topology small and the failure surface visible.
 

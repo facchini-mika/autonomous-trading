@@ -115,7 +115,7 @@ There is **no automated CI gate** that blocks the promotion — the operator own
 |---|---|
 | Outcome-ingestion script crashes / cron miss | Non-fatal — next tick (5–10 min later) picks up via the `last_outcome_ingestion_at` high-water mark. Idempotent updates prevent duplicates. |
 | Gamma API outage or 5xx | Script logs and exits cleanly; next tick retries. No state corruption since writes are transactional. |
-| Reconciliation diff > $0.50 per trade | Row flagged; operator paged via standard structured-log alerting (`engineering.md §12`). The script proceeds with the rest of the batch but does not auto-overwrite the flagged row. |
+| Reconciliation diff > $0.50 per trade | Row flagged; operator paged via standard structured-log alerting (`data_infrastructure.md §3`). The script proceeds with the rest of the batch but does not auto-overwrite the flagged row. |
 | Postgres outage | Script fails fast on connection error; alerted via standard logs. Trading cycle separately keeps running (degraded — open positions can't be marked-closed until Postgres recovers). |
 
 ---
