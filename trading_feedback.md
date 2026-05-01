@@ -61,7 +61,7 @@ Schemas: `data_infrastructure.md §1` (`predictions`, `trades`, `paper_trades`, 
 Hard rules for the outcome-ingestion script:
 
 - **NEVER** touch live-trading credentials, the EIP-712 signing key, or any `PolymarketAdapter` write surface. Read-only Gamma API access only.
-- **NEVER** mutate `predictions.p_raw`, `predictions.reasoning_blob`, `decisions.*`, or any non-ground-truth field. Allowed updates are limited to: `outcome`, `realized_pnl`, `trades.status`, `positions.status`/`positions.realized_pnl`/`positions.last_updated`, plus `system_state.last_outcome_ingestion_at`.
+- **NEVER** mutate `predictions.p_raw`, `predictions.inference_log`, `decisions.*`, or any non-ground-truth field. Allowed updates are limited to: `predictions.outcome`/`realized_pnl`, `trades.status`/`realized_pnl`, `paper_trades.status`/`realized_pnl`, `positions.status`/`positions.realized_pnl`/`positions.last_updated`, plus `system_state.last_outcome_ingestion_at`.
 - **NEVER** insert `lessons`, `patterns`, or `proposals` rows. Those are owned by `optimization.md`.
 - **NEVER** auto-correct disputed Polymarket settlements. A reconciliation diff > $0.50 (§3) flags the row for manual operator review; no auto-overwrite.
 

@@ -78,11 +78,11 @@ That is the full MVP self-improvement loop.
 - **NEVER** modify `risk/` directly — `engineering.md §9` hook blocks AI edits; for the daily script, no write path to `risk/` exists by design.
 - **NEVER** touch live-trading credentials, the EIP-712 signing key, or the `PolymarketAdapter` write surface.
 - **NEVER** auto-merge, auto-push, or otherwise circumvent operator review.
-- **NEVER** mutate `predictions`, `decisions`, `trades`, `paper_trades`, `positions`, `agent_performance`, or `cycle_plan` rows. The daily script's only DB write target is `INSERT INTO lessons`.
+- **NEVER** mutate `predictions`, `decisions`, `trades`, `paper_trades`, `positions`, or `cycle_plan` rows. The daily script's only DB write target is `INSERT INTO lessons`.
 
 **Mechanical enforcement:**
 
-- **Postgres role separation.** The daily script connects with a Postgres role that has `SELECT` on the trading tables and `INSERT` on `lessons`, and **no other privileges**. `UPDATE` and `DELETE` are denied at the role level. The trading-cycle process uses a different role with the necessary write privileges. Phase-1-implementable: two DB roles + two `DATABASE_URL` values in `.env`.
+- **Postgres role separation.** The daily script connects with the `lessons_summary` role that has `SELECT` on the trading tables and `INSERT` on `lessons`, and **no other privileges**. `UPDATE` and `DELETE` are denied at the role level. The trading-cycle process and the outcome-ingestion script use separate roles with their own write privileges (`orchestration.md §1`). Phase-1-implementable: three Postgres roles + three `DATABASE_URL` values in `.env`.
 - **Branch protection** (`engineering.md §8`) is the merge gate. Nothing in the self-improvement path can self-merge.
 - **Capital gate** (`engineering.md §3` / `risk/capital_gate.py`) is the runtime backstop. Even if lessons content somehow corrupted an agent prompt, the deterministic capital gate caps total deployment.
 

@@ -26,7 +26,7 @@ Three deterministic gates plus the constitutional capital cap. All limits are pl
 
 **Per-trade gates** (applied in order; trade rejected on first failure):
 1. **Concentration** — proposed notional ≤ **15% of equity** in any single market.
-2. **Solvency** — paper-cash ≥ proposed notional + estimated fees + open-order reservations.
+2. **Solvency** — available cash (paper-cash in `paper` mode, USDC in `real_capital` mode) ≥ proposed notional + estimated fees + open-order reservations.
 3. **Per-cycle spending cap** — total notional opened this cycle ≤ cycle cap (default 25% of equity, central setting §10).
 
 **Constitutional cap (§3).** `MAX_CAPITAL_EUR` is a hard, two-human-approval-only ceiling on gross deployed capital. Independent of all other gates. In MVP this is the paper-cash budget; on the `paper → real_capital` switch it becomes the real-USDC ceiling.
