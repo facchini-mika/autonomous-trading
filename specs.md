@@ -8,8 +8,8 @@ Deploy capital on Polymarket binary prediction markets to generate risk-adjusted
 
 **Primary KPIs:**
 - Net Sharpe > 1.5 (annualized, post fees + gas)
-- Max drawdown < 15% of equity
-- ECE < 5%, Brier < 0.20 on resolved predictions
+- Max drawdown < 25% of equity
+- Net PnL > 0 monthly; positive trailing 90d return
 - Edge consistency: no single category > 40% of PnL
 
 **Out of scope (v1):** non-binary scalar markets, leverage beyond bankroll, market-making, externally-pooled capital.
@@ -104,7 +104,7 @@ outcomes    ┘
 | Snapshot | 1 s | Update orderbook for active positions |
 | Reconcile | 30 s | Match internal positions to broker truth |
 | Decision | 12 min | Full scan → decide → execute |
-| Calibration | 1 h | Recompute agent calibration curves |
+| Recalibration | 1 h | Refit per-agent isotonic curves on recently resolved markets |
 | Allocation | 24 h | Rebalance per-agent capital |
 | Resolution | 1 min | Detect resolved markets, finalize PnL, feed calibration |
 
@@ -114,7 +114,7 @@ outcomes    ┘
 2. **T+15s — Triage.** Cheap heuristic edge estimate (price vs base rate, related markets, momentum) ranks markets. Top-K (K=20) advance.
 3. **T+30s — Research dispatch.** Per candidate: parallel bundle (news 7d, web search 3–5 queries, historical analogues, related-market snapshot). Persisted to S3, ID forwarded.
 4. **T+3m — Agent inference.** Each agent gets bundle + market metadata. Output: `P(YES)`, confidence, reasoning trace URI. Parallel; per-agent timeout 90s. Failed agents excluded from this market only.
-5. **T+5m — Calibration & aggregation.** Per-agent isotonic calibration; inverse-Brier-weighted mean. Consensus confidence = weighted geometric mean × disagreement penalty.
+5. **T+5m — Calibration & aggregation.** Per-agent isotonic recalibration; hit-rate-weighted mean. Consensus confidence = weighted geometric mean × disagreement penalty.
 6. **T+6m — Edge computation.** Live orderbook. Compute `q = mid`, `effective_q` = volume-weighted price for intended size, `edge = p_consensus − effective_q` (symmetric for NO).
 7. **T+7m — Risk gates.** Order: edge threshold → position limits → category exposure → drawdown → slippage → resolution risk. Reject or size-reduce.
 8. **T+8m — Sizing.** Quarter-Kelly within remaining caps.
@@ -156,7 +156,7 @@ class Agent:
 | `microstructure-reader` | Orderbook + flow + smart-money proxies | Catches positioning | Mistakes noise for signal |
 | `red-team-adversary` | Tries to falsify the leading hypothesis | Robustness check | Excess uncertainty |
 
-**Per-agent state:** predictions log (joined to outcome on resolution); calibration curve (isotonic, refit hourly on last 500 resolved); capital allocation (meta-allocator); internal portfolio (subset of global); performance history (rolling 7d/30d/90d Sharpe, hit rate, Brier).
+**Per-agent state:** predictions log (joined to outcome on resolution); calibration curve (isotonic, refit hourly on last 500 resolved); capital allocation (meta-allocator); internal portfolio (subset of global); performance history (rolling 7d/30d/90d Sharpe, hit rate, PnL).
 
 **Independence guarantees:**
 - Agents do not see each other's outputs before producing their own.
@@ -199,7 +199,7 @@ This is the explicit bridge between Tier-1 working memory and Tier-2 reflective 
 
 **Belief usage:**
 - Injected per cycle as *"your active beliefs about this market/category"* — top-K by relevance + recency.
-- Falsifiable beliefs (with `p_estimate`) are calibration-tracked: Brier on belief outcomes alongside per-cycle predictions (§10).
+- Falsifiable beliefs (with `p_estimate`) are performance-tracked: hit rate on belief outcomes alongside per-cycle predictions (§10).
 - Settlement/move that contradicts an active belief auto-flags it next cycle; agent decides `revise` (new belief with `supersedes_id`) or `retire`.
 - Improvement agents (§15) mine beliefs across the agent population for convergent/divergent views, surface stale beliefs, lift recurring true beliefs into shared `patterns`.
 
@@ -215,7 +215,7 @@ This makes the agent's *implicit world model* explicit, inspectable, and calibra
 - Confidence `c ∈ (0, 1)`: from expected absolute calibration error at this `p_cal`.
 
 **Aggregation:**
-- `weight_i = 1 / (Brier_i_30d + ε)`, ε = 0.01
+- `weight_i = max(hit_rate_i_30d − 0.5, 0.01)` — agents below random get a floor weight
 - `p_consensus = Σ weight_i · p_cal_i / Σ weight_i`
 - `confidence_consensus = (Σ weight_i · c_i / Σ weight_i) · (1 − std(p_cal_i))`
 
@@ -261,7 +261,7 @@ Limits at nested scopes; trade must pass *every* applicable scope.
 - Initial: equal weight (1/N)
 - Rebalanced weekly by meta-allocator on rolling 30d Sharpe (softmax, T=0.5)
 - Performance floor: rolling 30d return < −10% → halve allocation
-- Emergency disable: 7d Brier > 0.25 → suspend, alert
+- Emergency disable: 7d hit rate < 40% (with ≥ 20 resolved samples) OR 7d realized PnL < −8% of agent allocation → suspend, alert
 
 **Portfolio:**
 - Max gross exposure: 60% of equity
@@ -340,7 +340,7 @@ trades(id pk, decision_id fk, time, market_id fk, side, size, price, fees,
 positions(market_id fk, side, size, avg_price, unrealized_pnl, realized_pnl,
           opened_at, last_updated)
 
-agent_calibration(agent_id, time, brier_30d, hit_rate_30d, log_loss_30d,
+agent_performance(agent_id, time, hit_rate_30d, sharpe_30d, pnl_30d,
                   isotonic_curve_uri, n_samples)
 
 beliefs(id pk, time, agent_id, domain, scope, scope_ref,
@@ -408,13 +408,7 @@ notes(id pk, time, agent_id, body, tags jsonb, last_accessed)   -- per-agent scr
 | Hit rate | wins / (wins + losses) | depends on edge dist. |
 | Avg win / avg loss | | > 1.2 |
 
-**Calibration (per agent + ensemble, every 100 resolved):**
-- Brier: `mean((p − outcome)²)`
-- Log loss: `−mean(outcome · log(p) + (1−outcome) · log(1−p))`
-- Reliability diagram: 10 bins, weekly.
-- ECE: `Σ (n_bin / N) · |bin_avg_p − bin_avg_outcome|`
-
-**Per-agent attribution:** Capital ROI; Sharpe contribution; Calibration; Pairwise correlation (low desired).
+**Per-agent attribution:** Capital ROI; Sharpe contribution; Hit rate; Pairwise correlation (low desired).
 
 **Operational:** Cycle latency (P50/P95/P99); per-stage breakdown; fill rate; slippage realized vs expected (Δ over time); error rates per service.
 
@@ -437,12 +431,12 @@ notes(id pk, time, agent_id, body, tags jsonb, last_accessed)   -- per-agent scr
 | `equity_usd` | gauge | |
 | `gross_exposure_usd` | gauge | |
 | `drawdown_pct` | gauge | |
-| `agent_brier_30d` | gauge | agent_id |
+| `agent_hit_rate_30d` | gauge | agent_id |
 | `kill_switch_active` | gauge | 0/1 |
 
 **Tracing (OpenTelemetry → Tempo/Jaeger):** one trace per decision cycle; spans per service call; sub-spans per agent inference + tool call.
 
-**Dashboards (Grafana):** system health; capital + exposure; per-agent performance; calibration plots; trade flow heatmap.
+**Dashboards (Grafana):** system health; capital + exposure; per-agent performance; trade flow heatmap.
 
 **Alerts (Alertmanager → PagerDuty/email):**
 
@@ -486,11 +480,11 @@ notes(id pk, time, agent_id, body, tags jsonb, last_accessed)   -- per-agent scr
 
 ## 13. Future Extensions
 
-**RL (v2 — contingent on Anthropic managed fine-tuning for Opus):** if/when exposed, train per-agent variants on resolved-prediction data with calibration-weighted reward. Maintain frozen reference copies for diversity. Shadow-A/B before promotion. Until then, learning loop = prompt optimization (below).
+**RL (v2 — contingent on Anthropic managed fine-tuning for Opus):** if/when exposed, train per-agent variants on resolved-prediction data with PnL-weighted reward. Maintain frozen reference copies for diversity. Shadow-A/B before promotion. Until then, learning loop = prompt optimization (below).
 
-**Meta-learning / prompt optimization:** automated prompt search (DSPy/TextGrad) using historical Brier as objective. Spawn mutated-prompt candidates in shadow paper; promote on 30d outperformance.
+**Meta-learning / prompt optimization:** automated prompt search (DSPy/TextGrad) using historical PnL/hit-rate as objective. Spawn mutated-prompt candidates in shadow paper; promote on 30d outperformance.
 
-**Multi-model cloud ensemble (v2):** add Claude-family models (Sonnet, Haiku) as supplementary backbones — only if calibration shows uncorrelated errors with Opus. Cross-vendor cloud only if same test passes *and* audit/data-residency review approves; Claude family preferred. **§4 cloud-only rule is non-negotiable** — no local/on-prem in any v2+. Each new model goes through 30d shadow (§7, §14.10).
+**Multi-model cloud ensemble (v2):** add Claude-family models (Sonnet, Haiku) as supplementary backbones — only if performance shows uncorrelated errors with Opus. Cross-vendor cloud only if same test passes *and* audit/data-residency review approves; Claude family preferred. **§4 cloud-only rule is non-negotiable** — no local/on-prem in any v2+. Each new model goes through 30d shadow (§7, §14.10).
 
 **Cross-venue arbitrage:** Kalshi + sportsbook integration; statistical arb engine across venues.
 
@@ -603,7 +597,7 @@ MAX_CAPITAL_EUR: Final = <TBD_CAPITAL_CAP_EUR>
 
 No PR modifying `research/` or strategy code merges into `main` without:
 - Backtest on latest 90d resolved markets
-- Documented metrics in PR: Brier, Sharpe, hit rate, drawdown — vs. previous version
+- Documented metrics in PR: Sharpe, hit rate, drawdown, PnL — vs. previous version
 - CI check `backtest-required` passing (branch protection)
 
 Pre-commit hook also runs fast smoke backtest on touched strategies.
@@ -615,7 +609,7 @@ Every new/materially-modified strategy → **≥ 30 days** Polymarket paper/sand
 Promotion to live requires:
 - Paper Sharpe > 1.0
 - Paper max drawdown < 10%
-- Paper Brier ≤ 0.22
+- Paper hit rate ≥ 55% (with ≥ 30 resolved samples)
 - `/paper-deploy` run, results posted to PR
 
 ### 14.11 Secret Management
@@ -707,6 +701,21 @@ Before any new component, do a prior-art search; prefer reuse over rewriting.
 
 **Concrete prior-art adopted.** From a survey of *Prediction Arena* (Arcada Labs, `predictionarena.ai`): per-cycle prompt assembly with recent settlements/recent trades/previous-cycle reasoning/critical-learning section (§4); the **dual knowledge management** pattern from PA's Polymarket implementation — per-agent `manage_notes` scratchpad (~50 × ~200 words, LRU) for ad-hoc memory + structured `manage_beliefs` store typed by domain (`market_structure`/`strategy`/`event`/`risk`/`sentiment`) for first-class market views with revision history (§4 + §2 + §8); bid-based mark-to-market valuation (§10); explicit pre-trade solvency check (§6). Rejected or independently re-derived (stricter): 15% per-market concentration limit (we use 4% in §6), Fill-or-Kill-only order semantics (we use post-only limit + iceberg + TWAP in §9), single-OpenAI-web-search tooling (we keep cloud-only Anthropic per §4 with Tavily/Brave for search), and pooled real-capital structure. The two-tier orchestration view (§2), multi-agent self-improvement loop (§15), multi-tier risk gates (§6), and cloud-only rule (§4) are independently designed.
 
+### 14.21 Centralized Configuration (Single Source of Truth)
+
+**Hard rule.** All numerical thresholds, limits, parameters, and tunables that influence runtime behavior live in **one single settings file** — never duplicated, never hardcoded as magic numbers in service code. The user must be able to change every operational knob from one file.
+
+- Canonical location: `shared/config/settings.py` (Pydantic Settings model) backed by `config/settings.toml` for the values themselves. Single source of truth.
+- All services and agents import from this module — no parallel constants, no scattered defaults, no magic numbers in business logic.
+- **Examples of values that MUST live there** (non-exhaustive): every limit in §6 (per-trade/market/category/agent/portfolio caps, drawdown trip-wires, daily loss cap), edge / confidence / disagreement thresholds (§5), cycle period and per-stage timeouts (§3), Top-K (§3), iceberg threshold (§9), liquidity filter (§3), agent timeout (§3), reconciler interval / diff threshold (§9), retry/backoff parameters (§9), agent emergency-disable conditions (§6), fee/slippage estimator constants, isotonic refit window size (§5), top-K for belief injection (§4), notes cap (§4).
+- **Risk-layer interaction (§14.7, §14.8).** The hardest gates (`MAX_CAPITAL_EUR`, kill-switch triggers, all `risk/`-owned limits) physically live inside `risk/` for protection. The settings file imports and re-exports them — it does **not duplicate** them. Users still see one file with all knobs; `risk/` retains its 2-human-review enforcement on the source.
+- **Validation.** Pydantic Settings + `mypy --strict`: missing or wrong-typed values fail at service startup, never silently at runtime.
+- **Change governance.** Edits to non-`risk/` settings require ≥ 1 reviewer + CI tests + smoke backtest. Edits to `risk/`-owned values keep the §14.7/§14.8 stricter rules (≥ 2 reviewers, audit-log entry).
+- **Hot-reload.** Non-critical operational knobs (cooldown windows, scan filters, dashboard intervals) hot-reload from Postgres-backed config (§12) without restart. Structural values (cycle period, schema fields) are restart-only.
+- **Anti-pattern enforcement.** A CI lint rule rejects PRs that introduce a numeric literal in `execution/`, `research/`, or `risk/` outside the settings module (allowlist for trivial constants like `0`, `1`, `2`). Forces every new tunable through the settings file.
+
+This rule is the dual of §14.7 risk-layer protection: §14.7 prevents the AI from changing the *hardest* limits without humans; §14.21 prevents anyone (human or AI) from scattering tunables so widely that no single file shows the full operating envelope.
+
 ---
 
 ## 15. Self-Improvement & Continuous Learning
@@ -723,7 +732,7 @@ Both run on cloud-hosted Claude Opus per §4 (hard rule). Diversity in role + pr
 | Agent | Role | Trigger | Output |
 |---|---|---|---|
 | `risk-auditor` | Scan recent trades for risk-rule near-misses, anomalous fills, drawdown precursors | Daily + on alert | `lessons` row |
-| `calibration-refiner` | Detect Brier drift per trading agent; suggest isotonic recalibration | Hourly + on agent suspend | PR updating calibration curve |
+| `calibration-refiner` | Detect performance drift per trading agent; suggest isotonic recalibration on the latest resolved window | Hourly + on agent suspend | PR updating calibration curve |
 | `pattern-miner` | Cluster lessons into recurring patterns | Weekly | `patterns` row + supersedence links |
 | `strategy-improver` | Read losing trades + new patterns; propose prompt/strategy/sizing deltas | Weekly + after drawdown trip-wire (§6) | `proposals` row + draft PR with backtest |
 | `prior-art-scout` | Enforce §14.20 — search GitHub/PyPI/papers before custom builds | On every new-component PR open | Prior-art note posted to PR |
@@ -757,7 +766,7 @@ Read API exposes these to all improvement agents; write paths scoped by role.
 
 ### 15.3 Learning Loop Cadence
 
-- **Hourly**: `calibration-refiner` pulls newly resolved markets, refits per-agent isotonic curves, opens proposals only on material drift (KL > threshold).
+- **Hourly**: `calibration-refiner` pulls newly resolved markets, refits per-agent isotonic curves, opens proposals only on material drift (curve KL-divergence vs. previous fit > threshold).
 - **Daily**: `risk-auditor` scans last-24h trades; writes lessons for near-misses, outliers, slippage anomalies.
 - **Weekly batch** (Mon morning, off-cycle):
   1. `pattern-miner` extracts patterns from week's lessons.
@@ -837,8 +846,7 @@ Result: no runaway self-modification. Human in loop on every merge that affects 
 ## Appendix B — Glossary
 
 - **Edge** — signed difference between consensus probability and market-implied probability of the same outcome, net of expected slippage + fees.
-- **Calibration** — degree to which predicted probabilities match realized frequencies.
-- **Brier score** — mean squared error of predicted probability vs binary outcome; lower better.
+- **Calibration (procedure)** — isotonic recalibration mapping `p_raw → p_cal` from an agent's historical resolved predictions. The procedure is retained even though calibration *quality metrics* (Brier, ECE) are not used in v1.
 - **Quarter-Kelly** — position size scaled to 25% of full Kelly; reduces volatility at modest cost in expected log-growth.
 - **Resolution risk** — risk that a market resolves contrary to obvious outcome due to ambiguous criteria, oracle dispute, or delay.
 - **Effective spread** — bid-ask spread adjusted for fee impact + depth at intended order size.
@@ -847,5 +855,5 @@ Result: no runaway self-modification. Human in loop on every merge that affects 
 - **Working memory** — context that lives only for one trading cycle (research bundle, in-flight prediction).
 - **Episodic memory** — per-event durable records (predictions, decisions, trades, positions) used for replay/audit.
 - **Reflective memory** — observations + hypotheses written by improvement agents into `lessons` after the fact.
-- **Belief** — typed structured statement an agent currently holds about how a market or class behaves. In `beliefs` table; calibration-tracked when falsifiable; revisions preserve full lineage. Distinct from `predictions` (per-market per-cycle), `notes` (ad-hoc), `lessons` (post-hoc, by improvement agents).
+- **Belief** — typed structured statement an agent currently holds about how a market or class behaves. In `beliefs` table; performance-tracked (hit rate) when falsifiable; revisions preserve full lineage. Distinct from `predictions` (per-market per-cycle), `notes` (ad-hoc), `lessons` (post-hoc, by improvement agents).
 - **Dual knowledge management** — pattern of giving an agent both unstructured `notes` and structured `beliefs` as separate memory stores, each with its own tool API + lifetime. Adopted from Prediction Arena.
