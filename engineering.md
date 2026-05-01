@@ -11,8 +11,9 @@ How humans + AI build, modify, and operate the system. Owns the deterministic ri
 Build a minimum repo that runs the prototype described in `specs.md` + `trading.md`. The engineering decisions for that build are:
 
 - **Single language:** Python 3.12, `uv`-managed.
-- **Single storage tier:** Postgres 16 only (per `data_infrastructure.md` MVP scope). No Redis, no TimescaleDB, no S3, no Vault, no Secrets Manager, no KMS.
-- **Single deployment target:** local. `docker-compose` for the Postgres container; the trading process runs as a regular Python script triggered by `cron` (or `/loop`). No k8s, no ECS, no Agent-Teams production runtime.
+- **Single storage tier:** Postgres 16 only (per `data_infrastructure.md` MVP scope). No Redis, no TimescaleDB, no S3, no Vault, no AWS Secrets Manager.
+- **Single deployment target:** local. `docker-compose` for Postgres; the trading cycle is a fresh Claude Code Agent Team per `cron` tick (per `trading.md §2`). No k8s, no ECS.
+- **Real_capital from day 1.** EIP-712 signing key is in scope (§7). AWS KMS is the recommended `KeyProvider` backend; encrypted-at-rest local file is the acceptable fallback. Plaintext keys are forbidden.
 - **Strict CI gates from day 1:** `mypy --strict`, `ruff`, `pytest`, `gitleaks`. Risk-layer 100% coverage hard gate.
 - **Risk + safety enforcement is non-negotiable** even in MVP — the §1 gates, the §3 capital cap, the §4 mode flag, and the §9 hooks are all in scope from commit one.
 - **Everything that does not directly serve the prototype is deferred** — listed in §13 *Weiterer Ausbau (post-MVP)*.
@@ -137,8 +138,12 @@ Personal/transient → `CLAUDE.local.md` (gitignored).
 ## 7. Secret Management (MVP)
 
 - `.env*` in `.gitignore`. `gitleaks` + `trufflehog` in `.pre-commit-config.yaml` and on every PR.
-- API tokens (Anthropic, OpenAI, Polymarket-read) live in `.env` for MVP — local `.env` is sufficient because we never trade real capital here.
-- **No private keys in MVP.** EIP-712 signing arrives only on the `real_capital` switch; cloud KMS or hardware key (YubiHSM) ship with that change, not before.
+- API tokens (Anthropic, OpenAI, Polymarket-read) live in `.env` for MVP — local `.env` is sufficient.
+- **EIP-712 signing key is in scope from MVP day 1**, because MVP supports `real_capital` (`engineering.md §4`). Pragmatic options for the MVP:
+  - **Preferred:** AWS KMS (or equivalent cloud KMS) accessed via `KeyProvider` adapter — no plaintext key on disk; `boto3.client("kms").sign(...)` for the signing call.
+  - **Acceptable:** encrypted-at-rest local key file with passphrase prompt at process start, behind the same `KeyProvider` interface; explicitly inferior to KMS, used only if cloud-KMS setup is blocking.
+  - **Forbidden:** plaintext key in `.env` or any committed file. `gitleaks` + `trufflehog` block this.
+- The `KeyProvider` interface is the boundary; swapping local-encrypted for cloud-KMS later is a config change, not a code change.
 
 ---
 
@@ -155,7 +160,9 @@ Personal/transient → `CLAUDE.local.md` (gitignored).
 
 ## 9. Hooks (`.claude/settings.json`) — MVP set
 
-Hooks are deterministic guarantees. CLAUDE.md is a request, hooks are enforcement.
+Hooks are deterministic guarantees. CLAUDE.md is a request, hooks are enforcement. MVP runs **two distinct hook contexts** because the trading cycle is itself a Claude Code Agent Team (`trading.md §2`):
+
+**Development-session hooks** (a human is at the terminal):
 
 | Hook | Trigger | Action |
 |---|---|---|
@@ -164,6 +171,17 @@ Hooks are deterministic guarantees. CLAUDE.md is a request, hooks are enforcemen
 | `PreToolUse` Edit/Write on `risk/**` | Before risk-code edit | Block unless session in Plan Mode with prior user approval |
 | `Stop` | Before turn end | `gitleaks` on staged diff; abort on any secret hit |
 | `UserPromptSubmit` | On user prompt | If contains "live trade" / "echtes Kapital" / "real money", inject confirmation banner |
+
+**Production trading-cycle hooks** (Lead boots fresh team per cycle, `--dangerously-skip-permissions`, no human at the terminal):
+
+| Hook | Trigger | Action |
+|---|---|---|
+| `SessionStart` | Lead boots | Janitor sweeps stale `~/.claude/teams/{team-name}/` directories from prior crashed cycles; assert team-spec source-of-truth (`.claude/teams/trading-team.spec.json`) exists and parses; abort cycle if any check fails (next scheduled cycle retries) |
+| `TaskCreated` | Lead creates task for member | Schema-validate task payload against the §11 Pydantic models; reject malformed tasks before claim |
+| `TaskCompleted` | Member marks task done | Pydantic-validate the output artifact (`Universe`, `PortfolioState`, `Prediction[]`, `Decision[]`); exit 2 to force retry on schema mismatch; exit 0 only on clean artifact |
+| `Stop` | Lead about to exit | Assert `clean up the team` was called; if not, force cleanup before allowing process exit |
+
+The dev-session hooks fire regardless of permission mode — they remain active in production-cycle context too. The production-cycle-specific hooks only meaningfully fire in the Lead's session.
 
 ---
 
@@ -200,11 +218,16 @@ This is the dual of §3: §3 prevents AI from changing the *hardest* limits with
 | Async runtime | `asyncio` (`uvloop` optional) |
 | Storage | Postgres 16, single tier (per `data_infrastructure.md` MVP scope) |
 | Object store | Filesystem under `./data/` |
-| Secrets | `.env` (gitignored) |
-| Orchestration | `docker-compose` for Postgres; `cron` (or `/loop`) for the cycle |
+| Secrets (API tokens) | `.env` (gitignored) |
+| Signing key | AWS KMS via `KeyProvider` adapter (preferred) OR encrypted-at-rest local file (acceptable fallback) |
+| Cycle runtime | Claude Code Agent Team — fresh `claude` process per cycle (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, `--dangerously-skip-permissions`). Pinned Claude Code version in `infra/`. |
+| Scheduler | `cron` triggering the per-cycle `claude` process |
+| Local infra | `docker-compose` for Postgres |
 | Observability | Structured JSON logs to stdout + file |
 | LLM (research / web search) | OpenAI Responses API + `web_search_preview` (model in §10) |
 | LLM (decision) | Anthropic Claude Opus |
+| Polymarket client | `Polymarket/py-clob-client` (per `data_infrastructure.md §0`) |
+| EIP-712 signing | `web3.py` (eth_account) wrapped behind `KeyProvider` adapter |
 | Migrations | Alembic |
 | Lint / format / types | `ruff`, `mypy --strict` |
 | Tests | `pytest`, `hypothesis`, `pytest-cov` |
@@ -227,21 +250,23 @@ Everything below is deferred until the MVP prototype runs paper-mode and shows s
 - Self-hosted or managed observability stack (Prometheus + Grafana + Loki + Tempo) once the operator footprint demands it; CloudWatch + Sentry as a lighter alternative.
 
 **Secrets / signing** (extends §7):
-- AWS KMS or HashiCorp Vault for API tokens.
-- Cloud KMS or YubiHSM for the EIP-712 signing key — required at the moment of the `paper → real_capital` switch and not before.
+- AWS KMS for the EIP-712 signing key is **MVP-recommended** (not deferred); the local-encrypted-key fallback is the post-MVP-acceptable path that can be replaced by KMS once the cloud-KMS setup lands.
+- AWS Secrets Manager / HashiCorp Vault for API tokens (today: `.env` is fine because it's local-only).
+- YubiHSM / hardware-wallet for the signing key (post-MVP — when scaling capital justifies the operational cost).
 
-**Agent-Teams production runtime** (owned by `orchestration.md §2`):
-- Spawning the trading cycle as a Claude Code Agent Team (Lead + Members + Subagents) with `--dangerously-skip-permissions`, fresh-team-per-cycle.
-- Production-cycle hooks (`SessionStart` janitor, `TeammateIdle`, `TaskCreated`, `TaskCompleted`, cleanup-assertion in `Stop`).
-- Permission-mode boundaries for the production cycle vs. development sessions.
+**Agent-Teams production runtime** (now MVP per `trading.md §2`):
+- The trading-cycle Lead is launched fresh per cycle with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and `--dangerously-skip-permissions` from MVP day 1.
+- Production-cycle hooks `SessionStart` (janitor), `TaskCreated`, `TaskCompleted`, `Stop` (cleanup-assertion) are part of the §9 MVP set.
+- Permission-mode boundaries (dev session vs. production cycle) are MVP, not deferred. Safety in the production cycle comes from §1 risk gates + §2 kill switch + §3 capital gate + §9 hooks — *not* from interactive permission prompts.
+- Post-MVP additions on this surface: `TeammateIdle` hook (3-strikes-and-abort), per-member subagent fan-out, multi-team coordination (Trade-Eval-Team, Code-Eval-Team).
 
 **Multi-team architecture** (owned by `orchestration.md §1`, `trading_feedback.md`, `optimization.md`):
-- Tier-1 Trade Evaluation Team (1-min cron) and Tier-2 Code Evaluation Team (daily / weekly batches) as separate scheduled processes.
+- Tier-1 Trade Evaluation Team (1-min cron) and Tier-2 Code Evaluation Team (daily / weekly batches) as separate scheduled processes. (MVP runs Tier-1 as a deterministic Python script per `trading_feedback.md`; Tier-2 as the manual-operator-review loop per `optimization.md §1`.)
 - Capital-allocation feedback service (`meta-allocator`, weekly).
 
-**Multi-agent ensemble** (owned by `trading.md §2`):
+**Multi-agent ensemble** (owned by `trading.md §8 *Weiterer Ausbau*`):
 - The 7-persona heterogeneous roster.
-- Per-agent `notes` + `beliefs` + position-thesis beliefs.
+- Per-agent `notes` partitioning + `beliefs` + position-thesis beliefs + `operating_doctrine`.
 - Strategy Skill Library (named-skill pattern from Voyager).
 
 **GitHub / review automation** (extends §8):
@@ -250,8 +275,9 @@ Everything below is deferred until the MVP prototype runs paper-mode and shows s
 - `/security-review` on every PR touching auth, signing, or secrets.
 - GitHub Actions with `claude -p` (headless): AI-code lint, regression detection.
 
-**Subagents (`.claude/agents/`)** — post-MVP:
-- `strategy-researcher`, `risk-reviewer`, `security-reviewer`. Each with a tightly-scoped tool allow-list.
+**Subagents (`.claude/agents/`)** — partially MVP, partially post-MVP:
+- **MVP:** the 3 trading-team members defined in `trading.md §2` (`scanner-reviewer`, `trading-agent`, `risk-execution`) live here as agent definitions. The team-spec at `.claude/teams/trading-team.spec.json` references them.
+- **Post-MVP review subagents:** `strategy-researcher`, `risk-reviewer`, `security-reviewer`. Each with a tightly-scoped tool allow-list. These are PR-review subagents, not trading-cycle members.
 
 **Skills (`.claude/skills/`)** — post-MVP, on-demand:
 - `polymarket-api`, `paper-mode-protocol`, `incident-response`.
