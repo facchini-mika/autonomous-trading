@@ -1,0 +1,76 @@
+name: Claude PR Review
+
+# Advisory only — NOT wired into branch protection. Single-operator project:
+# Claude reviews are signal, not a gate (CLAUDE.md "Reviewer rule").
+# Auth: claude-code-action@v1 with the operator's Max-subscription OAuth
+# token (CLAUDE_CODE_OAUTH_TOKEN), generated via `claude setup-token` and
+# stored as a repo secret. Rotate the token roughly every 90 days.
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write  # OIDC — claude-code-action uses it to validate the OAuth token
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: review
+    runs-on: ubuntu-latest
+    # Skip PRs from forks: GitHub does not expose secrets to fork workflows,
+    # so the action would fail anyway. Single-operator project — no forks
+    # expected, but explicit is better.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--max-turns 5"
+          prompt: |
+            Review this pull request against the project's doctrine.
+
+            Authoritative sources (read these before commenting):
+            - CLAUDE.md  — daily-driver guard rails, no-go list, reviewer rule
+            - engineering.md  — §1 risk gates, §3 capital gate + risk/**
+              protection, §4 TRADING_MODE governance, §8 audit-log wiring,
+              §10 settings discipline
+            - plan.md  — current phase + frozen interfaces
+
+            Focus areas, in priority order:
+
+            1. **Audit-log compliance** (single-operator project, no human
+               second reviewer). If the PR touches `risk/**`,
+               `MAX_CAPITAL_EUR`, or flips `TRADING_MODE`, an
+               `AUDIT_LOG.md` entry is mandatory and must include
+               Description / Risk / Mitigation. Flag if missing or thin.
+            2. **Settings discipline** (engineering.md §10). From Phase 3
+               onwards, no numeric tunables outside
+               `shared/config/settings.py` (allow-list: 0, 1, 2). Flag
+               magic numbers in `risk/`, `execution/`, `research/`.
+            3. **Adapter boundary**. `execution/` and `research/` may talk
+               to Polymarket only via `shared/adapters/*`. Flag direct
+               `py-clob-client` or `web3` imports outside the adapter
+               layer.
+            4. **Plan-mode rule**. Edits under `risk/**` should only land
+               via plan-mode-approved PRs. Flag risk/** changes without
+               an audit-log entry that mentions plan-mode approval.
+            5. **General quality** — correctness, security, simplicity.
+               For new logic in `risk/`, also check that tests are
+               present (Phase 3+: 100% coverage gate).
+
+            Style:
+            - Be terse. Prefer inline review comments on specific lines
+              over a long top-level summary.
+            - If the PR looks clean, say so in one line — no theatre.
+            - Cite the doctrine source ("CLAUDE.md says X", "engineering.md
+              §3 requires Y") so the operator can verify the claim.
+            - Do not block — this is advisory, not a required check.
