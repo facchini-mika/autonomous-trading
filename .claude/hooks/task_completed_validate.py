@@ -1,25 +1,63 @@
 #!/usr/bin/env python3
 """TaskCompleted — validate output artifact against shared.models.
 
-Phase 2 stub: shared.models does not exist yet, so the hook degrades to a
-no-op via ImportError. Phase 3 activates Pydantic validation per member:
-- scanner-reviewer => Universe + PortfolioState
-- trading-agent    => Prediction[]
-- risk-execution   => Decision[] + Trade[]
-On schema mismatch the hook exits 2, which forces a task retry per
-`engineering.md §9` and `plan.md` Phase 3, step 18.
+Routes the stdin payload by `subagent_type` and validates the matching
+output wrapper from `shared.models.tasks`. Unknown subagent types are a
+no-op (exit 0). Validation errors exit 2 with stderr so the agent-team
+runtime forces a task retry (engineering.md §9).
 """
 
 from __future__ import annotations
 
+import json
 import sys
+from pathlib import Path
 
-try:
-    # Phase 3: replace with concrete model imports + validation logic.
-    from shared.models import Decision, Prediction, Trade  # type: ignore[import-not-found]  # noqa: F401
-except ImportError:
-    sys.exit(0)
+# Self-bootstrap: hook scripts run via shebang; the project package isn't
+# installed, so make `shared` importable from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-# Phase 3: read stdin JSON, dispatch by member role, validate output artifact,
-# exit 2 on Pydantic ValidationError so the cycle retries the task.
-sys.exit(0)
+from pydantic import BaseModel, ValidationError
+
+from shared.models.tasks import (
+    RiskExecutionOutput,
+    ScannerReviewerOutput,
+    TradingAgentOutput,
+)
+
+ROUTING: dict[str, type[BaseModel]] = {
+    "scanner-reviewer": ScannerReviewerOutput,
+    "trading-agent": TradingAgentOutput,
+    "risk-execution": RiskExecutionOutput,
+}
+
+
+def main() -> int:
+    try:
+        envelope = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return 0
+
+    if not isinstance(envelope, dict):
+        return 0
+
+    subagent_type = envelope.get("subagent_type")
+    if not isinstance(subagent_type, str):
+        return 0
+
+    model_cls = ROUTING.get(subagent_type)
+    if model_cls is None:
+        return 0
+
+    payload = envelope.get("payload", envelope)
+    try:
+        model_cls.model_validate(payload)
+    except ValidationError as exc:
+        sys.stderr.write(f"task_completed_validate: output for '{subagent_type}' failed schema check\n{exc}\n")
+        return 2
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
