@@ -105,3 +105,55 @@ jobs:
         run: uv sync --frozen
       - name: lint-imports
         run: uv run lint-imports
+
+  alembic-smoketest:
+    name: alembic-smoketest
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: autonomous_trading
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d autonomous_trading"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres@localhost:5432/autonomous_trading
+      DATABASE_URL_TRADING_CYCLE: postgresql+psycopg://trading_cycle:ci_trading_cycle@localhost:5432/autonomous_trading
+      DATABASE_URL_OUTCOME_INGESTION: postgresql+psycopg://outcome_ingestion:ci_outcome_ingestion@localhost:5432/autonomous_trading
+      DATABASE_URL_LESSONS_SUMMARY: postgresql+psycopg://lessons_summary:ci_lessons_summary@localhost:5432/autonomous_trading
+      PGPASSWORD_TRADING_CYCLE: ci_trading_cycle
+      PGPASSWORD_OUTCOME_INGESTION: ci_outcome_ingestion
+      PGPASSWORD_LESSONS_SUMMARY: ci_lessons_summary
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.x"
+          enable-cache: true
+      - name: Setup Python
+        run: uv python install
+      - name: Sync dependencies
+        run: uv sync --frozen
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Bootstrap roles
+        run: bash infra/sql/00_roles.sh
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: autonomous_trading
+          PGHOST: localhost
+          PGPORT: "5432"
+      - name: Alembic upgrade + downgrade + upgrade
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+      - name: pytest infra
+        run: uv run pytest tests/infra/ -v

@@ -47,8 +47,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "PLR2004", "ANN", "SLF001", "INP001", "TC001", "TC002", "TC003"]
-"alembic/versions/**" = ["INP001", "D"]
+"tests/**" = ["S101", "PLR2004", "ANN", "SLF001", "INP001", "TC001", "TC002", "TC003", "S603", "S607"]
+"alembic/**" = ["INP001", "D", "TC001", "TC002", "TC003"]
 # Claude Code hooks: stdin-driven scripts with multiple guard returns and
 # subprocess calls whose arguments are hardcoded or resolved via shutil.which.
 ".claude/hooks/**" = ["INP001", "PLR0911", "S603"]
@@ -56,6 +56,9 @@ ignore = [
 # TC* rules incorrectly suggest moving them under TYPE_CHECKING.
 "shared/models/**" = ["TC001", "TC002", "TC003"]
 "shared/adapters/**" = ["TC001", "TC002", "TC003"]
+# shared/db.py uses Iterator at runtime in @contextmanager generator; do not
+# move it to TYPE_CHECKING.
+"shared/db.py" = ["TC003"]
 
 [tool.mypy]
 strict = true
