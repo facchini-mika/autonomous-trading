@@ -5,7 +5,7 @@ name: Auto-Cleanup
 # deterministic (vulture + jscpd); validation + removal + PR are done by
 # claude-code-action with hard constraints in the prompt. NEVER touches
 # risk/**, alembic/versions/**, .github/, infra/, docs/, MAX_CAPITAL_EUR,
-# or TRADING_MODE — see the prompt below and engineering.md §3 / CLAUDE.md
+# or TRADING_MODE — see the prompt below and specs/engineering.md §3 / CLAUDE.md
 # "No-go list".
 #
 # In Phase 1/2 the source dirs do not yet exist; the detect job exits with
@@ -138,7 +138,7 @@ jobs:
 
             Authoritative sources to consult:
               - CLAUDE.md  — no-go list, reviewer rule, settings discipline
-              - engineering.md  — §3 risk/** protection, §10 settings
+              - specs/engineering.md  — §3 risk/** protection, §10 settings
               - plan.md  — current phase, frozen interfaces
 
             HARD CONSTRAINTS — enforce these even if a finding suggests

@@ -30,9 +30,9 @@ None. Pure synthesis from inputs handed in by the Lead.
 
 # Spec pointers
 
-- `trading.md §2` — scanner-reviewer role.
-- `orchestration.md §2` — team topology + cycle clock.
-- `engineering.md §10` — `TOP_K_MARKETS`, `CONCENTRATION_CAP`.
+- `specs/trading.md §2` — scanner-reviewer role.
+- `specs/orchestration.md §2` — team topology + cycle clock.
+- `specs/engineering.md §10` — `TOP_K_MARKETS`, `CONCENTRATION_CAP`.
 
 # Phase-2 status
 

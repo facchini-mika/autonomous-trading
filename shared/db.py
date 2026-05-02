@@ -1,7 +1,7 @@
 """Database session helper — picks per-role connection URL from env.
 
 Every cron-driven process opens sessions only for its assigned role per
-`engineering.md §1` and `orchestration.md §1`. Mixing roles in one process
+`specs/engineering.md §1` and `specs/orchestration.md §1`. Mixing roles in one process
 defeats the column-level GRANT enforcement.
 """
 

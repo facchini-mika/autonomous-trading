@@ -4,12 +4,12 @@
 # branch protection runs with `required_approving_review_count: 0` and
 # `require_code_owner_reviews` has no merge-blocking effect. The file
 # stays as a stewardship record; risk-sensitivity is enforced via the
-# audit-log self-review pattern (engineering.md §3, §4, §8 + CLAUDE.md
+# audit-log self-review pattern (specs/engineering.md §3, §4, §8 + CLAUDE.md
 # "Reviewer rule").
 
 * @facchini-mika
 
-# Risk-sensitive code (engineering.md §3) — every change here requires an
+# Risk-sensitive code (specs/engineering.md §3) — every change here requires an
 # AUDIT_LOG.md entry documenting the operator's safety review.
 /risk/ @facchini-mika
 

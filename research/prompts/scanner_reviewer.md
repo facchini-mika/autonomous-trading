@@ -48,6 +48,6 @@ outputs.
 
 ## Spec pointers
 
-- `trading.md §2` — scanner-reviewer role.
-- `data_infrastructure.md §3` — Orderbook depth definitions.
-- `engineering.md §10` — `TOP_K_MARKETS`.
+- `specs/trading.md §2` — scanner-reviewer role.
+- `specs/data_infrastructure.md §3` — Orderbook depth definitions.
+- `specs/engineering.md §10` — `TOP_K_MARKETS`.

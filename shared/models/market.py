@@ -1,7 +1,7 @@
 """Polymarket market data shapes.
 
-Field-level definitions cross-referenced against trading.md and
-data_infrastructure.md §1. Models are frozen for safety; mutations require
+Field-level definitions cross-referenced against specs/trading.md and
+specs/data_infrastructure.md §1. Models are frozen for safety; mutations require
 `.model_copy(update=...)`.
 """
 

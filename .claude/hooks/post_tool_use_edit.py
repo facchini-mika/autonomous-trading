@@ -2,7 +2,7 @@
 """PostToolUse:Edit|Write — run ruff on the edited file.
 
 Phase 2: only ruff check is enforced. Phase 3 will add `mypy --strict` and a
-targeted `pytest` subset (see `engineering.md §9`).
+targeted `pytest` subset (see `specs/engineering.md §9`).
 """
 
 from __future__ import annotations

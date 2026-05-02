@@ -40,7 +40,7 @@ jobs:
 
             Authoritative sources (read these before commenting):
             - CLAUDE.md  — daily-driver guard rails, no-go list, reviewer rule
-            - engineering.md  — §1 risk gates, §3 capital gate + risk/**
+            - specs/engineering.md  — §1 risk gates, §3 capital gate + risk/**
               protection, §4 TRADING_MODE governance, §8 audit-log wiring,
               §10 settings discipline
             - plan.md  — current phase + frozen interfaces
@@ -52,7 +52,7 @@ jobs:
                `MAX_CAPITAL_EUR`, or flips `TRADING_MODE`, an
                `AUDIT_LOG.md` entry is mandatory and must include
                Description / Risk / Mitigation. Flag if missing or thin.
-            2. **Settings discipline** (engineering.md §10). From Phase 3
+            2. **Settings discipline** (specs/engineering.md §10). From Phase 3
                onwards, no numeric tunables outside
                `shared/config/settings.py` (allow-list: 0, 1, 2). Flag
                magic numbers in `risk/`, `execution/`, `research/`.
@@ -71,6 +71,6 @@ jobs:
             - Be terse. Prefer inline review comments on specific lines
               over a long top-level summary.
             - If the PR looks clean, say so in one line — no theatre.
-            - Cite the doctrine source ("CLAUDE.md says X", "engineering.md
+            - Cite the doctrine source ("CLAUDE.md says X", "specs/engineering.md
               §3 requires Y") so the operator can verify the claim.
             - Do not block — this is advisory, not a required check.

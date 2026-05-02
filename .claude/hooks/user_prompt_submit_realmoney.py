@@ -3,7 +3,7 @@
 
 Banner-only (no hard block). Triggered when the prompt mentions live trading,
 real capital, the capital cap constant, or a TRADING_MODE flip. See
-`engineering.md §9` and `CLAUDE.md` (no-go list).
+`specs/engineering.md §9` and `CLAUDE.md` (no-go list).
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def main() -> int:
                 "additionalContext": (
                     "REAL-MONEY-INTENT detected. Verify current TRADING_MODE before "
                     "any action. Any change to risk/, MAX_CAPITAL_EUR, or TRADING_MODE "
-                    "requires an AUDIT_LOG.md entry (CLAUDE.md, engineering.md §3, §4)."
+                    "requires an AUDIT_LOG.md entry (CLAUDE.md, specs/engineering.md §3, §4)."
                 ),
             }
         },

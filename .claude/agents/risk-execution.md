@@ -33,9 +33,9 @@ this member's behalf.
 
 # Spec pointers
 
-- `trading.md §59` — execution protocol.
-- `engineering.md §1, §3` — risk gates + capital gate.
-- `engineering.md §10` — sizing tunables.
+- `specs/trading.md §59` — execution protocol.
+- `specs/engineering.md §1, §3` — risk gates + capital gate.
+- `specs/engineering.md §10` — sizing tunables.
 
 # Phase-2 status
 

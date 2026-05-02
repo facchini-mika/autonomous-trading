@@ -1,6 +1,6 @@
 # Polymarket Autonomous Trading — MVP Build Plan
 
-Architektonischer Source-of-Truth: [`specs.md`](./specs.md) (+ 6 Sub-Files: `trading.md`, `orchestration.md`, `data_infrastructure.md`, `engineering.md`, `trading_feedback.md`, `optimization.md`).
+Architektonischer Source-of-Truth: [`specs/specs.md`](./specs.md) (+ 6 Sub-Files: `specs/trading.md`, `specs/orchestration.md`, `specs/data_infrastructure.md`, `specs/engineering.md`, `specs/trading_feedback.md`, `specs/optimization.md`).
 
 **Reihenfolge ist binding** — Standards → Git → Skills/Hooks → Code. Plan beginnt bei Phase 0.
 
@@ -28,10 +28,10 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 **Ziel:** Konventionen einfrieren, bevor eine Code-Zeile geschrieben wird.
 
 **Files:**
-- `CLAUDE.md` (engineering.md §6, < 200 Zeilen):
+- `CLAUDE.md` (specs/engineering.md §6, < 200 Zeilen):
   - Build/Test/Lint-Commands (`uv run pytest`, `uv run ruff`, `uv run mypy --strict`, `uv run alembic upgrade head`).
   - No-Go-Liste (keine Real-Keys, keine Live-Trades ohne Confirm, keine `risk/`-Edits außer Plan-Mode, kein direkter `main`-Push).
-  - Pointer auf `specs.md` + 6 Sub-Files.
+  - Pointer auf `specs/specs.md` + 6 Sub-Files.
   - Hinweis auf 2-Reviewer-Pflicht für `MAX_CAPITAL_EUR` und `risk/`.
   - Default-Mode `paper`.
 - `CLAUDE.local.md` (gitignored, persönliche Notizen).
@@ -59,7 +59,7 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 
 **Manuelle Operator-Steps (außerhalb Repo):**
 - `gh` CLI vorhanden + authentifiziert.
-- Branch-Protection auf `main` über `gh api`: `required_approving_review_count: 0` (Single-Operator-Projekt; GitHub erlaubt kein Self-Approval, daher ist 0 die einzig konsistente Wahl — Risk-Sensitivity läuft über die Audit-Log-Disziplin, siehe `engineering.md §3, §4, §8`); required status checks `lint`/`type-check`/`gitleaks`/`trufflehog` ab Phase 1, `pytest`/`import-linter`/`risk/`-Coverage ab Phase 3; `enforce_admins: true`; keine direkten Pushes; kein Force-Push; keine Branch-Deletes.
+- Branch-Protection auf `main` über `gh api`: `required_approving_review_count: 0` (Single-Operator-Projekt; GitHub erlaubt kein Self-Approval, daher ist 0 die einzig konsistente Wahl — Risk-Sensitivity läuft über die Audit-Log-Disziplin, siehe `specs/engineering.md §3, §4, §8`); required status checks `lint`/`type-check`/`gitleaks`/`trufflehog` ab Phase 1, `pytest`/`import-linter`/`risk/`-Coverage ab Phase 3; `enforce_admins: true`; keine direkten Pushes; kein Force-Push; keine Branch-Deletes.
 
 **CI-Stufung über die Phasen** (verhindert dass Phase-1-Repo nicht baubar ist):
 - Phase 1: ruff + mypy + gitleaks + trufflehog (grün auf leerem Repo).
@@ -78,7 +78,7 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 **Ziel:** `.claude/`-Layer aufgesetzt mit allen 9 Hooks, Agent-Skeletten und Team-Spec — Hook-Skripte teilweise Stubs, weil Pydantic-Models erst in Phase 3 existieren.
 
 **Files:**
-- `.claude/settings.json`: `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, alle 9 Hooks aus engineering.md §9 registriert mit Pfad zu `.claude/hooks/*.py`.
+- `.claude/settings.json`: `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, alle 9 Hooks aus specs/engineering.md §9 registriert mit Pfad zu `.claude/hooks/*.py`.
 - `.claude/hooks/post_tool_use_edit.py` — ruff/mypy/pytest. Phase 2: nur ruff aktiv. Phase 3: scharf.
 - `.claude/hooks/pre_tool_use_bash.py` — blockt `rm -rf`, `git push --force`, `git reset --hard`, `.env*`-Writes. Sofort scharf.
 - `.claude/hooks/pre_tool_use_risk_edit.py` — blockt Edits unter `risk/**` außerhalb Plan-Mode. Sofort scharf.
@@ -107,12 +107,12 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 
 **Files (in dieser Reihenfolge committed):**
 
-1. `shared/config/settings.py` — Pydantic-Settings (Single Source of Truth, alle Tunables aus engineering.md §10): `TRADING_MODE` (Default `paper`), `MAX_CAPITAL_EUR` (Default `0`), `EDGE_THRESHOLD=0.03`, `CYCLE_PERIOD_MIN=12`, `TOP_K_MARKETS=50`, `CONCENTRATION_CAP=0.15`, `CYCLE_CAP=0.25`, `LESSONS_TOP_K`, `LESSONS_LOOKBACK_DAYS`, `SURPRISE_THRESHOLD`, `WEB_SEARCH_TIMEOUT`, `AGENT_TIMEOUT`, `MARKET_SNAPSHOTS_RETENTION_DAYS=30`, `INFERENCE_LOG_RETENTION_DAYS=90`, `KEY_PROVIDER` (Default `"encrypted_file"`), `RECONCILIATION_DIFF_USD=0.50`, `SystemStateKey: Literal[...]`-Typ.
+1. `shared/config/settings.py` — Pydantic-Settings (Single Source of Truth, alle Tunables aus specs/engineering.md §10): `TRADING_MODE` (Default `paper`), `MAX_CAPITAL_EUR` (Default `0`), `EDGE_THRESHOLD=0.03`, `CYCLE_PERIOD_MIN=12`, `TOP_K_MARKETS=50`, `CONCENTRATION_CAP=0.15`, `CYCLE_CAP=0.25`, `LESSONS_TOP_K`, `LESSONS_LOOKBACK_DAYS`, `SURPRISE_THRESHOLD`, `WEB_SEARCH_TIMEOUT`, `AGENT_TIMEOUT`, `MARKET_SNAPSHOTS_RETENTION_DAYS=30`, `INFERENCE_LOG_RETENTION_DAYS=90`, `KEY_PROVIDER` (Default `"encrypted_file"`), `RECONCILIATION_DIFF_USD=0.50`, `SystemStateKey: Literal[...]`-Typ.
 2. `shared/models/__init__.py` und Pydantic-Modelle: `Market`, `Orderbook`, `MarketMetadata`, `Resolution`, `Position`, `CashBalance`, `Order`, `OrderResult`, `CancelResult`, `OrderStatus`, `Universe`, `PortfolioState`, `Prediction`, `Decision`, `Trade`, `CyclePlan`, `Note`, `Lesson`, `GateResult`.
 3. `shared/db.py` — `get_session(role: Literal["trading_cycle","outcome_ingestion","lessons_summary"]) -> Session`. Verbindungs-Pool, env-driven `DATABASE_URL_<ROLE>`.
 4. `shared/adapters/prediction_market.py` — `PredictionMarketAdapter` Protocol (read + write + EIP-712-Signing). **Keine Impl.**
 5. `shared/adapters/key_provider.py` — `KeyProvider` Protocol. **Keine Impl.**
-6. `risk/limits.py` — `CONCENTRATION_CAP`, `CYCLE_CAP`, Sanity-Limits aus engineering.md §2.
+6. `risk/limits.py` — `CONCENTRATION_CAP`, `CYCLE_CAP`, Sanity-Limits aus specs/engineering.md §2.
 7. `risk/concentration_gate.py`, `risk/solvency_gate.py`, `risk/cycle_cap_gate.py` — drei Gates mit gemeinsamer Signatur `evaluate(state, order) -> GateResult`.
 8. `risk/capital_gate.py` — `MAX_CAPITAL_EUR: Final = 0`. Hartes 0, nicht `<TBD>`. Semantisch valid: "kein real-money zugelassen". Operator setzt Wert vor Phase 6 via 2-Reviewer-PR + AUDIT_LOG.
 9. `risk/kill_switch.py` — liest `system_state(key='kill_switch')`.
@@ -120,7 +120,7 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 11. `tests/risk/` — hypothesis-Property-Tests; CI-Gate "100% Coverage auf `risk/`" wird ab dieser Phase scharf.
 12. `tests/adapters/fake_adapter.py` — `FakeAdapter` als Test-Double, beweist Protocol-Vollständigkeit. Genutzt von Phase-3-Konformitätstests und Phase-4 Stream D als Stand-In.
 13. `infra/docker-compose.yml` — nur Postgres 16, mit Init-Mount auf `infra/sql/00_roles.sql`.
-14. `infra/.claude-code-version` — gepinnte Claude-Code-Version (orchestration.md §5).
+14. `infra/.claude-code-version` — gepinnte Claude-Code-Version (specs/orchestration.md §5).
 15. `infra/sql/00_roles.sql` — `CREATE ROLE`-Statements für `trading_cycle`, `outcome_ingestion`, `lessons_summary` (idempotent via DO-Block).
 16. `alembic.ini`, `alembic/env.py`, `alembic/versions/0001_initial_schema.py` — 11 Tabellen (`markets`, `market_snapshots`, `predictions` mit `inference_log` JSONB, `decisions`, `trades`, `paper_trades`, `positions`, `notes`, `cycle_plan`, `lessons`, `system_state`) + Column-Level GRANTs für die 3 Rollen.
 17. `.import-linter.toml` — Layer-Regeln: `risk/` darf nichts importieren außer `shared.config` + `shared.models`; `execution/` und `research/` dürfen Polymarket nur via `shared.adapters` ansprechen.
@@ -206,7 +206,7 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 - `infra/cron/trading_cycle.cron`, `infra/cron/outcome_ingestion.cron`, `infra/cron/lessons_summary.cron`.
 - `infra/scripts/run_cycle.sh` — `timeout`-Wrapper, env-load, claude-Bootstrap-Command.
 - `tests/e2e/test_paper_cycle.py` — Postgres-Service-Container, FakeGamma + FakeCLOB, ein vollständiger Cycle, Assertions auf alle 11 Tabellen.
-- `structlog`-Wiring in alle drei Prozesse mit den per-line-Pflichtfeldern aus data_infrastructure.md §3.
+- `structlog`-Wiring in alle drei Prozesse mit den per-line-Pflichtfeldern aus specs/data_infrastructure.md §3.
 - `docs/operations/first_cycle.md` — Runbook für Operator.
 - Optional: minimaler Prometheus-Exporter (`cycle_duration_seconds`, `decisions_total`, `trades_total`, `errors_total`, `equity_usd`, `kill_switch_active`).
 

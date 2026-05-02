@@ -1,6 +1,6 @@
 """Single source of truth for all numeric tunables and runtime settings.
 
-Per CLAUDE.md and engineering.md §10, every threshold, limit, and parameter
+Per CLAUDE.md and specs/engineering.md §10, every threshold, limit, and parameter
 lives here. Never hardcode values in risk/, execution/, or research/.
 """
 

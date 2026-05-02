@@ -1,6 +1,6 @@
 """Read-only Polymarket Gamma API client (used by outcome_ingestion only).
 
-Authority boundary per `trading_feedback.md`: this module **never** imports
+Authority boundary per `specs/trading_feedback.md`: this module **never** imports
 `shared.adapters.polymarket` or `py_clob_client`, holds no signing keys, and
 has no write methods. The outcome_ingestion script binds to the
 `outcome_ingestion` Postgres role which has UPDATE rights only on a small

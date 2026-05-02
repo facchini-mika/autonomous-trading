@@ -16,9 +16,9 @@ Replace each **TBD** with **Yes** or **No**. If any answer is **Yes**, an
 `AUDIT_LOG.md` entry in this PR is mandatory and must document: what
 changed, what could go wrong, why it's still safe.
 
-- `TRADING_MODE` flip (`paper` ↔ `real_capital`)? **TBD** — see `engineering.md §4`.
-- `MAX_CAPITAL_EUR` touched (any direction)? **TBD** — see `engineering.md §3`.
-- Touches `risk/**`? **TBD** — see `engineering.md §3`.
+- `TRADING_MODE` flip (`paper` ↔ `real_capital`)? **TBD** — see `specs/engineering.md §4`.
+- `MAX_CAPITAL_EUR` touched (any direction)? **TBD** — see `specs/engineering.md §3`.
+- Touches `risk/**`? **TBD** — see `specs/engineering.md §3`.
 - Strategy logic changed? **TBD** — if Yes, document the kill-criterion in **Summary** above (when to roll back, what metric/threshold triggers it).
 
 ## Test plan

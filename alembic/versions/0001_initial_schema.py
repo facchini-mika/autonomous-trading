@@ -8,7 +8,7 @@ Creates the canonical schema (markets, market_snapshots, predictions,
 decisions, trades, paper_trades, positions, notes, cycle_plan, lessons,
 system_state) and grants the three app roles (trading_cycle,
 outcome_ingestion, lessons_summary) the per-column privileges defined in
-the role-matrix in `engineering.md` and `data_infrastructure.md`.
+the role-matrix in `specs/engineering.md` and `specs/data_infrastructure.md`.
 
 Roles themselves are NOT created here — they are infrastructure managed by
 `infra/sql/00_roles.sql` (Docker-init mount). Downgrade revokes the GRANTs

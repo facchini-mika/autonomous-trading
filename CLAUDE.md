@@ -1,10 +1,10 @@
 # CLAUDE.md
 
 ## Project pointer
-Architecture source-of-truth: `specs.md` + 6 sub-files
-(`trading.md`, `engineering.md`, `data_infrastructure.md`,
- `orchestration.md`, `trading_feedback.md`, `optimization.md`).
-Read `engineering.md` first. Build roadmap: `plan.md`.
+Architecture source-of-truth: `specs/specs.md` + 6 sub-files
+(`specs/trading.md`, `specs/engineering.md`, `specs/data_infrastructure.md`,
+ `specs/orchestration.md`, `specs/trading_feedback.md`, `specs/optimization.md`).
+Read `specs/engineering.md` first. Build roadmap: `plan.md`.
 
 ## Commands
 - `uv sync` — install/refresh deps
@@ -25,7 +25,7 @@ Read `engineering.md` first. Build roadmap: `plan.md`.
 Default `TRADING_MODE` is `paper`. A clean checkout cannot trade real capital
 without an explicit settings change. Switching `paper -> real_capital` requires
 a PR with an `AUDIT_LOG.md` entry that documents the operator's safety review
-(see "Reviewer rule" below). See `engineering.md §4`.
+(see "Reviewer rule" below). See `specs/engineering.md §4`.
 
 ## Reviewer rule
 This is a **single-operator project**. There is exactly one human, who is
@@ -39,10 +39,10 @@ entry that documents the operator's safety review (what was changed, what
 could go wrong, why it's still safe). The audit-log entry is the second-
 review trail; CI cannot enforce it, the operator's discipline does. If the
 project ever gains a second human operator, raise `required_approving_review_count`
-in branch protection back to ≥1. See `engineering.md §3, §4, §8`.
+in branch protection back to ≥1. See `specs/engineering.md §3, §4, §8`.
 
 ## Repo layout
-See `engineering.md §5` for the canonical tree:
+See `specs/engineering.md §5` for the canonical tree:
 `research/`, `execution/`, `risk/`, `shared/{config,adapters,models}/`,
 `infra/`, `alembic/`, `tests/`, `docs/`, `.claude/`.
 `risk/` is protected code — see Plan Mode requirement below.
@@ -50,11 +50,11 @@ See `engineering.md §5` for the canonical tree:
 ## Settings discipline
 All numeric thresholds, limits, parameters, and tunables live in
 `shared/config/settings.py` (Phase 3+). Never duplicate, never hardcode in
-`risk/`, `execution/`, or `research/`. See `engineering.md §10`.
+`risk/`, `execution/`, or `research/`. See `specs/engineering.md §10`.
 
 ## Plan Mode requirement
 Edits under `risk/**` only in Plan Mode with explicit prior user approval.
-The `engineering.md §9` PreToolUse hook enforces this from Phase 2+.
+The `specs/engineering.md §9` PreToolUse hook enforces this from Phase 2+.
 
 ## Branch workflow
 Always feature-branch + PR. Never push to `main`. Never `--force`. Never

@@ -68,5 +68,5 @@ ContextVar consumers) can attribute the row.
 ## Spec pointers
 
 - `risk/*` — pure gate functions you must call.
-- `engineering.md §1, §3, §10` — capital gate, sizing tunables.
-- `trading.md §59` — execution protocol.
+- `specs/engineering.md §1, §3, §10` — capital gate, sizing tunables.
+- `specs/trading.md §59` — execution protocol.

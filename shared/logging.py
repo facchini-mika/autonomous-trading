@@ -1,6 +1,6 @@
 """Structured-logging configuration for the autonomous-trading services.
 
-JSON-on-stdout in MVP per ``data_infrastructure.md §3``. Required per-line
+JSON-on-stdout in MVP per ``specs/data_infrastructure.md §3``. Required per-line
 fields: ``timestamp, service, level, cycle_id?, correlation_id?, market_id?,
 agent_id?, decision_id?, event, ...payload``. Reasoning traces stay in
 ``predictions.inference_log`` JSONB; logs carry only the breadcrumbs.

@@ -2,7 +2,7 @@
 """PreToolUse:Edit|Write — gate edits under `risk/**` to Plan Mode.
 
 Edits to `risk/**` require Plan Mode with explicit prior user approval (see
-`CLAUDE.md` and `engineering.md §9`). Outside Plan Mode the hook returns an
+`CLAUDE.md` and `specs/engineering.md §9`). Outside Plan Mode the hook returns an
 "ask" decision so the user must intercept; this is the safest default given
 that Claude Code does not currently expose a Plan-Mode flag in the hook
 stdin payload.
@@ -56,7 +56,7 @@ def main() -> int:
     decision = "ask"
     reason = (
         "Edit under `risk/**` requires Plan Mode with prior user approval "
-        "(CLAUDE.md, engineering.md §9). User must explicitly authorize."
+        "(CLAUDE.md, specs/engineering.md §9). User must explicitly authorize."
     )
     json.dump(
         {

@@ -1,6 +1,6 @@
 """LRU-bounded `manage_notes` tool for the trading-agent.
 
-Per `trading.md §59`, every agent has at most 50 notes. Reads update
+Per `specs/trading.md §59`, every agent has at most 50 notes. Reads update
 `last_accessed`; writes either INSERT a new note or UPDATE an existing one.
 When the cap is hit, the oldest-by-`last_accessed` row is evicted.
 """

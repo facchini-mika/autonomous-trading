@@ -82,6 +82,6 @@ gate, so the repository is always buildable:
 ## References
 
 - `plan.md` — authoritative source for the seven-phase build order.
-- `engineering.md §3, §4, §5, §8, §9, §10` — reviewer rule, mode-flip,
+- `specs/engineering.md §3, §4, §5, §8, §9, §10` — reviewer rule, mode-flip,
   repo layout, audit log, hooks, settings discipline.
 - `CLAUDE.md` — daily-driver coding guard rails.

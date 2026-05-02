@@ -4,7 +4,7 @@
 No-op outside team-lead sessions. In a team-lead session, requires the marker
 file `~/.claude/teams/<team-name>/.cleanup_done` written by the built-in
 `Clean up the team` command. Missing marker => exit 2 with stderr warning so
-the cycle is flagged. See `engineering.md §9` and `orchestration.md`.
+the cycle is flagged. See `specs/engineering.md §9` and `specs/orchestration.md`.
 """
 
 from __future__ import annotations

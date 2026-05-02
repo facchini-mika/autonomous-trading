@@ -113,7 +113,7 @@ Every PR that touches one of the following must have an entry here:
   hook layer.
 - **PR:** _pending_
 - **Description:** Built the `.claude/` config layer from scratch:
-  `settings.json` registering all 9 hooks from `engineering.md §9`
+  `settings.json` registering all 9 hooks from `specs/engineering.md §9`
   (PreToolUse:Bash, PreToolUse:Edit|Write, PostToolUse:Edit|Write,
   UserPromptSubmit, SessionStart, two Stop hooks, TaskCreated,
   TaskCompleted), 9 Python hook scripts (stdlib-only, exec-bit set),
@@ -160,7 +160,7 @@ Every PR that touches one of the following must have an entry here:
   from 1 to 0 (everything else unchanged). Reason: GitHub forbids the PR
   author from approving their own PR, so on a single-operator project a
   value ≥1 makes every PR un-mergeable except by admin bypass — an honest
-  doctrine cannot rely on bypass. Rewrote `CLAUDE.md`, `engineering.md`
+  doctrine cannot rely on bypass. Rewrote `CLAUDE.md`, `specs/engineering.md`
   (§§1, 3, 4, 8), `plan.md`, `.github/CODEOWNERS`,
   `.github/PULL_REQUEST_TEMPLATE.md`, `docs/adr/0001-phasing.md`, and this
   file to encode the single-operator audit-log self-review pattern as the
@@ -188,7 +188,7 @@ Every PR that touches one of the following must have an entry here:
   (5d E2E + CI + this entry).
 - **Description:** Wires the Phase-4 components into a runnable end-to-end
   paper cycle. Adds structured logging (`shared/logging.py`, structlog
-  JSON-on-stdout per `data_infrastructure.md §3`); subagent dispatch via
+  JSON-on-stdout per `specs/data_infrastructure.md §3`); subagent dispatch via
   headless `claude -p` (`execution/subagent_runner.py`); production
   trading-cycle entry (`execution/run_cycle.py`) wired through the
   factory; three cron files plus `infra/scripts/run_cycle.sh` wrapper;

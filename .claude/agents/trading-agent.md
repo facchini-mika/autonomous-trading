@@ -34,9 +34,9 @@ authority boundary.
 
 # Spec pointers
 
-- `trading.md §39` — mispricing analysis + edge protocol.
-- `orchestration.md §2` — agent boundaries.
-- `engineering.md §10` — `EDGE_THRESHOLD`, `WEB_SEARCH_TIMEOUT`.
+- `specs/trading.md §39` — mispricing analysis + edge protocol.
+- `specs/orchestration.md §2` — agent boundaries.
+- `specs/engineering.md §10` — `EDGE_THRESHOLD`, `WEB_SEARCH_TIMEOUT`.
 
 # Phase-2 status
 

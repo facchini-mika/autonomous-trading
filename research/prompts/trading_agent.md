@@ -62,6 +62,6 @@ Z is ambiguous". Keep each note ≤200 words.
 
 ## Spec pointers
 
-- `trading.md §39` — mispricing playbook.
-- `engineering.md §10` — `EDGE_THRESHOLD`.
-- `optimization.md §1` — surprise heuristic that grades you afterwards.
+- `specs/trading.md §39` — mispricing playbook.
+- `specs/engineering.md §10` — `EDGE_THRESHOLD`.
+- `specs/optimization.md §1` — surprise heuristic that grades you afterwards.

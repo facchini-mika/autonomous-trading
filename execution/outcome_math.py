@@ -1,6 +1,6 @@
 """Pure PnL math for resolved markets — no DB, no network.
 
-Realized PnL conventions (per trading.md):
+Realized PnL conventions (per specs/trading.md):
 - A YES position pays $1 per share if YES resolves, $0 otherwise.
 - A NO position pays $1 per share if NO resolves (i.e. YES does NOT).
 - Fees are subtracted from PnL; gas is treated separately for paper trades

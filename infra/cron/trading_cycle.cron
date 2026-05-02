@@ -1,4 +1,4 @@
-# Trading cycle — fires every CYCLE_PERIOD_MIN=12 minutes (engineering.md §10).
+# Trading cycle — fires every CYCLE_PERIOD_MIN=12 minutes (specs/engineering.md §10).
 # Operator installs this fragment via `crontab -e`. Adjust the install path
 # (/opt/autonomous_trading) to match the deployment.
 #

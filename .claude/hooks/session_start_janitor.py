@@ -9,7 +9,7 @@ In team-cycle sessions:
 - parse `.claude/teams/trading-team.spec.json` and validate required fields,
 - exit 1 on a broken spec so the cycle aborts and cron retries.
 
-See `engineering.md §9` and `orchestration.md §5`.
+See `specs/engineering.md §9` and `specs/orchestration.md §5`.
 """
 
 from __future__ import annotations

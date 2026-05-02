@@ -2,7 +2,7 @@
 """PreToolUse:Bash — block destructive commands.
 
 Blocks `rm -rf`, `git push --force`, `git reset --hard`, writes to `.env*`,
-and `--no-verify`. Hardcoded blocklist; always active. See `engineering.md §9`.
+and `--no-verify`. Hardcoded blocklist; always active. See `specs/engineering.md §9`.
 """
 
 from __future__ import annotations

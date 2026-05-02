@@ -4,7 +4,7 @@
 Routes the stdin payload by `subagent_type` and validates the matching
 input wrapper from `shared.models.tasks`. Unknown subagent types are a
 no-op (exit 0). Validation errors exit 2 with stderr so the agent-team
-runtime treats the task as malformed and retries (engineering.md §9).
+runtime treats the task as malformed and retries (specs/engineering.md §9).
 """
 
 from __future__ import annotations
