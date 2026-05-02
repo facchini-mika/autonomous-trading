@@ -27,6 +27,7 @@ secrets/
 # Personal / transient
 CLAUDE.local.md
 .claude/settings.local.json
+.claude/teams/runtime/
 
 # Local data
 data/

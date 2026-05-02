@@ -43,6 +43,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "PLR2004", "ANN", "SLF001", "INP001"]
 "alembic/versions/**" = ["INP001", "D"]
+# Claude Code hooks: stdin-driven scripts with multiple guard returns and
+# subprocess calls whose arguments are hardcoded or resolved via shutil.which.
+".claude/hooks/**" = ["INP001", "PLR0911", "S603"]
 
 [tool.mypy]
 strict = true

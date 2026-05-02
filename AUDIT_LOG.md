@@ -42,6 +42,52 @@ Every PR that touches one of the following must have an entry here:
   and `4 of 4 required status checks are expected`. Empty commit was reset
   locally afterwards.
 
+## 2026-05-01 — Phase 2: Claude Code config layer
+
+- **Category:** Phase milestone (no `risk/**`, no `MAX_CAPITAL_EUR`, no
+  `TRADING_MODE` change). Logged for traceability of the safety-relevant
+  hook layer.
+- **PR:** _pending_
+- **Description:** Built the `.claude/` config layer from scratch:
+  `settings.json` registering all 9 hooks from `engineering.md §9`
+  (PreToolUse:Bash, PreToolUse:Edit|Write, PostToolUse:Edit|Write,
+  UserPromptSubmit, SessionStart, two Stop hooks, TaskCreated,
+  TaskCompleted), 9 Python hook scripts (stdlib-only, exec-bit set),
+  three agent skeletons (`scanner-reviewer`, `trading-agent`,
+  `risk-execution`), and `trading-team.spec.json`. Phase-2 status of
+  each hook follows `plan.md` Phase 2: `pre_tool_use_bash`,
+  `pre_tool_use_risk_edit`, `user_prompt_submit_realmoney`,
+  `session_start_janitor`, `stop_gitleaks`, `stop_cleanup_assert` are
+  active; `post_tool_use_edit` runs ruff only (mypy + pytest deferred
+  to Phase 3 per §9); `task_created_validate` and
+  `task_completed_validate` are `try/except ImportError` stubs that
+  no-op until `shared.models` lands in Phase 3 (see plan.md line 96).
+  Added per-file ruff ignores for `.claude/hooks/**` (`INP001`,
+  `PLR0911`, `S603`) — defensible for stdin-driven scripts with
+  `shutil.which`-resolved subprocess calls.
+- **Risk:** Hook regressions could either silently fail (dev workflow
+  unaffected but safety property lost) or false-positive (block legit
+  Bash/Edit calls). The `pre_tool_use_risk_edit` hook returns `ask`
+  rather than `deny` because Claude Code does not currently expose a
+  Plan-Mode flag in the hook stdin payload — relies on user
+  intercept rather than a hard block.
+- **Mitigation / verification:** All 9 hooks smoke-tested via
+  `echo '<json>' | .claude/hooks/<hook>.py`: `pre_tool_use_bash` blocks
+  `rm -rf`, `git push --force`, `.env*` writes, and `--no-verify`;
+  `pre_tool_use_risk_edit` asks for `risk/limits.py`, allows
+  `shared/models.py`; `user_prompt_submit_realmoney` triggers banner on
+  "live trade", silent on harmless prompts; `session_start_janitor`
+  no-ops in dev sessions, validates spec on team sessions;
+  `stop_cleanup_assert` no-ops in dev, exits 2 with stderr on missing
+  marker in team-lead sessions; `stop_gitleaks` degrades to non-blocking
+  warning when binary absent; the two task-validate stubs exit 0. Full
+  `uv run ruff check . && uv run mypy --strict . && uv run
+  pre-commit run --all-files` clean. Live `claude`-session boot
+  smoketest deferred to operator (interactive, cannot be scripted in
+  CI). Rollback trigger: if any hook blocks a normal dev workflow
+  false-positive, edit the offending matcher and add a regression
+  smoke-test.
+
 ## 2026-05-01 — Single-operator doctrine + branch-protection loosening
 
 - **Category:** Branch-protection change + doctrine rewrite
