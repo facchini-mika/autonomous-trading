@@ -1,0 +1,196 @@
+name: Auto-Cleanup
+
+# Weekly sweep that finds unused / duplicate code under shared/, execution/,
+# research/ and opens a PR removing the truly dead findings. Detection is
+# deterministic (vulture + jscpd); validation + removal + PR are done by
+# claude-code-action with hard constraints in the prompt. NEVER touches
+# risk/**, alembic/versions/**, .github/, infra/, docs/, MAX_CAPITAL_EUR,
+# or TRADING_MODE — see the prompt below and engineering.md §3 / CLAUDE.md
+# "No-go list".
+#
+# In Phase 1/2 the source dirs do not yet exist; the detect job exits with
+# has_findings=false, the propose job is skipped, no PR is opened. Once
+# Phase 3 source code lands the workflow becomes meaningful without any
+# further setup change.
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"  # Sundays 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run detection only, do not open a cleanup PR"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: auto-cleanup
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: detect
+    runs-on: ubuntu-latest
+    outputs:
+      has_findings: ${{ steps.summary.outputs.has_findings }}
+      scan_dirs: ${{ steps.scan_dirs.outputs.dirs }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.x"
+          enable-cache: true
+      - name: Setup Python
+        run: uv python install
+      - name: Sync dependencies
+        run: uv sync --frozen
+      - id: scan_dirs
+        name: Determine source dirs to scan
+        run: |
+          dirs=()
+          for d in shared execution research; do
+            [ -d "$d" ] && dirs+=("$d")
+          done
+          if [ ${#dirs[@]} -eq 0 ]; then
+            echo "No source dirs to scan yet (Phase 1/2 expected)."
+            echo "dirs=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Scanning: ${dirs[*]}"
+            echo "dirs=${dirs[*]}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run vulture
+        if: steps.scan_dirs.outputs.dirs != ''
+        run: |
+          uv run vulture ${{ steps.scan_dirs.outputs.dirs }} \
+            --min-confidence 80 \
+            > vulture_report.txt 2>&1 || true
+          echo "--- vulture report ---"
+          cat vulture_report.txt
+      - name: Run jscpd
+        if: steps.scan_dirs.outputs.dirs != ''
+        run: |
+          npx --yes jscpd ${{ steps.scan_dirs.outputs.dirs }} \
+            --min-tokens 50 \
+            --reporters json,console \
+            --output ./jscpd-report || true
+      - id: summary
+        name: Summarise findings
+        run: |
+          has_vulture=false
+          has_jscpd=false
+          [ -s vulture_report.txt ] && has_vulture=true
+          [ -s jscpd-report/jscpd-report.json ] && \
+            jq -e '.duplicates | length > 0' jscpd-report/jscpd-report.json \
+              > /dev/null 2>&1 && has_jscpd=true
+          if [ "$has_vulture" = "true" ] || [ "$has_jscpd" = "true" ]; then
+            echo "has_findings=true" >> "$GITHUB_OUTPUT"
+            echo "Findings present (vulture=$has_vulture, jscpd=$has_jscpd)."
+          else
+            echo "has_findings=false" >> "$GITHUB_OUTPUT"
+            echo "No findings — propose job will be skipped."
+          fi
+      - name: Upload findings artifact
+        if: steps.summary.outputs.has_findings == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cleanup-findings
+          path: |
+            vulture_report.txt
+            jscpd-report/
+          retention-days: 30
+
+  propose:
+    name: propose-cleanup
+    needs: detect
+    # Run only when:
+    #  - detect produced findings, AND
+    #  - this is either a scheduled run OR a manual run with dry_run=false
+    if: >-
+      needs.detect.outputs.has_findings == 'true' &&
+      (github.event_name == 'schedule' || inputs.dry_run != true)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # branch + push
+      pull-requests: write  # open PR
+      id-token: write       # OIDC for claude-code-action
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: cleanup-findings
+          path: ./_findings
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--max-turns 15"
+          prompt: |
+            You are running inside a GitHub Action on this repository.
+            Two static-analysis reports are available locally:
+              - _findings/vulture_report.txt  (unused code findings)
+              - _findings/jscpd-report/jscpd-report.json  (duplicate code blocks)
+
+            Authoritative sources to consult:
+              - CLAUDE.md  — no-go list, reviewer rule, settings discipline
+              - engineering.md  — §3 risk/** protection, §10 settings
+              - plan.md  — current phase, frozen interfaces
+
+            HARD CONSTRAINTS — enforce these even if a finding suggests
+            otherwise:
+              1. Never modify anything under `risk/**`. If a finding lives
+                 there, list it in the PR's "Skipped" section with reason
+                 "risk/ requires plan-mode + AUDIT_LOG; not auto-removable".
+              2. Never modify `alembic/versions/**` (immutable migrations).
+              3. Never modify `.github/`, `infra/`, `docs/`.
+              4. Be extra-conservative on `tests/`. pytest fixtures,
+                 hypothesis strategies, and name-loaded helpers often look
+                 unused but are not. Default to keeping; only remove if
+                 you can prove the symbol has no caller anywhere.
+              5. Never touch `MAX_CAPITAL_EUR` or `TRADING_MODE` constants.
+              6. Do not introduce numeric tunables outside
+                 `shared/config/settings.py` (Phase 3+ rule; allow-list
+                 0, 1, 2).
+              7. Keep symbols re-exported via `__init__.py` and any method
+                 that satisfies a `Protocol` — even if vulture flags them.
+              8. When unsure, KEEP. False removals are worse than false
+                 keeps.
+
+            WORKFLOW:
+              1. Read both reports.
+              2. For each finding, look at the actual source file to
+                 confirm it is truly dead / truly duplicate and not
+                 caught by one of the constraints above.
+              3. Create a branch named `chore/auto-cleanup-$(date +%Y-%m-%d)`.
+              4. Apply the conservative removals.
+              5. Run `uv run ruff check . && uv run ruff format --check .`
+                 and `uv run mypy --strict .` locally to confirm nothing
+                 broke. If something breaks, revert that specific removal.
+              6. Commit with message
+                 "chore: auto-cleanup $(date +%Y-%m-%d) — remove unused/duplicate code".
+              7. Push the branch.
+              8. Open a PR titled `chore: auto-cleanup YYYY-MM-DD` whose
+                 body has these sections:
+                   - **Summary**: one-line overview.
+                   - **Removed**: bullet list, each item citing the
+                     vulture line or jscpd duplicate-block reference.
+                   - **Skipped**: bullet list of findings NOT removed
+                     and the reason (constraint violation, ambiguous,
+                     public API, etc.).
+                   - **Risk-sensitive review**: all four answers must be
+                     "No" — the workflow's constraints guarantee it.
+                     If you find yourself wanting to answer Yes, STOP
+                     and skip the relevant finding instead.
+                   - **Test plan**: tick the local ruff/mypy boxes only
+                     if you actually ran them.
+              9. Do NOT merge. The operator reviews and merges manually.
+
+            If after validation no removals are warranted (everything is
+            either a false positive or hits a constraint), do NOT open a
+            PR. Instead, exit cleanly — the empty result is itself a
+            valid outcome.

@@ -15,6 +15,7 @@ dev = [
   "pre-commit>=4",
   "pydantic>=2.9",
   "pydantic-settings>=2.6",
+  "vulture>=2.13",
 ]
 
 [tool.ruff]
@@ -60,3 +61,12 @@ branch = true
 
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
+
+[tool.vulture]
+# Used by the Auto-Cleanup workflow (.github/workflows/auto-cleanup.yml).
+# `paths` is intentionally not set here — the workflow constructs the
+# scan list dynamically and skips dirs that do not exist yet.
+min_confidence = 80
+sort_by_size = true
+exclude = ["risk/", "tests/", "alembic/versions/"]
+ignore_decorators = ["@app.route", "@pytest.fixture"]
