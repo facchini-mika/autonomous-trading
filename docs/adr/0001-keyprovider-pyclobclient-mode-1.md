@@ -54,7 +54,7 @@ Rationale:
 
 ## Implementation
 
-`shared/adapters/key_provider_localfile.py`:
+`src/shared/adapters/key_provider_localfile.py`:
 
 ```python
 def _unsafe_export_priv_key(self) -> bytes:
@@ -63,7 +63,7 @@ def _unsafe_export_priv_key(self) -> bytes:
     return self._priv_key
 ```
 
-`shared/adapters/polymarket.py`:
+`src/shared/adapters/polymarket.py`:
 
 ```python
 def _make_client(self, factory):
@@ -110,7 +110,7 @@ adapter to refactor instead of silently breaking.
 
 ## References
 
-- `shared/adapters/key_provider.py` — Protocol definition (Phase 3).
-- `shared/adapters/key_provider_localfile.py` — Phase-4 implementation.
-- `shared/adapters/polymarket.py` — adapter consuming Modus 1.
+- `src/shared/adapters/key_provider.py` — Protocol definition (Phase 3).
+- `src/shared/adapters/key_provider_localfile.py` — Phase-4 implementation.
+- `src/shared/adapters/polymarket.py` — adapter consuming Modus 1.
 - `docs/operations/sandbox_smoke.md` — operator runbook for Mainnet-Mini smoke.

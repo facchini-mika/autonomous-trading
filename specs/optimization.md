@@ -55,7 +55,7 @@ How the system learns from outcomes and turns that learning into change. Owns th
 
 1. **Outcome ingestion** is owned by `trading_feedback.md` — when a Polymarket market resolves, `outcome` and `realized_pnl` get written on the matching `predictions` and trade rows. Not this file's job.
 
-2. **Daily lessons-summary script** (location decided at implementation; e.g. `research/skills/lessons_summary.py`):
+2. **Daily lessons-summary script** (location decided at implementation; e.g. `src/research/skills/lessons_summary.py`):
    - Triggered by `cron` once per day.
    - Reads predictions resolved in the last 24h plus a small lookback window.
    - For each, applies a simple surprise heuristic (e.g. `|p_consensus − outcome_as_int| > 0.3` OR realized PnL outside the expected band by > X%).
@@ -65,7 +65,7 @@ How the system learns from outcomes and turns that learning into change. Owns th
 
 3. **Next-cycle prompt injection.** At the start of each Trading Cycle, the agent prompt's *critical-learning section* (`trading.md §2`) pulls the top-K most recent / most-relevant `lessons` rows (filtered by `status='open'` and recency). The agent reads them as additional context.
 
-4. **Operator review.** The operator periodically (e.g. weekly) reviews accumulated lessons. If they suggest a code, prompt, or limit change is warranted, the operator drafts the PR by hand. The PR goes through `engineering.md §8` branch protection (≥ 1 reviewer; ≥ 2 humans on `risk/`). After merge, the next cycle uses the new code.
+4. **Operator review.** The operator periodically (e.g. weekly) reviews accumulated lessons. If they suggest a code, prompt, or limit change is warranted, the operator drafts the PR by hand. The PR goes through `engineering.md §8` branch protection (≥ 1 reviewer; ≥ 2 humans on `src/risk/`). After merge, the next cycle uses the new code.
 
 That is the full MVP self-improvement loop.
 
@@ -75,7 +75,7 @@ That is the full MVP self-improvement loop.
 
 **Hard rules** that apply to any code in the self-improvement path (today: just the daily lessons-summary script):
 
-- **NEVER** modify `risk/` directly — `engineering.md §9` hook blocks AI edits; for the daily script, no write path to `risk/` exists by design.
+- **NEVER** modify `src/risk/` directly — `engineering.md §9` hook blocks AI edits; for the daily script, no write path to `src/risk/` exists by design.
 - **NEVER** touch live-trading credentials, the EIP-712 signing key, or the `PolymarketAdapter` write surface.
 - **NEVER** auto-merge, auto-push, or otherwise circumvent operator review.
 - **NEVER** mutate `predictions`, `decisions`, `trades`, `paper_trades`, `positions`, or `cycle_plan` rows. The daily script's only DB write target is `INSERT INTO lessons`.
@@ -84,7 +84,7 @@ That is the full MVP self-improvement loop.
 
 - **Postgres role separation.** The daily script connects with the `lessons_summary` role that has `SELECT` on the trading tables and `INSERT` on `lessons`, and **no other privileges**. `UPDATE` and `DELETE` are denied at the role level. The trading-cycle process and the outcome-ingestion script use separate roles with their own write privileges (`orchestration.md §1`). Phase-1-implementable: three Postgres roles + three `DATABASE_URL` values in `.env`.
 - **Branch protection** (`engineering.md §8`) is the merge gate. Nothing in the self-improvement path can self-merge.
-- **Capital gate** (`engineering.md §3` / `risk/capital_gate.py`) is the runtime backstop. Even if lessons content somehow corrupted an agent prompt, the deterministic capital gate caps total deployment.
+- **Capital gate** (`engineering.md §3` / `src/risk/capital_gate.py`) is the runtime backstop. Even if lessons content somehow corrupted an agent prompt, the deterministic capital gate caps total deployment.
 
 **Why this matters more in MVP than it would in a paper-only world.** With real capital flowing, a buggy "auto-improvement" path is a direct loss vector. MVP intentionally keeps the loop manual until enough operator-reviewed lessons have accumulated to justify automation — which is what the post-MVP roadmap in §5 builds on top.
 
@@ -195,8 +195,8 @@ A live strategy must run **≥ 5–7 days in `real_capital` mode** (default 5, c
 | Exploit: `operating_doctrine` revision | `meta-reviewer` + 1 human | Sanity-check on phase entry/exit; live-trial in paper if quantitative |
 | Explore: new strategy | `meta-reviewer` + 2 humans | ≥ 30d paper + risk review + kill-criterion + anti-whipsaw window elapsed |
 | Explore: new trading agent | `meta-reviewer` + 2 humans | ≥ 30d paper + persona / tool-allow-list review + pairwise correlation + kill-criterion |
-| Code in `execution/` | `security-reviewer` + 2 humans | Tests + integration tests |
-| Risk limit (`risk/`) | **2 humans only** — no agent override | Property-based tests pass |
+| Code in `src/execution/` | `security-reviewer` + 2 humans | Tests + integration tests |
+| Risk limit (`src/risk/`) | **2 humans only** — no agent override | Property-based tests pass |
 | `MAX_CAPITAL_EUR` | 2 humans + audit-log entry | n/a |
 
 Branch protection on `main` enforces these counts mechanically.
@@ -223,10 +223,10 @@ External validation: Robeyns et al., *A Self-Improving Coding Agent* (ICLR 2025 
 | `patterns` table bloats with low-value entries | Quarterly `meta-reviewer` prune; confidence-decay on stale patterns |
 | Adversarial drift (proposes prompts that game metric) | All metrics validated on held-out forward window before promotion |
 | Proposal queue grows into noise | `meta-reviewer` suppresses low-priority; operator sees top-K only |
-| Code-Evaluation agents converge on bad direction | Mandatory human-in-the-loop; 2-human rule on risk/strategy/explore |
+| Code-Evaluation agents converge on bad direction | Mandatory human-in-the-loop; 2-human rule on src/risk/strategy/explore |
 | `lessons` table self-contradicts | `status` field tracks supersession; `meta-reviewer` reconciles in monthly retro |
 | Anthropic outage stalls weekly batch | Batch is non-realtime; defer to next cycle, no live impact |
-| Code-Evaluation agent suggests bypassing `risk/` | `engineering.md §9` hook + `import-linter` prevent the diff existing |
+| Code-Evaluation agent suggests bypassing `src/risk/` | `engineering.md §9` hook + `import-linter` prevent the diff existing |
 | Whipsaw violations (rapid strategy churn) | Anti-whipsaw rule above; `meta-reviewer` defers offending proposals |
 | Explore proposals with no kill-criterion slip through | PR template enforces kill-criterion field; `meta-reviewer` auto-rejects PRs missing it |
 | Capital-allocation feedback rewards luck not skill | Adaptation-quality bonus capped at +10%; primary signal is rolling 30d hit rate + PnL with adequate `n_samples` |

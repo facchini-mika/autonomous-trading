@@ -10,7 +10,7 @@ The runtime that decides what to trade and places orders. One block of the four-
 
 - **Single strategy:** Mispricing — the only strategy in MVP.
 - **Single trading agent** (no 7-persona ensemble, no aggregator, no disagreement metric).
-- **Single research tool:** `web_search` (`research/skills/web_search.py`, OpenAI-backed). No `news_fetch`, no `historical_analogue_lookup`, no `related_market_scan` in MVP.
+- **Single research tool:** `web_search` (`src/research/skills/web_search.py`, OpenAI-backed). No `news_fetch`, no `historical_analogue_lookup`, no `related_market_scan` in MVP.
 - **Agent Team runtime from day 1** — fresh Claude Code Agent Team per cycle (Lead + 3 members). The cycle is not a single Python script.
 - **Minimal memory across cycles:** `notes` (per-agent LRU scratchpad) + `cycle_plan` (single active row, forward-looking handoff). No `beliefs`, no `operating_doctrine`, no position-thesis auto-flag in MVP.
 - **Universe scoping:** top-K most-liquid Polymarket binary markets per cycle (default K=50, central settings). Not the unfiltered universe — one agent doing web research per market needs focus.
@@ -37,7 +37,7 @@ The Trading Team = one fresh Claude Code Agent Team per cycle (~12 min cadence; 
 |---|---|---|---|
 | `scanner-reviewer` | Pulls top-K liquid Polymarket markets and snapshots portfolio state. Combined to keep the team small. | Polymarket CLOB + Gamma; current Postgres positions/cash | `Universe` + `PortfolioState` |
 | `trading-agent` | Mispricing analysis with `web_search`. Forms `p_agent` per market, returns `Prediction(p_yes, reasoning, edge)`. | `Universe`, `PortfolioState`, `notes`, top-K `lessons`, prev-cycle `cycle_plan`, `web_search` tool | `Prediction[]` |
-| `risk-execution` | Applies risk gates from `risk/`, clips sizing, places order (paper OR real per `TRADING_MODE`). Combined because both deterministic. | `Prediction[]`, `PortfolioState`, `risk/` constants | `Decision[]` + `Trade[]` |
+| `risk-execution` | Applies risk gates from `src/risk/`, clips sizing, places order (paper OR real per `TRADING_MODE`). Combined because both deterministic. | `Prediction[]`, `PortfolioState`, `src/risk/` constants | `Decision[]` + `Trade[]` |
 
 **Lead** — drives cycle clock, spawns members, persists artifacts, writes a fresh `cycle_plan` row at cycle close, calls `clean up the team` before exit. Never executes orders directly.
 
@@ -68,7 +68,7 @@ The Trading Team = one fresh Claude Code Agent Team per cycle (~12 min cadence; 
 |---|---|---|---|
 | Mispricing | `|edge|` ≥ 3% (central settings) | Agent-proposed, clipped by per-trade gates | The only active strategy in MVP; receives 100% of allocated capital |
 
-Sizing is the model's call within the hard limits in `risk/`. No Kelly formula, no smart routing.
+Sizing is the model's call within the hard limits in `src/risk/`. No Kelly formula, no smart routing.
 
 ---
 
@@ -79,7 +79,7 @@ What the `trading-agent` consumes per cycle (full source/schema details in `data
 - **Universe snapshot** — top-K most-liquid Polymarket binary markets (orderbook, bid/ask, settlement rules). Filtered, not the full universe (cf. PA's "no filter" pattern, deferred).
 - **Portfolio snapshot** — `PortfolioState` artifact built by `scanner-reviewer`.
 - **Memory** — `notes` (LRU), previous cycle's `cycle_plan`, top-K recent `lessons` (from `optimization.md §1`).
-- **Research tool** — `web_search` only (`research/skills/web_search.py`). The agent decides per market whether to invoke.
+- **Research tool** — `web_search` only (`src/research/skills/web_search.py`). The agent decides per market whether to invoke.
 
 The agent does not directly read `market_snapshots` time-series, raw Polymarket orderbook streams, or `position-manager` state — those flow through the snapshot artifacts.
 
@@ -119,7 +119,7 @@ The trading layer **consumes** the gates defined in `engineering.md §1`. Three 
 2. **Solvency** — cash ≥ proposed notional + estimated fees + open-order reservations.
 3. **Per-cycle spending cap** — total notional opened this cycle ≤ cycle cap.
 
-Limits are plain constants in `risk/`, never AI outputs. Direct CLOB calls bypassing `risk/` are forbidden by `import-linter` in CI (`engineering.md §3`).
+Limits are plain constants in `src/risk/`, never AI outputs. Direct CLOB calls bypassing `src/risk/` are forbidden by `import-linter` in CI (`engineering.md §3`).
 
 ---
 
@@ -128,7 +128,7 @@ Limits are plain constants in `risk/`, never AI outputs. Direct CLOB calls bypas
 Because real capital is in scope from day 1 (`engineering.md §4`), three boundaries matter beyond §6:
 
 - **Paper as default.** A clean checkout / fresh deploy always boots in `paper`. Flipping `TRADING_MODE` to `real_capital` is a settings-file PR with ≥ 2 reviewer approvals.
-- **Capital gate** (`engineering.md §3` / `risk/capital_gate.py`) — `MAX_CAPITAL_EUR: Final` rejects any order pushing gross deployed capital above the constitutional ceiling. The operator must set this constant before the first live cycle.
+- **Capital gate** (`engineering.md §3` / `src/risk/capital_gate.py`) — `MAX_CAPITAL_EUR: Final` rejects any order pushing gross deployed capital above the constitutional ceiling. The operator must set this constant before the first live cycle.
 - **Kill switch** (`engineering.md §2`) — `system_state(key='kill_switch', value=true)` halts new orders. The `risk-execution` member reads this row before every order; existing positions stay open.
 
 The §6 gates + capital gate + kill switch are the deterministic guard rails; the agent cannot trade through them by design.
@@ -158,7 +158,7 @@ Deferred until MVP is stable and a measured gap demands the addition. Each item 
 **Strategy Skill Library (NEW §8 in original — Voyager pattern).**
 - Named, executable, deterministic helpers (e.g. `compute_implied_distribution`, `detect_news_freshness`, `find_correlated_basket`).
 - Promotion path: pattern → skill PR with unit tests + manifest entry → trading agent invokes via `call_skill(name, args)`.
-- Versioned in `research/skills/index.toml`. Read-only consumers; agents cannot create or edit skills at runtime.
+- Versioned in `src/research/skills/index.toml`. Read-only consumers; agents cannot create or edit skills at runtime.
 - External validation: Voyager (Wang et al., NeurIPS 2024).
 
 **Multiple strategies + lifecycle governance.**

@@ -8,7 +8,7 @@ Every PR that touches one of the following must have an entry here:
 
 - `TRADING_MODE` flip (paper ↔ real_capital)
 - `MAX_CAPITAL_EUR` change (any direction)
-- Any change under `risk/**`
+- Any change under `src/risk/**`
 - First live paper cycle (Phase 6)
 - Branch-protection or CODEOWNERS changes
 

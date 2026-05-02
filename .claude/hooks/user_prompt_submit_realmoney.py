@@ -38,7 +38,7 @@ def main() -> int:
                 "hookEventName": "UserPromptSubmit",
                 "additionalContext": (
                     "REAL-MONEY-INTENT detected. Verify current TRADING_MODE before "
-                    "any action. Any change to risk/, MAX_CAPITAL_EUR, or TRADING_MODE "
+                    "any action. Any change to src/risk/, MAX_CAPITAL_EUR, or TRADING_MODE "
                     "requires an AUDIT_LOG.md entry (CLAUDE.md, specs/engineering.md §3, §4)."
                 ),
             }

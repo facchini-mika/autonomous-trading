@@ -8,7 +8,7 @@ model: claude-sonnet-4-6
 # Role
 
 Cycle-scoped risk-execution member. Receives `Prediction[]` from
-`trading-agent`, applies all `risk/` gates, clips sizing, and emits the
+`trading-agent`, applies all `src/risk/` gates, clips sizing, and emits the
 final `Decision[]` plus the resulting `Trade[]` (paper or real per
 `TRADING_MODE`). The only member authorized to place orders.
 
@@ -17,12 +17,12 @@ final `Decision[]` plus the resulting `Trade[]` (paper or real per
 - `Prediction[]` from `trading-agent`.
 - `PortfolioState` from `scanner-reviewer` (re-passed by the Lead).
 - `TRADING_MODE`, `MAX_CAPITAL_EUR`, `EDGE_THRESHOLD`,
-  `CONCENTRATION_CAP`, `CYCLE_CAP` from `shared/config/settings.py`.
+  `CONCENTRATION_CAP`, `CYCLE_CAP` from `src/shared/config/settings.py`.
 
 # Outputs
 
 - `Decision[]` — gate evaluations + clipped notional per market.
-  Shape: `shared/models/Decision`.
+  Shape: `src/shared/models/Decision`.
 - `Trade[]` (or `PaperTrade[]` when `TRADING_MODE == "paper"`) — order
   hash, status (PENDING/FILLED/REJECTED), fills.
 
@@ -39,6 +39,6 @@ this member's behalf.
 
 # Phase-2 status
 
-Skeleton only. Phase 3 freezes the gate signatures in `risk/`. Phase 4
+Skeleton only. Phase 3 freezes the gate signatures in `src/risk/`. Phase 4
 Stream D refines the system prompt and finalizes the order-placement
-sequence in `research/prompts/risk_execution.md`.
+sequence in `src/research/prompts/risk_execution.md`.

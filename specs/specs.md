@@ -63,7 +63,7 @@ Alle drei Jobs laufen via Cron, jeder als frischer Prozess. Authority-Boundary �
 
 - `TRADING_MODE = "paper" | "real_capital"` (zentral in `engineering.md §10`).
 - Default = `paper`. Flip `paper → real_capital` per PR mit ≥2 Reviewern; `real_capital → paper` mit ≥1 Reviewer (`engineering.md §4`).
-- Konstitutionelles Hard-Cap `MAX_CAPITAL_EUR`: jede Änderung erfordert zwei menschliche Approver. Runtime-Backstop in `risk/capital_gate.py`.
+- Konstitutionelles Hard-Cap `MAX_CAPITAL_EUR`: jede Änderung erfordert zwei menschliche Approver. Runtime-Backstop in `src/risk/capital_gate.py`.
 - Manueller Kill-Switch: Row in `system_state(key='kill_switch')` blockt neue Orders sofort.
 
 ## Files

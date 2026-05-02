@@ -18,7 +18,7 @@ changed, what could go wrong, why it's still safe.
 
 - `TRADING_MODE` flip (`paper` ↔ `real_capital`)? **TBD** — see `specs/engineering.md §4`.
 - `MAX_CAPITAL_EUR` touched (any direction)? **TBD** — see `specs/engineering.md §3`.
-- Touches `risk/**`? **TBD** — see `specs/engineering.md §3`.
+- Touches `src/risk/**`? **TBD** — see `specs/engineering.md §3`.
 - Strategy logic changed? **TBD** — if Yes, document the kill-criterion in **Summary** above (when to roll back, what metric/threshold triggers it).
 
 ## Test plan

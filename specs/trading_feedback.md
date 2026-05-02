@@ -20,7 +20,7 @@ The Tier-1 evaluation block. Owns: ground-truth ingestion on resolved Polymarket
 
 ## 1. MVP Outcome-Ingestion Script
 
-Single deterministic Python script (location decided at implementation; e.g. `execution/outcome_ingestion.py`). Triggered by `cron` every 5–10 minutes.
+Single deterministic Python script (location decided at implementation; e.g. `src/execution/outcome_ingestion.py`). Triggered by `cron` every 5–10 minutes.
 
 **Inputs (read):**
 - Polymarket Gamma API (`/markets` filtered by status transitions since the last successful run timestamp). Read-only access — no signing key, no order endpoints.

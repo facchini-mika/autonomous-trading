@@ -9,7 +9,7 @@
 This project builds an autonomous trading system on Polymarket whose
 `real_capital` execution path can lose money. A naive code-first approach
 risks adding safety mechanisms (CI gates, branch protection, audit logging,
-risk-layer coverage requirements, hook-enforced plan mode for `risk/**`)
+risk-layer coverage requirements, hook-enforced plan mode for `src/risk/**`)
 only after the code they should protect already exists. We want each
 protective layer in place **before** the code it protects.
 
@@ -43,7 +43,7 @@ CI gates are activated **in step** with the phases that produce the code they
 gate, so the repository is always buildable:
 
 - Phase 1: `ruff`, `mypy --strict`, `gitleaks`, `trufflehog`.
-- Phase 3: `+ pytest`, `+ import-linter`, `+ risk/` 100% coverage,
+- Phase 3: `+ pytest`, `+ import-linter`, `+ src/risk/` 100% coverage,
   `+ alembic up/down` smoketest.
 - Phase 4: `+ Hypothesis` property tests, stricter `import-linter` layers.
 - Phase 5: `+` end-to-end paper-cycle job (Postgres service container,
@@ -61,7 +61,7 @@ gate, so the repository is always buildable:
   any `required_approving_review_count ≥ 1` makes every PR un-mergeable
   except by admin bypass. A doctrine that relies on bypass is dishonest,
   so branch protection runs with `required_approving_review_count: 0`.
-  Risk-sensitivity for `risk/**`, `MAX_CAPITAL_EUR`, and `TRADING_MODE`
+  Risk-sensitivity for `src/risk/**`, `MAX_CAPITAL_EUR`, and `TRADING_MODE`
   flips is enforced by the audit-log self-review pattern: each such PR
   must add an `AUDIT_LOG.md` entry that documents what changed, what
   could go wrong, and why it's still safe. CI cannot enforce the audit
@@ -77,7 +77,7 @@ gate, so the repository is always buildable:
   (suggests interfaces should have been negotiated less rigidly).
 - The solo-operator audit-discipline pattern proves too easy to skip in
   practice (suggests a CI check that asserts an `AUDIT_LOG.md` diff in any
-  PR touching `risk/**` or `MAX_CAPITAL_EUR`).
+  PR touching `src/risk/**` or `MAX_CAPITAL_EUR`).
 
 ## References
 

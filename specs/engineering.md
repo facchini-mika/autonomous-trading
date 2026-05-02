@@ -22,7 +22,7 @@ Build a minimum repo that runs the prototype described in `specs.md` + `trading.
 
 ## 1. Risk Management
 
-Three deterministic gates plus the constitutional capital cap. All limits are plain constants in `risk/`, never AI outputs.
+Three deterministic gates plus the constitutional capital cap. All limits are plain constants in `src/risk/`, never AI outputs.
 
 **Per-trade gates** (applied in order; trade rejected on first failure):
 1. **Concentration** — proposed notional ≤ **15% of equity** in any single market.
@@ -58,17 +58,17 @@ Three deterministic gates plus the constitutional capital cap. All limits are pl
 
 ## 3. Risk Layer Protection + Capital Gate
 
-`risk/` owns the deterministic guard rails. The AI decides *what* to trade; the risk layer decides *whether and how much*.
+`src/risk/` owns the deterministic guard rails. The AI decides *what* to trade; the risk layer decides *whether and how much*.
 
-- All §1 limits = plain constants/Settings imports in `risk/`, never AI outputs.
-- AI agents may not edit `risk/` outside Plan Mode + explicit user approval (§9 hook).
-- All trading-decision paths import from `risk/`. Direct order-adapter calls bypassing `risk/` are forbidden by `import-linter` in CI.
-- `risk/` requires 100% line coverage; CI fails below.
+- All §1 limits = plain constants/Settings imports in `src/risk/`, never AI outputs.
+- AI agents may not edit `src/risk/` outside Plan Mode + explicit user approval (§9 hook).
+- All trading-decision paths import from `src/risk/`. Direct order-adapter calls bypassing `src/risk/` are forbidden by `import-linter` in CI.
+- `src/risk/` requires 100% line coverage; CI fails below.
 
 **Capital gate.** Single constant:
 
 ```python
-# risk/capital_gate.py
+# src/risk/capital_gate.py
 MAX_CAPITAL_EUR: Final = <TBD_BY_OPERATOR>
 ```
 
@@ -97,10 +97,10 @@ Engineering owns the **governance** of this flag — what the runtime does with 
 
 ```
 autonomous_trading/
-├── research/        # agent prompt + skills (web_search, etc.)
-├── execution/       # paper-trade ledger; later, CLOB client
-├── risk/            # limits, kill switch, sanity gates, capital_gate (§3)
-├── shared/
+├── src/research/        # agent prompt + skills (web_search, etc.)
+├── src/execution/       # paper-trade ledger; later, CLOB client
+├── src/risk/            # limits, kill switch, sanity gates, capital_gate (§3)
+├── src/shared/
 │   ├── config/      # central settings (§10)
 │   ├── adapters/    # PredictionMarketAdapter (Polymarket + Paper)
 │   └── models/      # Pydantic models for every typed artifact
@@ -114,7 +114,7 @@ autonomous_trading/
 └── *.md             # specs (this file + 6 others, plus specs.md)
 ```
 
-`risk/` is *protected code* — see §3.
+`src/risk/` is *protected code* — see §3.
 
 ---
 
@@ -127,7 +127,7 @@ Mandatory:
 - No-go list:
   - **NEVER** commit real API keys, mnemonics, `.env*`.
   - **NEVER** trigger live trades without explicit user confirmation in this session.
-  - **NEVER** modify code under `risk/` outside Plan Mode with explicit approval.
+  - **NEVER** modify code under `src/risk/` outside Plan Mode with explicit approval.
   - **NEVER** push directly to `main` or force-push.
 - Pointer to `specs.md` and the 6 component spec files.
 
@@ -152,9 +152,9 @@ Personal/transient → `CLAUDE.local.md` (gitignored).
 - **`gh` CLI** required locally — token-cheaper for AI use.
 - **Branch protection on `main`:**
   - `required_approving_review_count: 0` — single-operator project; GitHub forbids self-approval, so the platform-enforced approval count must be 0 for any PR to merge. Risk-sensitivity is enforced via the audit-log self-review pattern instead (see below).
-  - Required status checks: `lint` (ruff), `type-check` (mypy --strict), `gitleaks`, `trufflehog` from Phase 1; `pytest` + `import-linter` + `risk/`-100%-coverage from Phase 3.
+  - Required status checks: `lint` (ruff), `type-check` (mypy --strict), `gitleaks`, `trufflehog` from Phase 1; `pytest` + `import-linter` + `src/risk/`-100%-coverage from Phase 3.
   - `enforce_admins: true`, no direct pushes, no force-push, no deletions.
-- **Single-operator audit pattern.** The operator is both author and reviewer. For any PR touching `risk/**`, `MAX_CAPITAL_EUR`, or flipping `TRADING_MODE`, an `AUDIT_LOG.md` entry is mandatory and must document: what changed, what could go wrong, why it's still safe. CI cannot enforce the audit entry; the operator's discipline does. The audit log is the second-review trail. If a second human operator ever joins, raise `required_approving_review_count` to ≥1 and require their approval on the same set of paths.
+- **Single-operator audit pattern.** The operator is both author and reviewer. For any PR touching `src/risk/**`, `MAX_CAPITAL_EUR`, or flipping `TRADING_MODE`, an `AUDIT_LOG.md` entry is mandatory and must document: what changed, what could go wrong, why it's still safe. CI cannot enforce the audit entry; the operator's discipline does. The audit log is the second-review trail. If a second human operator ever joins, raise `required_approving_review_count` to ≥1 and require their approval on the same set of paths.
 
 ---
 
@@ -168,7 +168,7 @@ Hooks are deterministic guarantees. CLAUDE.md is a request, hooks are enforcemen
 |---|---|---|
 | `PostToolUse` Edit/Write | After code edit | `ruff` + `mypy --strict` + relevant `pytest` subset; block on failure |
 | `PreToolUse` Bash | Before bash | Block `rm -rf`, `git push --force`, `git reset --hard`; block writes to `.env*` |
-| `PreToolUse` Edit/Write on `risk/**` | Before risk-code edit | Block unless session in Plan Mode with prior user approval |
+| `PreToolUse` Edit/Write on `src/risk/**` | Before risk-code edit | Block unless session in Plan Mode with prior user approval |
 | `Stop` | Before turn end | `gitleaks` on staged diff; abort on any secret hit |
 | `UserPromptSubmit` | On user prompt | If contains "live trade" / "echtes Kapital" / "real money", inject confirmation banner |
 
@@ -189,12 +189,12 @@ The dev-session hooks fire regardless of permission mode — they remain active 
 
 **Hard rule.** All numerical thresholds, limits, parameters, and tunables live in **one single settings module** — never duplicated, never hardcoded.
 
-- Canonical location: `shared/config/settings.py` (Pydantic Settings) backed by environment-specific values in `.env`.
+- Canonical location: `src/shared/config/settings.py` (Pydantic Settings) backed by environment-specific values in `.env`.
 - All services and agents import from this module — no parallel constants, no scattered defaults.
 - **MVP knobs that must live there:** every limit in §1 (15% concentration cap, per-cycle spending cap), `TRADING_MODE` (§4), `MAX_CAPITAL_EUR` (§3), edge threshold, cycle period, agent timeout, web-search timeout + blacklist + model, lessons-injected-per-cycle (`N`), retention windows for `market_snapshots` and `inference_log` blobs.
-- **Risk-layer interaction (§3).** The hardest gates physically live inside `risk/`. The settings module imports and re-exports them — does not duplicate.
+- **Risk-layer interaction (§3).** The hardest gates physically live inside `src/risk/`. The settings module imports and re-exports them — does not duplicate.
 - **Validation.** Pydantic Settings + `mypy --strict`: missing or wrong-typed values fail at startup, never silently at runtime.
-- **Anti-pattern enforcement.** A CI lint rejects PRs that introduce numeric literals in `execution/`, `research/`, or `risk/` outside the settings module (allowlist for trivial constants like `0`, `1`, `2`).
+- **Anti-pattern enforcement.** A CI lint rejects PRs that introduce numeric literals in `src/execution/`, `src/research/`, or `src/risk/` outside the settings module (allowlist for trivial constants like `0`, `1`, `2`).
 
 This is the dual of §3: §3 prevents AI from changing the *hardest* limits without humans; §10 prevents anyone (human or AI) from scattering tunables.
 
@@ -205,7 +205,7 @@ This is the dual of §3: §3 prevents AI from changing the *hardest* limits with
 - `mypy --strict` is a hard CI gate.
 - All order/position/trade/decision/prediction objects = Pydantic models. No untyped dicts on those paths.
 - Risk-engine functions covered by `hypothesis` property tests, e.g. *"for any (proposed_notional, equity, open_orders), the clipped notional never exceeds 15% of equity AND never violates solvency."*
-- Coverage: `risk/` 100%, `execution/` ≥ 90%, rest ≥ 80%.
+- Coverage: `src/risk/` 100%, `src/execution/` ≥ 90%, rest ≥ 80%.
 
 ---
 
@@ -271,7 +271,7 @@ Everything below is deferred until the MVP prototype runs paper-mode and shows s
 
 **GitHub / review automation** (extends §8):
 - Claude Code GitHub App: auto PR reviews, `@claude` mentions, fix pushes.
-- `/ultrareview` before every merge into `main` touching `execution/` or `risk/`.
+- `/ultrareview` before every merge into `main` touching `src/execution/` or `src/risk/`.
 - `/security-review` on every PR touching auth, signing, or secrets.
 - GitHub Actions with `claude -p` (headless): AI-code lint, regression detection.
 

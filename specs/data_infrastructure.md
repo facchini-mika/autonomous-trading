@@ -35,7 +35,7 @@ Post-MVP additions (Kalshi clients, time-series helpers, Sentry/OpenTelemetry, m
 
 **Workflow:**
 1. Before opening a PR that adds an integration, link the upstream OSS project considered (or rejected, with reason) in the PR description.
-2. Prefer thin wrappers/adapters over the OSS lib — keep our `shared/adapters/` Protocols as the abstraction boundary, the OSS lib lives behind that boundary.
+2. Prefer thin wrappers/adapters over the OSS lib — keep our `src/shared/adapters/` Protocols as the abstraction boundary, the OSS lib lives behind that boundary.
 3. Pin OSS versions in `pyproject.toml`; never vendor copies into the repo.
 4. If we genuinely have to roll our own (the OSS lib is dead, unsafe, or wrong-shape), document the decision as an ADR in `docs/adr/`.
 
@@ -51,7 +51,7 @@ This rule is the dual of `engineering.md §10`: §10 prevents tunable-sprawl, §
 |---|---|---|
 | Polymarket CLOB API (WS + REST) | Market | Orderbook, trades, fills |
 | Polymarket Gamma API | Market metadata | Resolution criteria, end dates, categories |
-| OpenAI web search (Responses API + `web_search_preview`) | Research | **The only news/social/macro/web-context intake.** Invoked via `research/skills/web_search.py`. Replaces every other open-web source for the MVP. |
+| OpenAI web search (Responses API + `web_search_preview`) | Research | **The only news/social/macro/web-context intake.** Invoked via `src/research/skills/web_search.py`. Replaces every other open-web source for the MVP. |
 | Internal: resolved markets archive | Performance tracking | Per-agent hit-rate / PnL evaluation |
 
 **Post-MVP candidates** (none active in MVP): NewsAPI / GDELT, X / Twitter, Reddit, Tavily / Brave, Kalshi public API, FRED, sports stats APIs. Each is added only when a measured gap in MVP performance demands it, and goes through the §0 OSS-first workflow.
@@ -201,7 +201,7 @@ class PredictionMarketAdapter(Protocol):
 - Transient (network, 5xx): exponential backoff (1s, 2s, 4s, 8s; max 60s).
 - Circuit breaker: 5 errors / 60s on a service → 5 min cooldown.
 - Polymarket outage: halt new orders, monitor only; positions tracked from cached state.
-- Anthropic API outage (Claude Opus): no model failover by design. A cycle that cannot reach the API simply fails — the Lead exits, no orders are placed, the next scheduled cycle tries again. If `safety-watchdog` (independent of the team, deterministic, in `risk/`) sees ≥ 3 consecutive cycle-failures, it sets the system to monitor-only mode until recovery; existing positions remain governed by deterministic rules in `risk/` (stop-outs, kill-switch, time-based close), which run independently of the Claude Code process.
+- Anthropic API outage (Claude Opus): no model failover by design. A cycle that cannot reach the API simply fails — the Lead exits, no orders are placed, the next scheduled cycle tries again. If `safety-watchdog` (independent of the team, deterministic, in `src/risk/`) sees ≥ 3 consecutive cycle-failures, it sets the system to monitor-only mode until recovery; existing positions remain governed by deterministic rules in `src/risk/` (stop-outs, kill-switch, time-based close), which run independently of the Claude Code process.
 - Data source outage: continue with degraded info; flag in decision metadata.
 
 **Slippage:** Realized fill price logged vs. expected (`q` at decision time). Sustained excess flagged as a `lesson` (`optimization.md §2`) for the operator. No pre-trade slippage gate in v1.

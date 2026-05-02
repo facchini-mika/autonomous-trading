@@ -20,9 +20,9 @@ universe size. Produces two artifacts and returns control to the Lead.
 # Outputs
 
 - `Universe` — top-K liquid Polymarket markets with order-book snapshot,
-  bid/ask, settlement rules. Shape: `shared/models/Universe`.
+  bid/ask, settlement rules. Shape: `src/shared/models/Universe`.
 - `PortfolioState` — cash, open positions, unrealized + realized PnL,
-  gross exposure, remaining capacity. Shape: `shared/models/PortfolioState`.
+  gross exposure, remaining capacity. Shape: `src/shared/models/PortfolioState`.
 
 # Tool allow-list
 

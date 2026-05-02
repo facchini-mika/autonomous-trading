@@ -16,7 +16,7 @@ Phase 6 (`docs/operations/sandbox_smoke.md`).
 | `uv run alembic upgrade head` | schema + GRANT matrix (incl. 0003) | runs once after Postgres is up |
 | `claude` CLI on PATH | trading-cycle subagent dispatch | `npm install -g @anthropic-ai/claude-cli` (Phase 5b dependency) |
 | `ANTHROPIC_API_KEY` in `.env` | `subagent_runner` headless calls | export from Anthropic console — only needed for `trading_cycle` |
-| `MAX_CAPITAL_EUR=0` | hard-block real-money writes | already the default in `risk/capital_gate.py` — leave as-is |
+| `MAX_CAPITAL_EUR=0` | hard-block real-money writes | already the default in `src/risk/capital_gate.py` — leave as-is |
 | `TRADING_MODE=paper` | redirect place_order to `paper_trades` | already the default in `Settings` — leave as-is |
 
 macOS note: `infra/scripts/run_cycle.sh` calls `timeout`. macOS lacks it
@@ -111,7 +111,7 @@ features.
 ## When something goes wrong
 
 - **`InsufficientPrivilege` on `markets`/`system_state`**: migration 0003 not applied. Re-run `uv run alembic upgrade head`.
-- **`ForeignKeyViolation` on `paper_trades.decision_id`**: Phase-4d ordering bug; fixed in Phase 5d. Confirm `git log execution/lead_bootstrap.py` shows the `_persist_predictions_and_decisions` split.
+- **`ForeignKeyViolation` on `paper_trades.decision_id`**: Phase-4d ordering bug; fixed in Phase 5d. Confirm `git log src/execution/lead_bootstrap.py` shows the `_persist_predictions_and_decisions` split.
 - **`could not determine data type of parameter`**: SQL parameter casting bug in `system_state` or `lessons` INSERTs; fixed in Phase 5d. Confirm `CAST(:v AS TEXT)` and `jsonb_build_array(...)` are present.
 - **`structlog` not installed**: `uv sync` to refresh.
 - **`claude: command not found`**: Phase-5b cron path requires the Claude CLI; `npm install -g @anthropic-ai/claude-cli`.

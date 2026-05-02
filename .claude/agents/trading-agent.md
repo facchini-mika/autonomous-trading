@@ -21,7 +21,7 @@ authority boundary.
 # Outputs
 
 - `Prediction[]` — each with `market_id`, `p_yes ∈ (0, 1)`, `reasoning`,
-  `edge`. Shape: `shared/models/Prediction`.
+  `edge`. Shape: `src/shared/models/Prediction`.
 
 # Tool allow-list
 
@@ -41,5 +41,5 @@ authority boundary.
 # Phase-2 status
 
 Skeleton only. Strategy doctrine (mispricing playbook, web-search heuristic,
-edge calculation) is filled in by Phase 4 Stream D in `research/prompts/
+edge calculation) is filled in by Phase 4 Stream D in `src/research/prompts/
 trading_agent.md` and merged into this file.

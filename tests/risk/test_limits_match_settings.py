@@ -1,6 +1,6 @@
 """Drift-guard: risk.limits constants must match Settings defaults.
 
-Production code in `risk/` is import-isolated from `shared.config`. Test
+Production code in `src/risk/` is import-isolated from `shared.config`. Test
 code (here) is allowed to import both and assert they agree.
 """
 

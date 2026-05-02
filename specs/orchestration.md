@@ -49,7 +49,7 @@ The Trading Cycle = **one fresh Claude Code Agent Team per cycle**. Every cron t
 - **Lead** — drives cycle clock, spawns members, persists artifacts, writes `cycle_plan`, calls `clean up the team`. Never executes orders.
 - **`scanner-reviewer`** — fetches top-K liquid Polymarket markets + builds `PortfolioState`.
 - **`trading-agent`** — mispricing analysis with `web_search`; outputs `Prediction[]`.
-- **`risk-execution`** — applies `risk/` gates, sizes, places paper or signed CLOB order.
+- **`risk-execution`** — applies `src/risk/` gates, sizes, places paper or signed CLOB order.
 
 Member definitions live in `.claude/agents/{scanner-reviewer,trading-agent,risk-execution}.md`. Team spec source-of-truth: `.claude/teams/trading-team.spec.json`.
 
@@ -153,7 +153,7 @@ Three processes, three Postgres roles, no shared in-process state. The Polymarke
 - **Claude Code version pinned** in `infra/` (e.g. `infra/.claude-code-version` or pinned in a Docker base image). No floating `latest` tags.
 - **Team-spec source-of-truth:** `.claude/teams/trading-team.spec.json` (committed). Never edit `~/.claude/teams/{team-name}/config.json` directly — that's runtime state, regenerated each cycle.
 - **Member definitions:** `.claude/agents/{scanner-reviewer,trading-agent,risk-execution}.md`. Per-member system prompt + tool allow-list.
-- **Spec changes** = PRs against the above three locations; `engineering.md §8` branch protection applies. If a change touches `risk/` or `MAX_CAPITAL_EUR`, the ≥ 2-human rule kicks in.
+- **Spec changes** = PRs against the above three locations; `engineering.md §8` branch protection applies. If a change touches `src/risk/` or `MAX_CAPITAL_EUR`, the ≥ 2-human rule kicks in.
 
 ---
 
@@ -212,8 +212,8 @@ Deferred until MVP is stable. Each item is a future expansion of one of the §1�
 - Backtest fan-out — one teammate per candidate strategy. (Backtest itself is out of scope for v1 per `engineering.md §4` / `trading.md`.)
 
 ### `safety-watchdog` long-running service (extends §6)
-- Independent of the cycle, deterministic Python service in `risk/`, watches for ≥ 3 consecutive cycle-failures.
-- On trip: sets system to monitor-only mode until recovery; existing positions remain governed by deterministic rules in `risk/` (stop-outs, kill-switch, time-based close).
+- Independent of the cycle, deterministic Python service in `src/risk/`, watches for ≥ 3 consecutive cycle-failures.
+- On trip: sets system to monitor-only mode until recovery; existing positions remain governed by deterministic rules in `src/risk/` (stop-outs, kill-switch, time-based close).
 - Today (MVP): no auto-monitor-only mode; the operator decides what to do after a failed cycle.
 
 ### Hook + permission expansions (extends §2)
