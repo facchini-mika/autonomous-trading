@@ -1,10 +1,10 @@
 name: Auto-Cleanup
 
-# Weekly sweep that finds unused / duplicate code under shared/, execution/,
-# research/ and opens a PR removing the truly dead findings. Detection is
+# Weekly sweep that finds unused / duplicate code under src/shared/, src/execution/,
+# src/research/ and opens a PR removing the truly dead findings. Detection is
 # deterministic (vulture + jscpd); validation + removal + PR are done by
 # claude-code-action with hard constraints in the prompt. NEVER touches
-# risk/**, alembic/versions/**, .github/, infra/, docs/, MAX_CAPITAL_EUR,
+# src/risk/**, alembic/versions/**, .github/, infra/, docs/, MAX_CAPITAL_EUR,
 # or TRADING_MODE — see the prompt below and specs/engineering.md §3 / CLAUDE.md
 # "No-go list".
 #
@@ -53,7 +53,7 @@ jobs:
         name: Determine source dirs to scan
         run: |
           dirs=()
-          for d in shared execution research; do
+          for d in src/shared src/execution src/research; do
             [ -d "$d" ] && dirs+=("$d")
           done
           if [ ${#dirs[@]} -eq 0 ]; then
@@ -138,14 +138,14 @@ jobs:
 
             Authoritative sources to consult:
               - CLAUDE.md  — no-go list, reviewer rule, settings discipline
-              - specs/engineering.md  — §3 risk/** protection, §10 settings
+              - specs/engineering.md  — §3 src/risk/** protection, §10 settings
               - plan.md  — current phase, frozen interfaces
 
             HARD CONSTRAINTS — enforce these even if a finding suggests
             otherwise:
-              1. Never modify anything under `risk/**`. If a finding lives
+              1. Never modify anything under `src/risk/**`. If a finding lives
                  there, list it in the PR's "Skipped" section with reason
-                 "risk/ requires plan-mode + AUDIT_LOG; not auto-removable".
+                 "src/risk/ requires plan-mode + AUDIT_LOG; not auto-removable".
               2. Never modify `alembic/versions/**` (immutable migrations).
               3. Never modify `.github/`, `infra/`, `docs/`.
               4. Be extra-conservative on `tests/`. pytest fixtures,
@@ -154,7 +154,7 @@ jobs:
                  you can prove the symbol has no caller anywhere.
               5. Never touch `MAX_CAPITAL_EUR` or `TRADING_MODE` constants.
               6. Do not introduce numeric tunables outside
-                 `shared/config/settings.py` (Phase 3+ rule; allow-list
+                 `src/shared/config/settings.py` (Phase 3+ rule; allow-list
                  0, 1, 2).
               7. Keep symbols re-exported via `__init__.py` and any method
                  that satisfies a `Protocol` — even if vulture flags them.

@@ -40,7 +40,7 @@ jobs:
 
             Authoritative sources (read these before commenting):
             - CLAUDE.md  — daily-driver guard rails, no-go list, reviewer rule
-            - specs/engineering.md  — §1 risk gates, §3 capital gate + risk/**
+            - specs/engineering.md  — §1 risk gates, §3 capital gate + src/risk/**
               protection, §4 TRADING_MODE governance, §8 audit-log wiring,
               §10 settings discipline
             - plan.md  — current phase + frozen interfaces
@@ -48,23 +48,23 @@ jobs:
             Focus areas, in priority order:
 
             1. **Audit-log compliance** (single-operator project, no human
-               second reviewer). If the PR touches `risk/**`,
+               second reviewer). If the PR touches `src/risk/**`,
                `MAX_CAPITAL_EUR`, or flips `TRADING_MODE`, an
                `AUDIT_LOG.md` entry is mandatory and must include
                Description / Risk / Mitigation. Flag if missing or thin.
             2. **Settings discipline** (specs/engineering.md §10). From Phase 3
                onwards, no numeric tunables outside
-               `shared/config/settings.py` (allow-list: 0, 1, 2). Flag
-               magic numbers in `risk/`, `execution/`, `research/`.
-            3. **Adapter boundary**. `execution/` and `research/` may talk
-               to Polymarket only via `shared/adapters/*`. Flag direct
+               `src/shared/config/settings.py` (allow-list: 0, 1, 2). Flag
+               magic numbers in `src/risk/`, `src/execution/`, `src/research/`.
+            3. **Adapter boundary**. `src/execution/` and `src/research/` may talk
+               to Polymarket only via `src/shared/adapters/*`. Flag direct
                `py-clob-client` or `web3` imports outside the adapter
                layer.
-            4. **Plan-mode rule**. Edits under `risk/**` should only land
-               via plan-mode-approved PRs. Flag risk/** changes without
+            4. **Plan-mode rule**. Edits under `src/risk/**` should only land
+               via plan-mode-approved PRs. Flag src/risk/** changes without
                an audit-log entry that mentions plan-mode approval.
             5. **General quality** — correctness, security, simplicity.
-               For new logic in `risk/`, also check that tests are
+               For new logic in `src/risk/`, also check that tests are
                present (Phase 3+: 100% coverage gate).
 
             Style:

@@ -918,7 +918,7 @@ wheels = [
 [[package]]
 name = "polymarket-autonomous-trading"
 version = "0.0.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "cryptography" },

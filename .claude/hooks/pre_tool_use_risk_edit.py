@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""PreToolUse:Edit|Write — gate edits under `risk/**` to Plan Mode.
+"""PreToolUse:Edit|Write — gate edits under `src/risk/**` to Plan Mode.
 
-Edits to `risk/**` require Plan Mode with explicit prior user approval (see
+Edits to `src/risk/**` require Plan Mode with explicit prior user approval (see
 `CLAUDE.md` and `specs/engineering.md §9`). Outside Plan Mode the hook returns an
 "ask" decision so the user must intercept; this is the safest default given
 that Claude Code does not currently expose a Plan-Mode flag in the hook
@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 
-PROTECTED_PREFIX = "risk/"
+PROTECTED_PREFIX = "src/risk/"
 
 
 def _file_path(payload: dict[str, object]) -> str:
@@ -40,7 +40,7 @@ def _is_protected(file_path: str) -> bool:
         except ValueError:
             return False
         return str(rel).startswith(PROTECTED_PREFIX)
-    return target.as_posix().split("/risk/", 1)[0] != target.as_posix() and "/risk/" in target.as_posix()
+    return "/src/risk/" in target.as_posix()
 
 
 def main() -> int:
@@ -55,7 +55,7 @@ def main() -> int:
 
     decision = "ask"
     reason = (
-        "Edit under `risk/**` requires Plan Mode with prior user approval "
+        "Edit under `src/risk/**` requires Plan Mode with prior user approval "
         "(CLAUDE.md, specs/engineering.md §9). User must explicitly authorize."
     )
     json.dump(

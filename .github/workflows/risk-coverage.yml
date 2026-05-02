@@ -19,5 +19,5 @@ jobs:
         run: uv python install
       - name: Sync dependencies
         run: uv sync --frozen
-      - name: pytest --cov=risk --cov-fail-under=100
-        run: uv run pytest --cov=risk --cov-fail-under=100 tests/risk/
+      - name: pytest --cov=src/risk --cov-fail-under=100
+        run: uv run pytest --cov=src/risk --cov-fail-under=100 tests/risk/

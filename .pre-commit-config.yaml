@@ -25,8 +25,8 @@ repos:
   - repo: local
     hooks:
       - id: risk-no-pragma-no-cover
-        name: "forbid '# pragma: no cover' in risk/"
-        entry: bash -c 'staged=$(git diff --cached --name-only --diff-filter=ACMR | grep "^risk/" || true); [ -z "$staged" ] && exit 0; if git diff --cached -- $staged | grep -E "^\+.*pragma:\s*no\s*cover"; then echo "pragma:no-cover not allowed in risk/"; exit 1; fi'
+        name: "forbid '# pragma: no cover' in src/risk/"
+        entry: bash -c 'staged=$(git diff --cached --name-only --diff-filter=ACMR | grep "^src/risk/" || true); [ -z "$staged" ] && exit 0; if git diff --cached -- $staged | grep -E "^\+.*pragma:\s*no\s*cover"; then echo "pragma:no-cover not allowed in src/risk/"; exit 1; fi'
         language: system
         pass_filenames: false
         always_run: true
