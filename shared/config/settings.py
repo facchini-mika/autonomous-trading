@@ -6,6 +6,7 @@ lives here. Never hardcode values in risk/, execution/, or research/.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -68,6 +69,13 @@ class Settings(BaseSettings):
 
     # Key management
     KEY_PROVIDER: KeyProviderKind = "encrypted_file"
+    KEY_PROVIDER_PATH: Path = Path.home() / ".config" / "polymarket-trading" / "wallet.json"
+
+    # External APIs (Phase 4 Stream A)
+    POLYMARKET_HOST: str = "https://clob.polymarket.com"
+    POLYGON_CHAIN_ID: int = 137
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4.1"
 
     # Reconciliation
     RECONCILIATION_DIFF_USD: float = 0.50
