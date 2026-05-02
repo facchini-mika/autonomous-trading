@@ -176,3 +176,59 @@ Every PR that touches one of the following must have an entry here:
   raise back to ≥1 approval and add a CI check that asserts an
   `AUDIT_LOG.md` diff in any PR touching `risk/**` or `MAX_CAPITAL_EUR`.
   If a second human operator ever joins, raise back to ≥1 unconditionally.
+
+## 2026-05-02 — Phase 5: Integration
+
+- **Category:** Phase milestone (no `risk/**` touch, no `MAX_CAPITAL_EUR`
+  change, no `TRADING_MODE` flip).
+- **PRs:** [#17](https://github.com/facchini-mika/autonomous_trading/pull/17)
+  (5a structlog), [#18](https://github.com/facchini-mika/autonomous_trading/pull/18)
+  (5b subagent_runner + run_cycle), [#19](https://github.com/facchini-mika/autonomous_trading/pull/19)
+  (5c cron + run_cycle.sh), [#20](https://github.com/facchini-mika/autonomous_trading/pull/20)
+  (5d E2E + CI + this entry).
+- **Description:** Wires the Phase-4 components into a runnable end-to-end
+  paper cycle. Adds structured logging (`shared/logging.py`, structlog
+  JSON-on-stdout per `data_infrastructure.md §3`); subagent dispatch via
+  headless `claude -p` (`execution/subagent_runner.py`); production
+  trading-cycle entry (`execution/run_cycle.py`) wired through the
+  factory; three cron files plus `infra/scripts/run_cycle.sh` wrapper;
+  `tests/e2e/test_paper_cycle.py` exercising `bootstrap_team` →
+  `outcome_ingestion` → `lessons_summary` against real Postgres + a new
+  `FakeGamma`. CI gains an `e2e-paper-cycle` job. The E2E test surfaced
+  three pre-existing bugs that ship fixed in this phase: (a) `paper_trades`
+  written before `decisions` violated the FK; `lead_bootstrap` now persists
+  predictions+decisions before order placement and writes `cycle_plan` last.
+  (b) `markets` had no INSERT/UPDATE for `trading_cycle`; `system_state`
+  had no INSERT for `outcome_ingestion`/`lessons_summary` — fixed in
+  migration `0003_grants_for_cycle_writes`. (c) Postgres rejected
+  parameterised `jsonb_build_object('ts', :v)` and `ARRAY[:category]`
+  due to ambiguous types; both call sites now cast explicitly.
+- **Risk:** Trading-cycle cron requires `claude` CLI, `ANTHROPIC_API_KEY`,
+  and a wallet file at `Settings.KEY_PROVIDER_PATH` because
+  `PolymarketAdapter.__init__` opens the wallet eagerly even in paper
+  mode. A first-time operator running `bash infra/scripts/run_cycle.sh
+  trading_cycle` without those will fail at adapter construction.
+- **Mitigation / rollback trigger:** Outcome-ingestion and lessons-summary
+  cron paths run without keys, Claude, or external APIs. The E2E test
+  exercises the full paper pipeline in CI on every PR. The runbook
+  (`docs/operations/first_cycle.md`) documents the trading-cycle
+  prerequisites; Phase 6 adds a wallet-create script and the first real
+  Polymarket smoke. `MAX_CAPITAL_EUR=0` and `TRADING_MODE=paper` remain
+  the hard defaults — no real-money capability ships in Phase 5.
+  Rollback trigger: if migration 0003 or the lead_bootstrap reordering
+  causes a regression in CI, revert the four PRs in reverse order.
+- **Operator follow-up:** branch-protection required-status-checks update
+  is **not** done as part of this PR. Once #17–#20 are merged, run:
+
+  ```
+  gh api -X PUT repos/facchini-mika/autonomous_trading/branches/main/protection \
+    -f required_status_checks[strict]=true \
+    -f required_status_checks[contexts][]=lint \
+    -f required_status_checks[contexts][]=type-check \
+    -f required_status_checks[contexts][]=gitleaks \
+    -f required_status_checks[contexts][]=trufflehog \
+    -f required_status_checks[contexts][]=pytest \
+    -f required_status_checks[contexts][]=import-linter \
+    -f required_status_checks[contexts][]=alembic-smoketest \
+    -f required_status_checks[contexts][]=e2e-paper-cycle
+  ```

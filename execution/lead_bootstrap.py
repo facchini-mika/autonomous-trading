@@ -85,12 +85,19 @@ def bootstrap_team(
     universe = scanner_out.universe
     portfolio = scanner_out.portfolio_state
 
+    # Upsert markets + record per-cycle snapshots before any FK-dependent insert.
+    _persist_universe(factory=factory, universe=universe, clock=now)
+
     trading_out = trading(TradingAgentTask(universe=universe, portfolio_state=portfolio))
     predictions = list(trading_out.predictions)
 
     risk_out = risk(RiskExecutionTask(predictions=predictions, portfolio_state=portfolio))
     decisions = list(risk_out.decisions)
     trades = list(risk_out.trades)
+
+    # Persist predictions + decisions BEFORE order placement so paper_trades and
+    # trades can satisfy the decision_id FK on insert.
+    _persist_predictions_and_decisions(factory=factory, predictions=predictions, decisions=decisions)
 
     for decision in decisions:
         if decision.action != "trade":
@@ -111,14 +118,7 @@ def bootstrap_team(
         clock=now,
     )
 
-    _persist(
-        factory=factory,
-        cycle_id=cycle_id,
-        predictions=predictions,
-        decisions=decisions,
-        cycle_plan=cycle_plan,
-        prev_plan=prev_plan,
-    )
+    _persist_cycle_plan(factory=factory, cycle_id=cycle_id, cycle_plan=cycle_plan, prev_plan=prev_plan)
 
     _team_cleanup(cycle_id=cycle_id)
     unbind("cycle_id")
@@ -203,14 +203,71 @@ def _load_prev_plan(
     )
 
 
-def _persist(
+def _persist_universe(
     *,
     factory: Callable[[], AbstractContextManager[Session]],
-    cycle_id: str,
+    universe: Universe,
+    clock: datetime,
+) -> None:
+    """Upsert markets from the universe and record snapshots from the orderbooks."""
+    with factory() as session:
+        for market in universe.markets:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO markets (market_id, condition_id, slug, title, category,
+                        end_date, status, resolution_source, created_at, last_seen, ambiguity_score)
+                    VALUES (:market_id, :condition_id, :slug, :title, :category,
+                        :end_date, :status, :resolution_source, :created_at, :last_seen, :ambiguity_score)
+                    ON CONFLICT (market_id) DO UPDATE
+                        SET status = EXCLUDED.status,
+                            last_seen = EXCLUDED.last_seen,
+                            ambiguity_score = EXCLUDED.ambiguity_score
+                    """,
+                ),
+                {
+                    "market_id": market.market_id,
+                    "condition_id": market.condition_id,
+                    "slug": market.slug,
+                    "title": market.title,
+                    "category": market.category,
+                    "end_date": market.end_date,
+                    "status": market.status,
+                    "resolution_source": market.resolution_source,
+                    "created_at": market.created_at,
+                    "last_seen": market.last_seen,
+                    "ambiguity_score": market.ambiguity_score,
+                },
+            )
+        for market_id, book in universe.orderbooks.items():
+            session.execute(
+                text(
+                    """
+                    INSERT INTO market_snapshots (time, market_id, best_bid, best_ask, mid,
+                        depth_bid_1pct, depth_ask_1pct, volume_24h)
+                    VALUES (:time, :market_id, :best_bid, :best_ask, :mid,
+                        :depth_bid_1pct, :depth_ask_1pct, :volume_24h)
+                    ON CONFLICT (time, market_id) DO NOTHING
+                    """,
+                ),
+                {
+                    "time": clock,
+                    "market_id": market_id,
+                    "best_bid": book.best_bid,
+                    "best_ask": book.best_ask,
+                    "mid": book.mid,
+                    "depth_bid_1pct": book.depth_bid_1pct,
+                    "depth_ask_1pct": book.depth_ask_1pct,
+                    "volume_24h": None,
+                },
+            )
+
+
+def _persist_predictions_and_decisions(
+    *,
+    factory: Callable[[], AbstractContextManager[Session]],
     predictions: list[Prediction],
     decisions: list[Decision],
-    cycle_plan: CyclePlan,
-    prev_plan: CyclePlan | None,
 ) -> None:
     with factory() as session:
         for p in predictions:
@@ -258,6 +315,16 @@ def _persist(
                     "created_at": d.created_at,
                 },
             )
+
+
+def _persist_cycle_plan(
+    *,
+    factory: Callable[[], AbstractContextManager[Session]],
+    cycle_id: str,
+    cycle_plan: CyclePlan,
+    prev_plan: CyclePlan | None,
+) -> None:
+    with factory() as session:
         if prev_plan is not None:
             session.execute(
                 text("UPDATE cycle_plan SET superseded_at = NOW() WHERE id = :id"),

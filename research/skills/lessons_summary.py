@@ -110,7 +110,7 @@ def run_once(
                         VALUES (
                             :agent_id, :trigger, :market_id,
                             :body, :hypothesis, :action_taken, :outcome,
-                            'open', ARRAY[:category], NOW()
+                            'open', jsonb_build_array(CAST(:category AS TEXT)), NOW()
                         )
                         """,
                     ),
@@ -152,7 +152,7 @@ def _write_high_water_mark(
             text(
                 """
                 INSERT INTO system_state (key, value, updated_at)
-                VALUES (:k, jsonb_build_object('ts', :v), NOW())
+                VALUES (:k, jsonb_build_object('ts', CAST(:v AS TEXT)), NOW())
                 ON CONFLICT (key) DO UPDATE
                     SET value = EXCLUDED.value, updated_at = NOW()
                 """,
