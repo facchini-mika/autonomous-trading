@@ -13,7 +13,6 @@ fakes; production wires them to real Claude Code subagent invocations
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Callable  # noqa: TC003
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -24,6 +23,7 @@ from sqlalchemy import text
 from execution.cycle_plan import synthesize_cycle_plan
 from execution.decision_context import with_decision
 from shared.db import get_session
+from shared.logging import bind, get_logger, unbind
 from shared.models import (
     CyclePlan,
     Decision,
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from shared.adapters.prediction_market import PredictionMarketAdapter
     from shared.config.settings import Settings
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -76,7 +76,8 @@ def bootstrap_team(
     factory = session_factory or _default_factory
     now = (clock or _utcnow)()
     cycle_id = f"cycle-{int(now.timestamp())}"
-    logger.info("starting %s with adapter=%s mode=%s", cycle_id, type(adapter).__name__, settings.TRADING_MODE)
+    bind(cycle_id=cycle_id)
+    logger.info("cycle_starting", adapter=type(adapter).__name__, mode=settings.TRADING_MODE)
 
     prev_plan = _load_prev_plan(factory)
 
@@ -120,6 +121,7 @@ def bootstrap_team(
     )
 
     _team_cleanup(cycle_id=cycle_id)
+    unbind("cycle_id")
 
     return CycleArtifacts(
         cycle_id=cycle_id,
@@ -285,4 +287,4 @@ def _persist(
 
 def _team_cleanup(*, cycle_id: str) -> None:
     """Marker that the Lead has finished the cycle. Asserted by the Stop hook."""
-    logger.info("clean up the team (cycle=%s)", cycle_id)
+    logger.info("clean up the team", cycle_id=cycle_id)

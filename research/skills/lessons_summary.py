@@ -14,7 +14,6 @@ Run via:
 
 from __future__ import annotations
 
-import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Final
 
@@ -25,6 +24,7 @@ from research.lessons_template import action_taken, hypothesis_for, lesson_body
 from research.surprise_heuristic import categorize, is_surprise
 from shared.config.settings import Settings
 from shared.db import get_session
+from shared.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.orm import Session
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 HIGH_WATER_MARK_KEY: Final = "last_lessons_summary_at"
 
@@ -126,12 +126,12 @@ def run_once(
                     },
                 )
                 inserted += 1
-            except IntegrityError as exc:
-                logger.info("Lesson already exists for prediction %s; skipping (%s)", row.id, exc)
+            except IntegrityError:
+                logger.info("lesson_already_exists", prediction_id=str(row.id))
                 session.rollback()
 
     _write_high_water_mark(factory, now)
-    logger.info("lessons_summary done: %d lessons inserted", inserted)
+    logger.info("lessons_summary_done", inserted=inserted)
     return inserted
 
 
@@ -162,5 +162,7 @@ def _write_high_water_mark(
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    from shared.logging import configure
+
+    configure(service="lessons_summary")
     run_once()

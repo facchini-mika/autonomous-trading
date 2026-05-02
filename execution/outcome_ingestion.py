@@ -15,7 +15,6 @@ Or programmatically: `run_once(gamma=GammaClient(), session_factory=...)`.
 
 from __future__ import annotations
 
-import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +22,7 @@ from sqlalchemy import text
 
 from execution.outcome_math import realized_pnl
 from shared.db import get_session
+from shared.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
     from execution.gamma_client import GammaClient
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 DEFAULT_LOOKBACK_DAYS = 7
 HIGH_WATER_MARK_KEY = "last_outcome_ingestion_at"
@@ -51,7 +51,7 @@ def run_once(
     counts = {"predictions": 0, "trades": 0, "paper_trades": 0, "positions": 0}
 
     since = _read_high_water_mark(factory, fallback=now - timedelta(days=lookback_days))
-    logger.info("outcome_ingestion: scanning resolved markets since %s", since.isoformat())
+    logger.info("outcome_ingestion_scanning", since=since.isoformat())
 
     for raw in gamma.list_resolved_markets(since=since):
         market_id = str(raw.get("condition_id") or raw.get("id") or "")
@@ -73,7 +73,7 @@ def run_once(
             counts["positions"] += _close_positions(session, market_id, outcome_yes=outcome_yes)
 
     _write_high_water_mark(factory, now)
-    logger.info("outcome_ingestion done: %s", counts)
+    logger.info("outcome_ingestion_done", counts=counts)
     return counts
 
 
@@ -209,8 +209,9 @@ def _close_positions(session: Session, market_id: str, *, outcome_yes: bool) -> 
 
 if __name__ == "__main__":
     from execution.gamma_client import GammaClient as _GammaClient
+    from shared.logging import configure
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    configure(service="outcome_ingestion")
     client = _GammaClient()
     try:
         run_once(gamma=client)
