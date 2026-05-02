@@ -4,6 +4,13 @@ version = "0.0.0"
 description = "Autonomous Polymarket trading MVP"
 requires-python = ">=3.12,<3.13"
 authors = [{ name = "facchini-mika", email = "148874194+facchini-mika@users.noreply.github.com" }]
+dependencies = [
+  "pydantic>=2.9",
+  "pydantic-settings>=2.6",
+  "sqlalchemy>=2.0",
+  "psycopg[binary]>=3.2",
+  "alembic>=1.13",
+]
 
 [dependency-groups]
 dev = [
@@ -13,9 +20,8 @@ dev = [
   "pytest-cov>=5",
   "hypothesis>=6.115",
   "pre-commit>=4",
-  "pydantic>=2.9",
-  "pydantic-settings>=2.6",
   "vulture>=2.13",
+  "import-linter>=2.0",
 ]
 
 [tool.ruff]
@@ -41,11 +47,15 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "PLR2004", "ANN", "SLF001", "INP001"]
+"tests/**" = ["S101", "PLR2004", "ANN", "SLF001", "INP001", "TC001", "TC002", "TC003"]
 "alembic/versions/**" = ["INP001", "D"]
 # Claude Code hooks: stdin-driven scripts with multiple guard returns and
 # subprocess calls whose arguments are hardcoded or resolved via shutil.which.
 ".claude/hooks/**" = ["INP001", "PLR0911", "S603"]
+# Pydantic models need imports at runtime for schema generation; the
+# TC* rules incorrectly suggest moving them under TYPE_CHECKING.
+"shared/models/**" = ["TC001", "TC002", "TC003"]
+"shared/adapters/**" = ["TC001", "TC002", "TC003"]
 
 [tool.mypy]
 strict = true
@@ -64,6 +74,19 @@ branch = true
 
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
+
+[tool.importlinter]
+root_packages = ["shared"]
+
+[[tool.importlinter.contracts]]
+name = "Top-down package layers"
+type = "layers"
+layers = [
+    "shared.adapters",
+    "shared.models",
+    "shared.config",
+]
+containers = [""]
 
 [tool.vulture]
 # Used by the Auto-Cleanup workflow (.github/workflows/auto-cleanup.yml).

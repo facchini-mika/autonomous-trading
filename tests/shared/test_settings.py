@@ -1,0 +1,41 @@
+"""Smoke tests for Settings: defaults + env overrides."""
+
+from __future__ import annotations
+
+import os
+
+import pytest
+
+from shared.config.settings import Settings, reconciliation_flag_key
+
+
+def test_defaults_are_paper_mode() -> None:
+    settings = Settings()
+    assert settings.TRADING_MODE == "paper"
+    assert settings.PAPER_STARTING_CASH_USD == 10000.0
+    assert settings.CONCENTRATION_CAP == 0.15
+    assert settings.CYCLE_CAP == 0.25
+    assert settings.EDGE_THRESHOLD == 0.03
+
+
+def test_real_capital_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRADING_MODE", "real_capital")
+    settings = Settings()
+    assert settings.TRADING_MODE == "real_capital"
+
+
+def test_invalid_trading_mode_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRADING_MODE", "live_yolo")
+    with pytest.raises(ValueError, match="TRADING_MODE"):
+        Settings()
+
+
+def test_reconciliation_flag_key() -> None:
+    assert reconciliation_flag_key("trade-123") == "reconciliation_flag:trade-123"
+
+
+def test_extra_env_vars_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("UNRELATED_VAR", "ignored")
+    settings = Settings()
+    assert os.getenv("UNRELATED_VAR") == "ignored"
+    assert not hasattr(settings, "UNRELATED_VAR")

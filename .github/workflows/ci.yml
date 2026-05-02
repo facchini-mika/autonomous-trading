@@ -71,3 +71,37 @@ jobs:
           base: ${{ github.event.pull_request.base.sha || github.event.before }}
           head: ${{ github.event.pull_request.head.sha || github.sha }}
           extra_args: --only-verified
+
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.x"
+          enable-cache: true
+      - name: Setup Python
+        run: uv python install
+      - name: Sync dependencies
+        run: uv sync --frozen
+      - name: pytest
+        run: uv run pytest
+
+  import-linter:
+    name: import-linter
+    runs-on: ubuntu-latest
+    # Soft-gate in PR 3a; flipped to required in PR 3c when risk/ lands.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.x"
+          enable-cache: true
+      - name: Setup Python
+        run: uv python install
+      - name: Sync dependencies
+        run: uv sync --frozen
+      - name: lint-imports
+        run: uv run lint-imports
