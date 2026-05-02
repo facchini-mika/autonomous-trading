@@ -1,0 +1,7 @@
+# Trading cycle — fires every CYCLE_PERIOD_MIN=12 minutes (engineering.md §10).
+# Operator installs this fragment via `crontab -e`. Adjust the install path
+# (/opt/autonomous_trading) to match the deployment.
+#
+# Logs land in /var/log/autonomous_trading/; rotate via logrotate.
+
+*/12 * * * * cd /opt/autonomous_trading && bash infra/scripts/run_cycle.sh trading_cycle >> /var/log/autonomous_trading/trading_cycle.log 2>&1

@@ -1,0 +1,4 @@
+# Outcome ingestion — hourly. Idempotent (high-water-mark in system_state).
+# Runs deterministically, no LLM, no signing keys (read-only Gamma role).
+
+0 * * * * cd /opt/autonomous_trading && bash infra/scripts/run_cycle.sh outcome_ingestion >> /var/log/autonomous_trading/outcome_ingestion.log 2>&1

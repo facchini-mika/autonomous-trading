@@ -1,0 +1,4 @@
+# Lessons summary — daily at 04:30 UTC after outcome ingestion has caught up.
+# Idempotent (high-water-mark + partial unique index on lessons).
+
+30 4 * * * cd /opt/autonomous_trading && bash infra/scripts/run_cycle.sh lessons_summary >> /var/log/autonomous_trading/lessons_summary.log 2>&1
