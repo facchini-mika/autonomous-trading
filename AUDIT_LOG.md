@@ -23,6 +23,70 @@ Every PR that touches one of the following must have an entry here:
 
 ---
 
+## 2026-05-02 — Phase 3c: Risk Layer
+
+- **Category:** Phase milestone + risk/.
+- **PR:** _pending_
+- **Description:** First and only landing of the `risk/` package. Ships
+  `risk/limits.py` (frozen `Final` constants), six gate modules
+  (`capital_gate.py` with `MAX_CAPITAL_EUR: Final = 0.0` hard-coded;
+  `concentration_gate.py`, `solvency_gate.py`, `cycle_cap_gate.py`,
+  `kill_switch.py`, `sanity_gates.py`) all with the canonical
+  `evaluate(state, order) -> GateResult` signature. Adds 7 hypothesis
+  property-test files under `tests/risk/` (`test_capital_gate.py`,
+  `test_concentration_gate.py`, `test_solvency_gate.py`,
+  `test_cycle_cap_gate.py`, `test_kill_switch.py`, `test_sanity_gates.py`,
+  `test_limits_match_settings.py` — drift-guard against `Settings`).
+  Extends `shared/models/portfolio.py` with two new optional fields on
+  `PortfolioState` (`trading_mode`, `orders_in_last_hour`) so `risk/`
+  never imports `shared.config` or `shared.db` at runtime — Lead injects
+  both before gate evaluation. Adds two `[tool.importlinter]` contracts
+  (`risk` is now a layer; `risk-isolation` forbids the runtime imports
+  above plus `py_clob_client`/`web3`). Activates `risk-coverage.yml`
+  with `pytest --cov=risk --cov-fail-under=100` and removes the
+  `continue-on-error: true` from the `import-linter` job. Adds a
+  pre-commit local hook that blocks `# pragma: no cover` in any
+  staged change under `risk/**`.
+
+  `capital_gate` semantics: paper mode (`state.trading_mode == "paper"`)
+  bypasses the cap. Real-capital mode blocks any order whose post-trade
+  gross exposure would exceed `MAX_CAPITAL_EUR`. With the default
+  `MAX_CAPITAL_EUR = 0.0`, every real-capital order is blocked — this
+  is the intended Phase-3 lockout that keeps a clean checkout from
+  trading real money.
+
+- **Risk:**
+  1. The 100 % `risk/` coverage gate could be silently neutered via
+     `# pragma: no cover` on a sensitive branch.
+  2. Float edge cases (NaN, ±Inf, denormals) could short-circuit gate
+     comparisons in unexpected directions.
+  3. Concentration / cycle-cap clipping math could return
+     `clipped_notional == 0.0` while reporting `passed=True`, which
+     would propagate "execute" for an effectively zero-size order.
+  4. Drift between `risk/limits.py` constants and `Settings()`
+     defaults could let a settings update sail through review while
+     the runtime gates keep using stale numbers.
+
+- **Mitigation:**
+  1. Local pre-commit hook (`risk-no-pragma-no-cover`) blocks any
+     staged diff under `risk/**` containing `# pragma: no cover`. CI
+     `risk-coverage` job remains the second line of defence.
+  2. All hypothesis strategies pass `allow_nan=False, allow_infinity=False`.
+     Gate assertions check `passed`/`reason` shape rather than relying
+     on float arithmetic invariants.
+  3. Concentration and cycle-cap gates check `existing >= cap` first
+     and return `passed=False` before any clipping math runs, so
+     `headroom` is always strictly positive in the clipping branch.
+  4. `tests/risk/test_limits_match_settings.py` is a CI-enforced
+     drift-guard: if anyone changes either side without the other,
+     the test fails.
+
+- **Rollback trigger:** A real or paper cycle that reports `passed=True`
+  with `clipped_notional <= 0`, or any `risk/`-edit that ships without
+  a 100 % coverage delta in the same PR. Action: revert PR, save the
+  failing hypothesis seed to `docs/incidents/`, and re-open via Plan
+  Mode with the seed pinned in the test file.
+
 ## 2026-05-01 — Phase 1: Git/GitHub layer
 
 - **Category:** Phase milestone + branch-protection activation

@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.config.settings import TradingMode
+
 PositionSide = Literal["yes", "no"]
 PositionStatus = Literal["open", "closed"]
 
@@ -56,4 +58,6 @@ class PortfolioState(BaseModel):
     equity: float
     cycle_notional_opened: float = Field(default=0.0, ge=0.0)
     kill_switch_active: bool = False
+    trading_mode: TradingMode = "paper"
+    orders_in_last_hour: int = Field(default=0, ge=0)
     timestamp: datetime

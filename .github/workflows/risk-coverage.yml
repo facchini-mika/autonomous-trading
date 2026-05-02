@@ -8,7 +8,16 @@ on:
 jobs:
   risk-coverage:
     name: risk-coverage
-    if: false  # Skeleton — activated in Phase 3 once risk/ exists.
     runs-on: ubuntu-latest
     steps:
-      - run: echo "placeholder — Phase 3 will enable pytest --cov=risk --cov-fail-under=100"
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.x"
+          enable-cache: true
+      - name: Setup Python
+        run: uv python install
+      - name: Sync dependencies
+        run: uv sync --frozen
+      - name: pytest --cov=risk --cov-fail-under=100
+        run: uv run pytest --cov=risk --cov-fail-under=100 tests/risk/

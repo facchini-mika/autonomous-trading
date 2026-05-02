@@ -22,3 +22,11 @@ repos:
   # trufflehog deferred — pre-commit hook builds from Go source (5+ min on first install
   # due to mongo/couchbase deps). gitleaks alone covers MVP secret scanning.
   # Re-add via Docker-backed hook in Phase 1 CI if dual-scanner is desired.
+  - repo: local
+    hooks:
+      - id: risk-no-pragma-no-cover
+        name: "forbid '# pragma: no cover' in risk/"
+        entry: bash -c 'staged=$(git diff --cached --name-only --diff-filter=ACMR | grep "^risk/" || true); [ -z "$staged" ] && exit 0; if git diff --cached -- $staged | grep -E "^\+.*pragma:\s*no\s*cover"; then echo "pragma:no-cover not allowed in risk/"; exit 1; fi'
+        language: system
+        pass_filenames: false
+        always_run: true

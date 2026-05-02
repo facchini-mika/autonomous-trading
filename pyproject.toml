@@ -47,7 +47,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "PLR2004", "ANN", "SLF001", "INP001", "TC001", "TC002", "TC003", "S603", "S607"]
+"tests/**" = ["S101", "PLR2004", "ANN", "SLF001", "INP001", "TC001", "TC002", "TC003", "S603", "S607", "PLC0415"]
 "alembic/**" = ["INP001", "D", "TC001", "TC002", "TC003"]
 # Claude Code hooks: stdin-driven scripts with multiple guard returns and
 # subprocess calls whose arguments are hardcoded or resolved via shutil.which.
@@ -79,17 +79,25 @@ branch = true
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
 
 [tool.importlinter]
-root_packages = ["shared"]
+root_packages = ["shared", "risk"]
+include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "Top-down package layers"
 type = "layers"
 layers = [
+    "risk",
     "shared.adapters",
     "shared.models",
     "shared.config",
 ]
 containers = [""]
+
+[[tool.importlinter.contracts]]
+name = "risk-isolation"
+type = "forbidden"
+source_modules = ["risk"]
+forbidden_modules = ["shared.adapters", "shared.db", "py_clob_client", "web3"]
 
 [tool.vulture]
 # Used by the Auto-Cleanup workflow (.github/workflows/auto-cleanup.yml).
