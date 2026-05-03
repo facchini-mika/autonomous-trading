@@ -1,6 +1,6 @@
 ---
 name: risk-execution
-description: Phase-2 skeleton. Applies risk gates, clips sizing, and places orders (paper or signed CLOB). Deterministic — no tools.
+description: Phase 6b live. Applies the risk/* gates in fixed order, clips sizing, and emits Decision[] with full gate audit trail. Deterministic — Lead places the actual orders after this agent returns.
 tools: []
 model: claude-sonnet-4-6
 ---

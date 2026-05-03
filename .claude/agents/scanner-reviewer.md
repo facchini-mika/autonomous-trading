@@ -1,6 +1,6 @@
 ---
 name: scanner-reviewer
-description: Phase-2 skeleton. Fetches top-K liquid Polymarket markets and builds the current PortfolioState for the cycle. Deterministic — no tools.
+description: Phase 6b live. Filters Lead-pre-fetched markets down to top-K and assembles the cycle's PortfolioState snapshot. Deterministic — no tools, no network.
 tools: []
 model: claude-sonnet-4-6
 ---
