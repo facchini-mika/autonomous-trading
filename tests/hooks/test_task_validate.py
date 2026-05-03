@@ -33,17 +33,22 @@ def _run(hook: Path, envelope: Mapping[str, object]) -> subprocess.CompletedProc
 def _portfolio_state_payload() -> dict[str, object]:
     now = datetime.now(UTC).isoformat()
     return {
-        "cash": {
-            "total_usd": 1000.0,
-            "available": 900.0,
-            "reserved_for_orders": 100.0,
-            "timestamp": now,
-        },
+        "cash": _cash_payload(),
         "positions": [],
         "gross_exposure_usd": 0.0,
         "unrealized_pnl": 0.0,
         "realized_pnl": 0.0,
         "equity": 1000.0,
+        "timestamp": now,
+    }
+
+
+def _cash_payload() -> dict[str, object]:
+    now = datetime.now(UTC).isoformat()
+    return {
+        "total_usd": 1000.0,
+        "available": 900.0,
+        "reserved_for_orders": 100.0,
         "timestamp": now,
     }
 
@@ -74,7 +79,18 @@ def test_missing_subagent_type_is_noop_created() -> None:
 def test_valid_scanner_reviewer_task_passes() -> None:
     envelope = {
         "subagent_type": "scanner-reviewer",
-        "payload": {"top_k": 50, "cycle_clock": "2026-05-02T12:00:00Z"},
+        "payload": {
+            "top_k": 50,
+            "cycle_clock": "2026-05-02T12:00:00Z",
+            "raw_markets": [],
+            "raw_orderbooks": {},
+            "raw_metadata": {},
+            "current_positions": [],
+            "current_cash": _cash_payload(),
+            "kill_switch_active": False,
+            "held_market_ids": [],
+            "orders_in_last_hour": 0,
+        },
     }
     result = _run(TASK_CREATED, envelope)
     assert result.returncode == 0
@@ -96,6 +112,7 @@ def test_valid_risk_execution_task_passes() -> None:
         "payload": {
             "predictions": [],
             "portfolio_state": _portfolio_state_payload(),
+            "cycle_id": "cycle-test",
         },
     }
     result = _run(TASK_CREATED, envelope)

@@ -3,14 +3,35 @@
 The Phase-3d hooks `task_created_validate` and `task_completed_validate`
 route stdin payloads by `subagent_type` and validate against the matching
 model below.
+
+Phase 6b (PR 1) extends the task payloads so the Lead can pre-fetch the
+full set of inputs each subagent needs:
+
+- `ScannerReviewerTask` carries the raw market/portfolio data the Lead
+  pulled from the adapter and DB; the scanner-reviewer filters and
+  synthesises the final `Universe` + `PortfolioState`.
+- `TradingAgentTask` adds cross-cycle memory (`lessons`, `recent_notes`,
+  `prev_cycle_plan`) plus the cycle id and edge threshold so the agent
+  can run without re-reading settings.
+- `RiskExecutionTask` carries the cycle id; sizing proposals are added
+  in PR 4.
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
-from shared.models.agent_io import Decision, Prediction, Trade, Universe
-from shared.models.portfolio import PortfolioState
+from shared.models.agent_io import (
+    CyclePlan,
+    Decision,
+    Lesson,
+    Note,
+    Prediction,
+    Trade,
+    Universe,
+)
+from shared.models.market import Market, MarketMetadata, Orderbook
+from shared.models.portfolio import CashBalance, PortfolioState, Position
 
 
 class ScannerReviewerTask(BaseModel):
@@ -20,6 +41,14 @@ class ScannerReviewerTask(BaseModel):
 
     top_k: int
     cycle_clock: str
+    raw_markets: list[Market]
+    raw_orderbooks: dict[str, Orderbook]
+    raw_metadata: dict[str, MarketMetadata]
+    current_positions: list[Position]
+    current_cash: CashBalance
+    kill_switch_active: bool
+    held_market_ids: list[str]
+    orders_in_last_hour: int
 
 
 class TradingAgentTask(BaseModel):
@@ -29,6 +58,11 @@ class TradingAgentTask(BaseModel):
 
     universe: Universe
     portfolio_state: PortfolioState
+    lessons: list[Lesson]
+    recent_notes: list[Note]
+    prev_cycle_plan: CyclePlan | None
+    cycle_id: str
+    edge_threshold: float
 
 
 class RiskExecutionTask(BaseModel):
@@ -38,6 +72,7 @@ class RiskExecutionTask(BaseModel):
 
     predictions: list[Prediction]
     portfolio_state: PortfolioState
+    cycle_id: str
 
 
 class ScannerReviewerOutput(BaseModel):

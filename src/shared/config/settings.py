@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     EDGE_THRESHOLD: float = 0.03
     CYCLE_PERIOD_MIN: int = 12
     TOP_K_MARKETS: int = 50
+    UNIVERSE_FETCH_LIMIT: int = 200
 
     # Risk caps (decimals, e.g. 0.15 = 15%)
     CONCENTRATION_CAP: float = 0.15
