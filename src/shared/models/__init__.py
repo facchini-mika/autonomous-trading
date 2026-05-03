@@ -10,6 +10,7 @@ from shared.models.agent_io import (
     LessonStatus,
     Note,
     Prediction,
+    SizingProposal,
     Trade,
     Universe,
 )
@@ -77,6 +78,7 @@ __all__ = [
     "RiskExecutionTask",
     "ScannerReviewerOutput",
     "ScannerReviewerTask",
+    "SizingProposal",
     "Trade",
     "TradingAgentOutput",
     "TradingAgentTask",

@@ -17,3 +17,9 @@ PRICE_MAX: Final[float] = 0.995
 MAX_ORDER_PCT_EQUITY: Final[float] = 0.50
 MAX_OPEN_POSITIONS: Final[int] = 50
 ORDER_RATE_LIMIT_PER_HOUR: Final[int] = 100
+
+# Edge-proportional sizing (Phase 6b PR 4)
+EDGE_THRESHOLD: Final[float] = 0.03
+BASE_TRADE_FRACTION: Final[float] = 0.02
+EDGE_SIZING_SCALE: Final[float] = 1.0
+MAX_TRADE_FRACTION: Final[float] = 0.10

@@ -24,6 +24,7 @@ from sqlalchemy import text
 from execution.cycle_plan import synthesize_cycle_plan
 from execution.decision_context import with_decision
 from execution.notes_tool import manage_notes
+from risk.sizing import propose_notional
 from shared.db import get_session
 from shared.logging import bind, get_logger, unbind
 from shared.models import (
@@ -42,6 +43,7 @@ from shared.models import (
     RiskExecutionTask,
     ScannerReviewerOutput,
     ScannerReviewerTask,
+    SizingProposal,
     Trade,
     TradingAgentOutput,
     TradingAgentTask,
@@ -124,11 +126,13 @@ def bootstrap_team(
     )
     predictions = list(trading_out.predictions)
 
+    proposals = _build_sizing_proposals(predictions=predictions, portfolio=portfolio)
     risk_out = risk(
         RiskExecutionTask(
             predictions=predictions,
             portfolio_state=portfolio,
             cycle_id=cycle_id,
+            proposals=proposals,
         )
     )
     decisions = list(risk_out.decisions)
@@ -633,6 +637,44 @@ def _load_recent_notes(
             )
         )
     return notes
+
+
+def _build_sizing_proposals(
+    *,
+    predictions: list[Prediction],
+    portfolio: PortfolioState,
+) -> list[SizingProposal]:
+    """Compute one ``SizingProposal`` per prediction with non-zero notional.
+
+    ``q_market`` is recovered from the prediction itself: since the
+    trading-agent computes ``edge = p_yes - q_market`` against the
+    side-relevant orderbook quote, we can invert. Predictions with
+    out-of-range derived ``q_market`` or zero notional are dropped.
+    """
+    out: list[SizingProposal] = []
+    equity = portfolio.equity
+    for prediction in predictions:
+        q_market = prediction.p_yes - prediction.edge
+        if not (0.0 < q_market < 1.0):
+            continue
+        notional = propose_notional(
+            p_yes=prediction.p_yes,
+            q_market=q_market,
+            equity=equity,
+        )
+        if notional <= 0.0:
+            continue
+        side = "yes" if prediction.edge > 0 else "no"
+        out.append(
+            SizingProposal(
+                market_id=prediction.market_id,
+                prediction_id=prediction.id,
+                proposed_notional_usd=notional,
+                side=side,
+                q_market=q_market,
+            )
+        )
+    return out
 
 
 def _team_cleanup(*, cycle_id: str) -> None:

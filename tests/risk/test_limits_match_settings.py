@@ -7,10 +7,14 @@ code (here) is allowed to import both and assert they agree.
 from __future__ import annotations
 
 from risk.limits import (
+    BASE_TRADE_FRACTION,
     CONCENTRATION_CAP,
     CYCLE_CAP,
+    EDGE_SIZING_SCALE,
+    EDGE_THRESHOLD,
     MAX_OPEN_POSITIONS,
     MAX_ORDER_PCT_EQUITY,
+    MAX_TRADE_FRACTION,
     ORDER_RATE_LIMIT_PER_HOUR,
     PRICE_MAX,
     PRICE_MIN,
@@ -27,3 +31,7 @@ def test_constants_match_settings_defaults() -> None:
     assert MAX_ORDER_PCT_EQUITY == s.ORDER_SANITY_MAX_PCT_EQUITY
     assert MAX_OPEN_POSITIONS == s.MAX_OPEN_POSITIONS
     assert ORDER_RATE_LIMIT_PER_HOUR == s.ORDER_RATE_LIMIT_PER_HOUR
+    assert EDGE_THRESHOLD == s.EDGE_THRESHOLD
+    assert BASE_TRADE_FRACTION == s.BASE_TRADE_FRACTION
+    assert EDGE_SIZING_SCALE == s.EDGE_SIZING_SCALE
+    assert MAX_TRADE_FRACTION == s.MAX_TRADE_FRACTION

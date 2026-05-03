@@ -27,6 +27,7 @@ from shared.models.agent_io import (
     Lesson,
     Note,
     Prediction,
+    SizingProposal,
     Trade,
     Universe,
 )
@@ -73,6 +74,7 @@ class RiskExecutionTask(BaseModel):
     predictions: list[Prediction]
     portfolio_state: PortfolioState
     cycle_id: str
+    proposals: list[SizingProposal]
 
 
 class ScannerReviewerOutput(BaseModel):

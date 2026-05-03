@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     CONCENTRATION_CAP: float = 0.15
     CYCLE_CAP: float = 0.25
 
+    # Edge-proportional sizing (Phase 6b PR 4)
+    BASE_TRADE_FRACTION: float = 0.02
+    EDGE_SIZING_SCALE: float = 1.0
+    MAX_TRADE_FRACTION: float = 0.10
+
     # Lessons / learning
     LESSONS_TOP_K: int = 10
     LESSONS_LOOKBACK_DAYS: int = 30

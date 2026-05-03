@@ -113,6 +113,7 @@ def test_valid_risk_execution_task_passes() -> None:
             "predictions": [],
             "portfolio_state": _portfolio_state_payload(),
             "cycle_id": "cycle-test",
+            "proposals": [],
         },
     }
     result = _run(TASK_CREATED, envelope)

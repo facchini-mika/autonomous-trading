@@ -15,6 +15,24 @@ DecisionAction = Literal["trade", "skip", "hold"]
 LessonStatus = Literal["open", "merged", "rejected", "superseded", "incorporated"]
 
 
+class SizingProposal(BaseModel):
+    """Lead-computed sizing proposal handed to risk-execution per prediction.
+
+    The trading-agent does not propose sizing; the Lead derives it via
+    ``risk.sizing.propose_notional`` between the trading-agent and
+    risk-execution invocations. Risk-execution then runs the gates against
+    this proposal and may clip it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    market_id: str
+    prediction_id: UUID
+    proposed_notional_usd: float = Field(gt=0.0)
+    side: OrderSide
+    q_market: float = Field(gt=0.0, lt=1.0)
+
+
 class Universe(BaseModel):
     """Top-K liquid markets snapshot handed from scanner-reviewer to trading-agent."""
 

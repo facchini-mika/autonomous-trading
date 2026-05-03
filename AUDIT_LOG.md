@@ -397,3 +397,59 @@ Every PR that touches one of the following must have an entry here:
     it.
   - 5 worthless UP-tokens in wallet — still leave unredeemed,
     gas-wasteful (carried over from Phase-6a entry, unchanged).
+
+
+## 2026-05-03 — Phase 6b PR 4: Edge-proportional sizing module (src/risk/ touch)
+
+- **Category:** Risk-sensitive — adds new file `src/risk/sizing.py` and
+  4 new constants to `src/risk/limits.py`. No `MAX_CAPITAL_EUR` change
+  (still hardcoded 0 in `src/risk/capital_gate.py`). No `TRADING_MODE`
+  flip (default remains `paper`).
+- **Branch / PR:** `phase/6b-4-edge-sizing` — pending push.
+- **Description:**
+  - New `src/risk/sizing.py` with deterministic `propose_notional`
+    function. Pure math, no Settings dependency at runtime (consumes
+    constants from `risk.limits`).
+  - New constants in `risk/limits.py`: `EDGE_THRESHOLD = 0.03`,
+    `BASE_TRADE_FRACTION = 0.02`, `EDGE_SIZING_SCALE = 1.0`,
+    `MAX_TRADE_FRACTION = 0.10`. Mirrored in `Settings` (already had
+    `EDGE_THRESHOLD`; the sizing trio is new).
+  - `tests/risk/test_limits_match_settings.py` extended to assert
+    drift-guard for all four.
+  - `tests/risk/test_sizing.py` adds 8 hypothesis-property tests
+    covering: non-negativity, MAX cap, sub-threshold→0, equity≤0→0,
+    monotonic in |edge|, symmetric in sign of edge, exact at-threshold
+    value, large-edge clamp.
+  - `risk-coverage` gate stays at 100 % with the new module
+    (104 lines counted, all covered).
+- **What could go wrong:**
+  - `BASE_TRADE_FRACTION = 0.02` (2 %) sets the per-trade size at a
+    threshold edge. With strong conviction (|edge|=15 %), sizing scales
+    to `2 % × 5 = 10 %` of equity, exactly at `MAX_TRADE_FRACTION`. A
+    bug that inflates `EDGE_SIZING_SCALE` could overshoot — but the
+    `MAX_TRADE_FRACTION` clamp in the function is the second-line
+    defence, and concentration/cycle-cap gates are the third.
+  - `q_market` is recovered from `prediction.p_yes - prediction.edge`
+    in the Lead. If a future trading-agent emits inconsistent values,
+    the proposal could reference a wrong q_market. The Lead drops the
+    proposal when the derived `q_market` is outside `(0, 1)`; risk
+    gates then never see it.
+  - This sizing logic only runs in paper-mode cycles before
+    `MAX_CAPITAL_EUR` is non-zero. Real-capital impact is gated by the
+    capital_gate (which still rejects all real-capital orders today).
+- **Why it's still safe:**
+  - All four new constants are below the existing `CONCENTRATION_CAP`
+    (15 %), so concentration gate clipping is the upper bound.
+  - `MAX_TRADE_FRACTION = 10 %` is below `ORDER_SANITY_MAX_PCT_EQUITY`
+    (50 %) — sanity gate cannot be exceeded by sizing.
+  - `EDGE_THRESHOLD = 0.03` matches existing trading-agent threshold;
+    no regression in trade selection.
+  - 100 % `risk/` coverage maintained; 8 new hypothesis tests cover
+    monotonicity + boundary behaviour.
+  - `paper`-mode default unchanged. `MAX_CAPITAL_EUR` still 0.
+- **Mitigation / rollback:** Revert PR; the four constants only feed
+  `propose_notional` which only runs in `bootstrap_team` between
+  trading-agent and risk-execution. Without proposals, the existing
+  `_decision_to_order` path falls back to `gate_results.notional_usd`
+  (PR 1 behaviour), so the system degrades to "no sizing" rather than
+  "wrong sizing".
