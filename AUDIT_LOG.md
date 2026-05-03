@@ -329,3 +329,71 @@ Every PR that touches one of the following must have an entry here:
   - Phase-5d branch-protection required-status-checks update remains
     open — see Phase-5 entry above. Not addressed by this PR.
   - 5 worthless UP-tokens in wallet — leave unredeemed, gas-wasteful.
+
+## 2026-05-03 — Operator follow-up closeout (passphrase rotation + branch-protection verification)
+
+- **Category:** Operator hygiene — closes two of the three open
+  follow-ups from the Phase-6a entry above. No `src/risk/**` touch,
+  no `MAX_CAPITAL_EUR` change, no `TRADING_MODE` flip, no
+  branch-protection mutation (verification only).
+- **PR:** _pending_
+- **Description:** Two follow-ups closed.
+
+  **(1) `WALLET_PASSPHRASE` rotated.** Operator ran
+  `infra/scripts/wallet_rotate_passphrase.py` (introduced in
+  PR [#25](https://github.com/facchini-mika/autonomous_trading/pull/25),
+  merged as `b088523`) against the local wallet at
+  `Settings.KEY_PROVIDER_PATH`. The rotate classmethod decrypts with
+  the old passphrase, asserts `Account.from_key(priv_key).address ==
+  stored_address` before writing, then re-encrypts with a fresh
+  Fernet salt under the new passphrase. Atomic write (tmp → rename),
+  original moved to `wallet.json.bak-<UTC-ts>` sibling. Same private
+  key, same address, same 9 V1+V2 token approvals on Polygon, same
+  wrapped pUSD balance — only salt + ciphertext changed.
+
+  Minimum-blast-radius interpretation chosen over the literal
+  re-key-+-re-approve-+-re-wrap wording in the Phase-6a follow-up:
+  the encrypted wallet file never left the local machine, only the
+  passphrase was exposed (in conversation context); a fresh
+  passphrase severs the link without disturbing on-chain state. PR
+  #25 documents the threat-model reasoning and ships 8 unit tests
+  for the rotation path (round-trip, address preservation, old
+  passphrase invalidation, 0600 mode, backup integrity, salt+ct
+  rotation, abort-on-wrong-old-passphrase, missing-file).
+
+  **(2) Phase-5d branch-protection required-status-checks — verified
+  already in target state, no PUT issued.** `gh api repos/facchini-mika/autonomous_trading/branches/main/protection`
+  on 2026-05-03 returned `required_status_checks.contexts` =
+  `[lint, type-check, gitleaks, trufflehog, pytest, import-linter,
+  alembic-smoketest, risk-coverage, e2e-paper-cycle]` — i.e., the
+  Phase-5d snippet's 8 contexts plus `risk-coverage`. This matches
+  every PR-triggered deterministic CI job 1:1 across `ci.yml` and
+  `risk-coverage.yml`. The only unmatched PR-trigger CI job is
+  `claude-review.yml` `review`, intentionally excluded because AI
+  reviews are non-deterministic and may fail on transient external
+  outages — `CLAUDE.md` "Reviewer rule" is explicit that the CI
+  gates are the merge prerequisites. Other protection fields verified
+  unchanged from Phase-3c-Strict: `enforce_admins=true`,
+  `allow_force_pushes=false`, `allow_deletions=false`,
+  `required_approving_review_count=0`, `dismiss_stale_reviews=true`,
+  `require_code_owner_reviews=true`. The Phase-5d and Phase-6a
+  "still open" wording on this follow-up was stale; whoever extended
+  the contexts to include `risk-coverage` did not update the audit
+  log at the time.
+
+- **Risk:** None on (1) — rotation is local; reversible via `.bak-<ts>`
+  until the operator deletes the backup. None on (2) — read-only
+  verification via `gh api GET`, no protection mutation by this PR.
+- **Mitigation / rollback trigger:** Not applicable (no shared-state
+  mutation in this PR). Time-boxed rollback for the rotation: while
+  `wallet.json.bak-<ts>` exists, restoring it + the old passphrase
+  re-yields the prior wallet state; after operator deletes the backup,
+  rollback is no longer possible — but that is the intended end state
+  and the whole point of severing the leaked passphrase.
+- **Remaining operator follow-up:**
+  - Delete `wallet.json.bak-<UTC-ts>` once one paper-cycle has
+    confirmed the new passphrase decrypts cleanly. While the backup
+    file persists, the leaked passphrase is still a valid key against
+    it.
+  - 5 worthless UP-tokens in wallet — still leave unredeemed,
+    gas-wasteful (carried over from Phase-6a entry, unchanged).
