@@ -1,9 +1,18 @@
-"""PolymarketAdapter — sync REST wrapper around `py-clob-client`.
+"""PolymarketAdapter — sync REST wrapper around `py-clob-client-v2`.
+
+Phase-6a swap: Polymarket's CLOB v2 cutover (2026-04-28) made the v1
+EIP-712 domain (version="1", legacy exchange addresses) reject every
+order with `order_version_mismatch`. The v2 client signs against the new
+exchange contracts (`0xE111180000d2663C0091e4f400237545B87B996B`,
+`0xe2222d279d744050d28e00520010520000310F59`) with domain version="2"
+and a different order struct (timestamp/metadata/builder fields, no
+nonce/expiration/feeRateBps). This adapter targets the v2 client.
 
 Phase-4 Modus 1: a paket-private hook on `KeyProviderLocalFile`
-(`_unsafe_export_priv_key`) hands the raw private key to py-clob-client which
-performs EIP-712 signing internally. The KeyProvider Protocol stays intact for
-KMS migration in Phase 7 — see `docs/adr/0001-keyprovider-pyclobclient-mode-1.md`.
+(`_unsafe_export_priv_key`) hands the raw private key to py-clob-client-v2
+which performs EIP-712 signing internally. The KeyProvider Protocol stays
+intact for KMS migration in Phase 7 — see
+`docs/adr/0001-keyprovider-pyclobclient-mode-1.md`.
 
 WebSocket subscriptions are deliberately out of scope for Phase 4. The trading
 cycle period is 12 minutes x at most 50 markets, so REST polling is trivially
@@ -143,14 +152,19 @@ class PolymarketAdapter:
             self._idempotency.put(order.idempotency_key, result)
             return result
 
-        result = _parse_order_result(raw)
+        result = _parse_order_result(raw, order=order)
         self._idempotency.put(order.idempotency_key, result)
         return result
 
     def cancel_order(self, order_id: str) -> CancelResult:
+        from py_clob_client_v2 import OrderPayload  # noqa: PLC0415
+
         self._ensure_api_creds()
         try:
-            raw = self._retry(lambda: self._client.cancel(order_id=order_id), op="cancel_order")
+            raw = self._retry(
+                lambda: self._client.cancel_order(OrderPayload(orderID=order_id)),
+                op="cancel_order",
+            )
         except PolymarketPermanentError as exc:
             if _is_not_found(exc):
                 return CancelResult(order_id=order_id, status="not_found", cancelled_size=0.0)
@@ -162,7 +176,7 @@ class PolymarketAdapter:
     def _make_client(self, factory: Callable[..., Any] | None) -> Any:
         if factory is not None:
             return factory(host=self._host, chain_id=self._chain_id, key_provider=self._key_provider)
-        from py_clob_client.client import ClobClient  # noqa: PLC0415
+        from py_clob_client_v2 import ClobClient  # noqa: PLC0415
 
         from shared.adapters.key_provider_localfile import (  # noqa: PLC0415
             KeyProviderLocalFile,
@@ -172,12 +186,12 @@ class PolymarketAdapter:
             msg = "PolymarketAdapter Modus 1 requires KeyProviderLocalFile (raw-key export)"
             raise TypeError(msg)
         priv_hex = self._key_provider._unsafe_export_priv_key().hex()  # noqa: SLF001
-        return ClobClient(self._host, key=priv_hex, chain_id=self._chain_id)
+        return ClobClient(host=self._host, chain_id=self._chain_id, key=priv_hex)
 
     def _ensure_api_creds(self) -> None:
         if self._api_creds_set:
             return
-        creds = self._client.create_or_derive_api_creds()
+        creds = self._client.create_or_derive_api_key()
         self._client.set_api_creds(creds)
         self._api_creds_set = True
 
@@ -374,26 +388,59 @@ def _parse_dt(value: Any) -> datetime | None:
         return None
 
 
-def _to_clob_order_args(order: Order) -> dict[str, Any]:
-    return {
-        "token_id": order.market_id,
-        "price": float(order.price),
-        "size": float(order.size),
-        "side": "BUY" if order.side == "yes" else "SELL",
-        "client_order_id": order.idempotency_key,
-    }
+def _to_clob_order_args(order: Order) -> Any:
+    """Build py-clob-client-v2 OrderArgs from our internal Order DTO.
+
+    The v2 alias `OrderArgs == OrderArgsV2`; the v2 order struct dropped
+    `nonce`/`expiration`/`feeRateBps`/`taker` and added timestamp/metadata/
+    builder fields, all populated by the client at sign time. Our DTO only
+    needs to carry token_id/price/size/side; the idempotency_key stays in
+    the adapter-side cache (it is unrelated to the on-chain timestamp salt
+    that v2 uses for replay protection).
+    """
+    from py_clob_client_v2 import OrderArgs  # noqa: PLC0415
+
+    return OrderArgs(
+        token_id=order.market_id,
+        price=float(order.price),
+        size=float(order.size),
+        side="BUY" if order.side == "yes" else "SELL",
+    )
 
 
-def _parse_order_result(raw: Any) -> OrderResult:
+def _parse_order_result(raw: Any, *, order: Order | None = None) -> OrderResult:
+    """Parse a CLOB v2 `POST /order` response into our internal `OrderResult`.
+
+    V2 response shape: `{orderID, takingAmount, makingAmount, status,
+    transactionsHashes, errorMsg}`. `takingAmount`/`makingAmount` express the
+    fill in absolute units of (asset received, asset paid); for a BUY the asset
+    received is the conditional token (filled_size) and `makingAmount` is the
+    pUSD spent. Fees aren't in the response — query trades to recover them.
+    """
     item = raw if isinstance(raw, dict) else {}
     status_text = str(item.get("status", "")).lower()
     status = _map_status(status_text)
+
+    broker_order_id = item.get("orderID") or item.get("order_id")
+    taking = _optional_float(item.get("takingAmount") or item.get("taking_amount"))
+    making = _optional_float(item.get("makingAmount") or item.get("making_amount"))
+
+    side_is_buy = order is None or order.side == "yes"
+    fill_price: float | None
+    if taking is not None and making is not None and taking > 0 and making > 0:
+        filled_size = taking if side_is_buy else making
+        fill_price = (making / taking) if side_is_buy else (taking / making)
+    else:
+        # V1-shape fallback (legacy tests + any pre-migration response).
+        filled_size = float(item.get("filled_size", item.get("size_matched", 0)) or 0)
+        fill_price = _optional_float(item.get("fill_price") or item.get("price"))
+
     return OrderResult(
         status=status,
-        fill_price=_optional_float(item.get("fill_price") or item.get("price")),
-        filled_size=float(item.get("filled_size", item.get("size_matched", 0)) or 0),
+        fill_price=fill_price,
+        filled_size=float(filled_size),
         fees=float(item.get("fees", 0) or 0),
-        broker_order_id=str(item["order_id"]) if item.get("order_id") else None,
+        broker_order_id=str(broker_order_id) if broker_order_id else None,
     )
 
 

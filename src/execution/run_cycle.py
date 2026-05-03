@@ -26,7 +26,7 @@ from shared.models import (
     TradingAgentTask,
 )
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 AGENTS_DIR = REPO_ROOT / ".claude" / "agents"
 PROMPTS_DIR = REPO_ROOT / "research" / "prompts"
 

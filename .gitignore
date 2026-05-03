@@ -32,6 +32,9 @@ CLAUDE.local.md
 # Local data
 data/
 
+# Operator-only sandbox-smoke logs (may contain wallet addresses, never private keys)
+docs/operations/sandbox_smoke_log_*.md
+
 # OS / IDE
 .DS_Store
 .vscode/

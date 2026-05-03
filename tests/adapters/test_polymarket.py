@@ -1,4 +1,4 @@
-"""Tests for PolymarketAdapter (mocked py-clob-client)."""
+"""Tests for PolymarketAdapter (mocked py-clob-client-v2)."""
 
 from __future__ import annotations
 
@@ -119,7 +119,7 @@ def test_get_resolution_parses_closed(adapter: PolymarketAdapter, fake_clob: Mag
 
 
 def test_place_order_idempotency_returns_cached(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
-    fake_clob.create_or_derive_api_creds.return_value = MagicMock()
+    fake_clob.create_or_derive_api_key.return_value = MagicMock()
     fake_clob.create_order.return_value = {"signed": True}
     fake_clob.post_order.return_value = {"status": "matched", "order_id": "abc", "price": 0.5, "size_matched": 1}
 
@@ -132,7 +132,7 @@ def test_place_order_idempotency_returns_cached(adapter: PolymarketAdapter, fake
 
 
 def test_place_order_filled_status(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
-    fake_clob.create_or_derive_api_creds.return_value = MagicMock()
+    fake_clob.create_or_derive_api_key.return_value = MagicMock()
     fake_clob.post_order.return_value = {"status": "matched", "order_id": "ok", "price": 0.5, "size_matched": 2}
     fake_clob.create_order.return_value = {}
     res = adapter.place_order(_make_order("k1"))
@@ -142,7 +142,7 @@ def test_place_order_filled_status(adapter: PolymarketAdapter, fake_clob: MagicM
 
 
 def test_place_order_retry_on_transient_then_succeeds(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
-    fake_clob.create_or_derive_api_creds.return_value = MagicMock()
+    fake_clob.create_or_derive_api_key.return_value = MagicMock()
     fake_clob.create_order.return_value = {}
     fake_clob.post_order.side_effect = [
         PolymarketTransientError("503"),
@@ -158,7 +158,7 @@ def test_place_order_no_retry_on_permanent_returns_rejected(
     adapter: PolymarketAdapter,
     fake_clob: MagicMock,
 ) -> None:
-    fake_clob.create_or_derive_api_creds.return_value = MagicMock()
+    fake_clob.create_or_derive_api_key.return_value = MagicMock()
     fake_clob.create_order.return_value = {}
     fake_clob.post_order.side_effect = PolymarketPermanentError("400 invalid signature")
     res = adapter.place_order(_make_order("k-perm"))
@@ -167,7 +167,7 @@ def test_place_order_no_retry_on_permanent_returns_rejected(
 
 
 def test_place_order_retry_exhaustion_raises(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
-    fake_clob.create_or_derive_api_creds.return_value = MagicMock()
+    fake_clob.create_or_derive_api_key.return_value = MagicMock()
     fake_clob.create_order.return_value = {}
     fake_clob.post_order.side_effect = PolymarketTransientError("503")
     with pytest.raises(PolymarketTransientError):
@@ -176,7 +176,7 @@ def test_place_order_retry_exhaustion_raises(adapter: PolymarketAdapter, fake_cl
 
 
 def test_rate_limit_error_is_transient_and_retried(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
-    fake_clob.create_or_derive_api_creds.return_value = MagicMock()
+    fake_clob.create_or_derive_api_key.return_value = MagicMock()
     fake_clob.create_order.return_value = {}
     fake_clob.post_order.side_effect = [
         PolymarketRateLimitError("429"),
@@ -187,27 +187,27 @@ def test_rate_limit_error_is_transient_and_retried(adapter: PolymarketAdapter, f
 
 
 def test_cancel_order_maps_not_found(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
-    fake_clob.create_or_derive_api_creds.return_value = MagicMock()
-    fake_clob.cancel.side_effect = PolymarketPermanentError("404 not found")
+    fake_clob.create_or_derive_api_key.return_value = MagicMock()
+    fake_clob.cancel_order.side_effect = PolymarketPermanentError("404 not found")
     res = adapter.cancel_order("missing")
     assert res.status == "not_found"
 
 
 def test_cancel_order_success(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
-    fake_clob.create_or_derive_api_creds.return_value = MagicMock()
-    fake_clob.cancel.return_value = {"canceled": [{"order_id": "ok", "size": 5}]}
+    fake_clob.create_or_derive_api_key.return_value = MagicMock()
+    fake_clob.cancel_order.return_value = {"canceled": [{"order_id": "ok", "size": 5}]}
     res = adapter.cancel_order("ok")
     assert res.status == "cancelled"
     assert res.cancelled_size == pytest.approx(5.0)
 
 
 def test_init_calls_api_creds_only_once(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
-    fake_clob.create_or_derive_api_creds.return_value = MagicMock()
+    fake_clob.create_or_derive_api_key.return_value = MagicMock()
     fake_clob.create_order.return_value = {}
     fake_clob.post_order.return_value = {"status": "matched", "order_id": "x"}
     adapter.place_order(_make_order("k-a"))
     adapter.place_order(_make_order("k-b"))
-    assert fake_clob.create_or_derive_api_creds.call_count == 1
+    assert fake_clob.create_or_derive_api_key.call_count == 1
 
 
 def test_idempotency_store_get_put() -> None:
@@ -229,13 +229,31 @@ def test_backoff_increases_with_attempt() -> None:
     assert a2 > a1 / 2
 
 
+def test_place_order_parses_v2_response_shape(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
+    fake_clob.create_or_derive_api_key.return_value = MagicMock()
+    fake_clob.create_order.return_value = {}
+    fake_clob.post_order.return_value = {
+        "errorMsg": "",
+        "orderID": "<redacted>",
+        "takingAmount": "5",
+        "makingAmount": "2.55",
+        "status": "matched",
+        "transactionsHashes": ["0xdeadbeef"],
+    }
+    res = adapter.place_order(_make_order("v2-shape", side="yes"))
+    assert res.status == "filled"
+    assert res.broker_order_id == "<redacted>"
+    assert res.filled_size == pytest.approx(5.0)
+    assert res.fill_price == pytest.approx(0.51)
+
+
 def test_to_clob_order_args_maps_side() -> None:
     o = _make_order("k", side="yes")
     args = _to_clob_order_args(o)
-    assert args["side"] == "BUY"
+    assert args.side == "BUY"
     o2 = _make_order("k2", side="no")
     args2 = _to_clob_order_args(o2)
-    assert args2["side"] == "SELL"
+    assert args2.side == "SELL"
 
 
 def _make_order(key: str, *, side: Any = "yes") -> Order:

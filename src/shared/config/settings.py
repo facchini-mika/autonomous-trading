@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     # External APIs (Phase 4 Stream A)
     POLYMARKET_HOST: str = "https://clob.polymarket.com"
     POLYGON_CHAIN_ID: int = 137
+    POLYGON_RPC_URL: str = "https://polygon-bor-rpc.publicnode.com"
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4.1"
 

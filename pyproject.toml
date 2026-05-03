@@ -17,13 +17,14 @@ dependencies = [
   "sqlalchemy>=2.0",
   "psycopg[binary]>=3.2",
   "alembic>=1.13",
-  "py-clob-client>=0.17",
+  "py-clob-client-v2>=1.0.0",
   "eth-account>=0.13",
   "cryptography>=43",
   "openai>=1.50",
   "web3>=7",
   "httpx>=0.27",
   "structlog>=24",
+  "curl-cffi>=0.15.0",
 ]
 
 [dependency-groups]
@@ -84,7 +85,7 @@ enable_error_code = ["truthy-bool", "redundant-expr", "possibly-undefined"]
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["py_clob_client.*", "respx", "respx.*"]
+module = ["py_clob_client_v2.*", "respx", "respx.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -126,7 +127,7 @@ containers = [""]
 name = "risk-isolation"
 type = "forbidden"
 source_modules = ["risk"]
-forbidden_modules = ["shared.adapters", "shared.db", "py_clob_client", "web3"]
+forbidden_modules = ["shared.adapters", "shared.db", "py_clob_client_v2", "web3"]
 
 [tool.vulture]
 # Used by the Auto-Cleanup workflow (.github/workflows/auto-cleanup.yml).

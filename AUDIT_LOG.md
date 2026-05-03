@@ -232,3 +232,100 @@ Every PR that touches one of the following must have an entry here:
     -f required_status_checks[contexts][]=alembic-smoketest \
     -f required_status_checks[contexts][]=e2e-paper-cycle
   ```
+
+## 2026-05-03 — Phase 6a: First Live Paper Cycle (V2 migration + sandbox-smoke + paper bring-up)
+
+- **Category:** Phase milestone (no `src/risk/**` touch, no `MAX_CAPITAL_EUR`
+  change, no permanent `TRADING_MODE` flip — sandbox-smoke ran
+  `TRADING_MODE=real_capital` ONE-SHOT and is documented below).
+- **PR:** _pending push_
+- **Description:** Three orthogonal sub-deliverables, all on branch
+  `phase/6a-first-paper-cycle`:
+
+  **(1) V2 migration** — Polymarket's CLOB v2 cutover (2026-04-28) ended V1
+  order acceptance with `order_version_mismatch` (#335, #336 in
+  py-clob-client). Adapter switched to `py-clob-client-v2 1.0.0`
+  (`Polymarket/py-clob-client-v2`, audited Quantstamp + Cantina March 2026
+  per `Polymarket/ctf-exchange-v2` README). New EIP-712 domain
+  (version="2"), new exchange contracts (CTFExchangeV2
+  `0xE111180000d2663C0091e4f400237545B87B996B`, NegRiskCtfExchangeV2
+  `0xe2222d279d744050d28e00520010520000310F59`), new collateral pUSD
+  (`0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB`, 1:1 wrap of USDC.e via
+  permissionless `CollateralOnramp 0x93070a847efEf7F70739046A929D47a521F5B8ee`).
+  Adapter, scripts (`approve_tokens.py`, new `wrap_usdc.py`,
+  `sandbox_smoke.py`, `cf_probe.py`), and tests retargeted; the v2 order
+  struct drops `taker/expiration/nonce/feeRateBps` and adds
+  `timestamp/metadata/builder` — `_parse_order_result` now reads
+  `orderID/takingAmount/makingAmount` and falls back to v1 fields for
+  legacy responses. 21/21 adapter tests + 233/233 full suite green;
+  mypy strict + ruff clean. Commits: `9e7018d`, `07d57bd`.
+
+  **(2) Sandbox-smoke (real_capital, ONE-SHOT, $6 capital cap)** — Test
+  wallet `0x<redacted test wallet>` funded with 6 USDC.e
+  + ~30 POL on Polygon mainnet. Ran 9 V1+V2 approvals (4 V1 already
+  MAX_UINT256, 5 new V2 in blocks <redacted>), wrapped 6 USDC.e →
+  6 pUSD (block <redacted>), placed marketable-limit BUY of 5 UP @ $0.60 on
+  `btc-updown-5m-1777824900` (`Bitcoin Up or Down — May 3, 12:15PM-12:20PM ET`,
+  conditionId `0x051ec4f9ba9fd59a2ea5d9f8259519cd411773eddeb5f10a6c26fde1f127ab68`,
+  non-neg-risk → CTFExchangeV2 path). Server returned `version: 2`,
+  `neg_risk: false`, then matched at $0.51: orderID
+  `<redacted>`,
+  on-chain settlement
+  `<redacted>`
+  (block <redacted>). Market resolved DOWN (CTF payoutNumerators UP=0/1,
+  DOWN=1/1), realized **-$2.64** (≈$2.55 collateral spent + ≈$0.09 fee,
+  effective fee ~3.5% on a 50/50 5-min market — EV-neutral as designed,
+  the test was for plumbing not for alpha). 5 worthless UP-tokens
+  remain in the wallet (no `redeemPositions` call — gas-wasteful for $0).
+  Wallet final state: ~30 POL + 3.36 pUSD + 5 worthless UP-shares.
+
+  **(3) First live paper-cycle bring-up** — `python -m execution.run_cycle`
+  ran end-to-end against real Polymarket V2 read-API and real Claude
+  subagents (scanner-reviewer 13.2s, trading-agent 2.9s, risk-execution
+  3.4s; ~$X Anthropic spend). cycle_id `cycle-1777826847` persisted in
+  `cycle_plan` (head row), `predictions=0`, `decisions=0`, `paper_trades=0`,
+  `trades=0`, no `POST clob.polymarket.com/order` in DIAG-output. The
+  empty Universe is by design: scanner-reviewer / trading-agent /
+  risk-execution `.claude/agents/*.md` are explicit Phase-2 skeletons
+  (`tools: []`, doctrine left minimal — Phase 4 Stream D / Phase 7+ work
+  per the agent MDs themselves), so they validate Pydantic schemas and
+  the wiring without doing real Polymarket-scanning yet. The full
+  paper-trade-with-fill loop is already covered in CI via
+  `tests/e2e/test_paper_cycle.py` against `FakeGamma`. Path-fix in
+  `src/execution/run_cycle.py` (`REPO_ROOT` was off by one after the
+  `0c29055` src/-layout refactor — agent MDs no longer resolved).
+
+- **Risk:**
+   (a) Sandbox-smoke transferred real money on Polygon, kapital-bounded
+       to the $6 funded balance. Realized -$2.64. **No further
+       real-money trading is permitted without explicit operator OK.**
+   (b) V2 contracts have only been live since 2026-04-28; we trust the
+       Quantstamp + Cantina audits (March 2026) but the contract has
+       <1 week of live battle-testing as of this entry. Approvals are
+       MAX_UINT256 → if a contract bug ever drains an exchange, our
+       remaining 3.36 pUSD + future deposits are exposed.
+   (c) Paper-cycle requires Anthropic-token spend (~$0.50-2/cycle). Single
+       run is bounded; recurring scheduling could scale spend. Cron is
+       NOT enabled by this PR.
+   (d) WALLET_PASSPHRASE was passed inline in conversation context once
+       to drive the smoke + cycle runs. Operator follow-up: rotate the
+       wallet passphrase post-merge.
+- **Mitigation / rollback trigger:** `TRADING_MODE=paper` remains the
+  hardcoded default in `Settings` (`src/shared/config/settings.py:44`);
+  `MAX_CAPITAL_EUR=0` hardcoded in `src/risk/capital_gate.py` blocks any
+  accidental real-capital order in the cycle path; PaperTradingAdapter
+  writes only to `paper_trades` and never to `clob.polymarket.com`
+  (verified by absent DIAG line in this run). 9 V1+V2 approvals are
+  on-chain durable — don't re-run `approve_tokens.py` unless rotating
+  wallet. cron-cycle NOT enabled before Phase 6b (≥7d of manual
+  paper-cycle observation). Rollback trigger: if a paper-cycle ever
+  emits a `POST clob.polymarket.com/order` line, or `trades` row count
+  grows under paper-mode → revert this PR, audit the adapter dispatch
+  path. Rollback for the V2 contracts is implicit: revoke MAX_UINT256
+  via `approve(spender, 0)` if Polymarket announces a vulnerability.
+- **Operator follow-up:**
+  - Rotate `WALLET_PASSPHRASE` (re-run `wallet_create.py` workflow with
+    a fresh passphrase, re-do all 9 approvals, re-wrap pUSD).
+  - Phase-5d branch-protection required-status-checks update remains
+    open — see Phase-5 entry above. Not addressed by this PR.
+  - 5 worthless UP-tokens in wallet — leave unredeemed, gas-wasteful.
