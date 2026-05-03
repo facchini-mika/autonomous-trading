@@ -29,6 +29,8 @@ from shared.models import (
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 AGENTS_DIR = REPO_ROOT / ".claude" / "agents"
 PROMPTS_DIR = REPO_ROOT / "research" / "prompts"
+MCP_CONFIG_PATH = REPO_ROOT / ".mcp.json"
+TRADING_AGENT_MCP_TOOLS = ("mcp__research__web_search",)
 
 logger = get_logger(__name__)
 
@@ -59,6 +61,8 @@ def main() -> int:
             task=task,
             output_model=TradingAgentOutput,
             timeout_s=settings.AGENT_TIMEOUT_SEC,
+            mcp_config_path=MCP_CONFIG_PATH if MCP_CONFIG_PATH.exists() else None,
+            allowed_mcp_tools=TRADING_AGENT_MCP_TOOLS,
         )
 
     def risk(task: RiskExecutionTask) -> RiskExecutionOutput:

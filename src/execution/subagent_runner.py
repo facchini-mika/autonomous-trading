@@ -45,6 +45,8 @@ def run_subagent[T: BaseModel](
     output_model: type[T],
     timeout_s: int,
     doctrine_path: Path | None = None,
+    mcp_config_path: Path | None = None,
+    allowed_mcp_tools: tuple[str, ...] = (),
     claude_bin: str = DEFAULT_CLAUDE_BIN,
 ) -> T:
     """Invoke a Claude subagent in headless mode and return a validated output.
@@ -53,6 +55,11 @@ def run_subagent[T: BaseModel](
     ``.claude/agents/scanner-reviewer.md``). ``doctrine_path`` is an optional
     follow-on prompt file from ``research/prompts/`` that deepens the agent's
     strategy doctrine; concatenated after the skeleton body.
+
+    ``mcp_config_path`` and ``allowed_mcp_tools`` wire MCP servers into the
+    subprocess (Phase 6b PR 2). Only the trading-agent gets the
+    ``research`` MCP server today; scanner-reviewer and risk-execution are
+    deterministic and pass these as ``None``/``()``.
     """
     if not agent_md_path.exists():
         msg = f"agent skeleton not found: {agent_md_path}"
@@ -77,6 +84,13 @@ def run_subagent[T: BaseModel](
         "--output-format",
         "json",
     ]
+    if mcp_config_path is not None:
+        if not mcp_config_path.exists():
+            msg = f"mcp config not found: {mcp_config_path}"
+            raise SubagentError(msg)
+        cmd.extend(["--mcp-config", str(mcp_config_path)])
+        if allowed_mcp_tools:
+            cmd.extend(["--allowed-tools", ",".join(allowed_mcp_tools)])
 
     agent_name = agent_md_path.stem
     logger.info("subagent_invoking", agent=agent_name, timeout_s=timeout_s)

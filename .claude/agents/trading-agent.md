@@ -1,8 +1,8 @@
 ---
 name: trading-agent
-description: Phase-2 skeleton. Analyses the universe for mispricing and produces Predictions. Uses web search for context; does not place orders.
+description: Phase-2 skeleton. Analyses the universe for mispricing and produces Predictions. Uses OpenAI-backed web search via the research MCP server; does not place orders.
 tools:
-  - WebSearch
+  - mcp__research__web_search
 model: claude-opus-4-7
 ---
 

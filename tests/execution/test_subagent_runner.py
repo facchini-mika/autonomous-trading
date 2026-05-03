@@ -156,6 +156,50 @@ def test_schema_mismatch_raises(agent_md: Path, mocker: MockerFixture) -> None:
         )
 
 
+def test_mcp_config_appended_when_provided(agent_md: Path, tmp_path: Path, mocker: MockerFixture) -> None:
+    mcp = tmp_path / ".mcp.json"
+    mcp.write_text("{}", encoding="utf-8")
+    captured: dict[str, list[str]] = {}
+
+    def _fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout=_envelope('{"p_yes": 0.5, "reasoning": "x"}'),
+            stderr="",
+        )
+
+    mocker.patch("shutil.which", return_value="/usr/local/bin/claude")
+    mocker.patch("subprocess.run", side_effect=_fake_run)
+
+    run_subagent(
+        agent_md_path=agent_md,
+        task=_Task(market_id="x"),
+        output_model=_Output,
+        timeout_s=30,
+        mcp_config_path=mcp,
+        allowed_mcp_tools=("mcp__research__web_search",),
+    )
+    cmd = captured["cmd"]
+    assert "--mcp-config" in cmd
+    assert str(mcp) in cmd
+    assert "--allowed-tools" in cmd
+    assert "mcp__research__web_search" in cmd
+
+
+def test_mcp_config_missing_raises(agent_md: Path, tmp_path: Path, mocker: MockerFixture) -> None:
+    mocker.patch("shutil.which", return_value="/usr/local/bin/claude")
+    with pytest.raises(SubagentError, match="mcp config not found"):
+        run_subagent(
+            agent_md_path=agent_md,
+            task=_Task(market_id="x"),
+            output_model=_Output,
+            timeout_s=30,
+            mcp_config_path=tmp_path / "missing.json",
+        )
+
+
 def test_doctrine_concatenated(agent_md: Path, tmp_path: Path, mocker: MockerFixture) -> None:
     doctrine = tmp_path / "doctrine.md"
     doctrine.write_text("# Doctrine\n\nbe careful with edge.", encoding="utf-8")

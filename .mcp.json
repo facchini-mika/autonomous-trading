@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "research": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "research.skills.mcp_server"]
+    }
+  }
+}
