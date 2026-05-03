@@ -139,6 +139,106 @@ def test_invalid_priv_key_length_rejected(wallet_path: Path) -> None:
         KeyProviderLocalFile.create_new(wallet_path, private_key_hex="0xdeadbeef", passphrase="x")
 
 
+def test_rotate_passphrase_preserves_address_and_priv_key(wallet_path: Path) -> None:
+    KeyProviderLocalFile.create_new(wallet_path, private_key_hex=HARDHAT_PRIV, passphrase="old-pass")
+    rotated = KeyProviderLocalFile.rotate_passphrase(
+        wallet_path,
+        old_passphrase="old-pass",
+        new_passphrase="new-pass",
+    )
+    assert rotated.address().lower() == HARDHAT_ADDR.lower()
+    assert rotated._unsafe_export_priv_key().hex() == HARDHAT_PRIV.removeprefix("0x")
+
+
+def test_rotate_passphrase_old_passphrase_no_longer_works(wallet_path: Path) -> None:
+    KeyProviderLocalFile.create_new(wallet_path, private_key_hex=HARDHAT_PRIV, passphrase="old-pass")
+    KeyProviderLocalFile.rotate_passphrase(
+        wallet_path,
+        old_passphrase="old-pass",
+        new_passphrase="new-pass",
+    )
+    fresh_old = KeyProviderLocalFile(path=wallet_path, passphrase_provider=lambda: "old-pass")
+    with pytest.raises(WalletDecryptError):
+        fresh_old.address()
+
+
+def test_rotate_passphrase_new_passphrase_decrypts(wallet_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if ENV_PASSPHRASE in os.environ:
+        monkeypatch.delenv(ENV_PASSPHRASE)
+    KeyProviderLocalFile.create_new(wallet_path, private_key_hex=HARDHAT_PRIV, passphrase="old-pass")
+    KeyProviderLocalFile.rotate_passphrase(
+        wallet_path,
+        old_passphrase="old-pass",
+        new_passphrase="new-pass",
+    )
+    fresh_new = KeyProviderLocalFile(path=wallet_path, passphrase_provider=lambda: "new-pass")
+    assert fresh_new.address().lower() == HARDHAT_ADDR.lower()
+
+
+def test_rotate_passphrase_writes_0600(wallet_path: Path) -> None:
+    KeyProviderLocalFile.create_new(wallet_path, private_key_hex=HARDHAT_PRIV, passphrase="old-pass")
+    KeyProviderLocalFile.rotate_passphrase(
+        wallet_path,
+        old_passphrase="old-pass",
+        new_passphrase="new-pass",
+    )
+    mode = stat.S_IMODE(wallet_path.stat().st_mode)
+    assert mode == (stat.S_IRUSR | stat.S_IWUSR)
+
+
+def test_rotate_passphrase_creates_backup_with_same_address(wallet_path: Path) -> None:
+    KeyProviderLocalFile.create_new(wallet_path, private_key_hex=HARDHAT_PRIV, passphrase="old-pass")
+    KeyProviderLocalFile.rotate_passphrase(
+        wallet_path,
+        old_passphrase="old-pass",
+        new_passphrase="new-pass",
+    )
+    backups = list(wallet_path.parent.glob(f"{wallet_path.name}.bak-*"))
+    assert len(backups) == 1
+    backup_provider = KeyProviderLocalFile(path=backups[0], passphrase_provider=lambda: "old-pass")
+    assert backup_provider.address().lower() == HARDHAT_ADDR.lower()
+    assert stat.S_IMODE(backups[0].stat().st_mode) == (stat.S_IRUSR | stat.S_IWUSR)
+
+
+def test_rotate_passphrase_changes_salt_and_ciphertext(wallet_path: Path) -> None:
+    KeyProviderLocalFile.create_new(wallet_path, private_key_hex=HARDHAT_PRIV, passphrase="old-pass")
+    before = json.loads(wallet_path.read_text())
+    KeyProviderLocalFile.rotate_passphrase(
+        wallet_path,
+        old_passphrase="old-pass",
+        new_passphrase="new-pass",
+    )
+    after = json.loads(wallet_path.read_text())
+    assert before["salt_b64"] != after["salt_b64"]
+    assert before["ciphertext_b64"] != after["ciphertext_b64"]
+    assert before["address"] == after["address"]
+    assert "rotated_at" in after
+    assert after.get("created_at") == before.get("created_at")
+
+
+def test_rotate_passphrase_wrong_old_raises_and_leaves_file_intact(wallet_path: Path) -> None:
+    KeyProviderLocalFile.create_new(wallet_path, private_key_hex=HARDHAT_PRIV, passphrase="old-pass")
+    before = wallet_path.read_text()
+    with pytest.raises(WalletDecryptError):
+        KeyProviderLocalFile.rotate_passphrase(
+            wallet_path,
+            old_passphrase="WRONG",
+            new_passphrase="new-pass",
+        )
+    assert wallet_path.read_text() == before
+    assert list(wallet_path.parent.glob(f"{wallet_path.name}.bak-*")) == []
+    assert not wallet_path.with_name(wallet_path.name + ".tmp").exists()
+
+
+def test_rotate_passphrase_missing_file_raises(wallet_path: Path) -> None:
+    with pytest.raises(WalletNotInitialisedError):
+        KeyProviderLocalFile.rotate_passphrase(
+            wallet_path,
+            old_passphrase="old-pass",
+            new_passphrase="new-pass",
+        )
+
+
 def _sample_typed_data() -> dict[str, object]:
     return {
         "types": {

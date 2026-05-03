@@ -104,6 +104,77 @@ class KeyProviderLocalFile:
         instance._address = address
         return instance
 
+    @classmethod
+    def rotate_passphrase(
+        cls,
+        path: Path,
+        *,
+        old_passphrase: str,
+        new_passphrase: str,
+    ) -> KeyProviderLocalFile:
+        """Re-encrypt the wallet file with a new passphrase.
+
+        Same private key, same address, same on-chain approvals — only the
+        salt and ciphertext change. Atomic: writes to a tmp sibling then
+        renames into place after moving the original to a `*.bak-<UTC-ts>`
+        sibling for one-step rollback.
+        """
+        if not path.exists():
+            msg = f"Wallet file not found at {path}"
+            raise WalletNotInitialisedError(msg)
+
+        try:
+            old_payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            msg = f"Cannot read wallet file at {path}"
+            raise WalletDecryptError(msg) from exc
+
+        try:
+            old_salt = base64.b64decode(old_payload["salt_b64"])
+            old_ciphertext = base64.b64decode(old_payload["ciphertext_b64"])
+            stored_address = old_payload["address"]
+        except (KeyError, ValueError) as exc:
+            msg = "Wallet file is corrupted or missing required fields"
+            raise WalletDecryptError(msg) from exc
+
+        try:
+            priv_key_bytes = Fernet(_derive_key(old_passphrase, old_salt)).decrypt(old_ciphertext)
+        except InvalidToken as exc:
+            msg = "Wallet decrypt failed: wrong passphrase or corrupted file"
+            raise WalletDecryptError(msg) from exc
+
+        derived_address = Account.from_key(priv_key_bytes).address
+        if derived_address.lower() != str(stored_address).lower():
+            msg = "Wallet address mismatch between stored payload and decrypted key"
+            raise WalletDecryptError(msg)
+
+        new_salt = secrets.token_bytes(SALT_BYTES)
+        new_ciphertext = Fernet(_derive_key(new_passphrase, new_salt)).encrypt(priv_key_bytes)
+
+        new_payload = {
+            "version": FILE_VERSION,
+            "salt_b64": base64.b64encode(new_salt).decode("ascii"),
+            "ciphertext_b64": base64.b64encode(new_ciphertext).decode("ascii"),
+            "address": derived_address,
+            "created_at": old_payload.get("created_at"),
+            "rotated_at": datetime.now(UTC).isoformat(),
+        }
+
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        tmp = path.with_name(path.name + ".tmp")
+        backup = path.with_name(f"{path.name}.bak-{ts}")
+
+        tmp.write_text(json.dumps(new_payload, indent=2), encoding="utf-8")
+        tmp.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        path.rename(backup)
+        backup.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        tmp.rename(path)
+
+        instance = cls(path=path, passphrase_provider=lambda: new_passphrase)
+        instance._priv_key = priv_key_bytes
+        instance._address = derived_address
+        return instance
+
     def address(self) -> str:
         if self._address is None:
             self._unlock()
