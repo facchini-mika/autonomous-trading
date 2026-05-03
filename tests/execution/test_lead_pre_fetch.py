@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 from execution.lead_bootstrap import (
+    _build_sizing_proposals,
     _collect_trading_context,
     _collect_universe_inputs,
     _count_orders_in_last_hour,
@@ -24,12 +25,19 @@ from execution.lead_bootstrap import (
     _load_open_lessons,
     _load_open_positions,
     _load_recent_notes,
+    _persist_agent_notes,
+    _place_orders_and_collect_trades,
 )
 from shared.config.settings import Settings
 from shared.models import (
+    CashBalance,
+    Decision,
     Market,
     MarketMetadata,
     Orderbook,
+    OrderResult,
+    PortfolioState,
+    Prediction,
 )
 from tests.adapters.fake_adapter import FakeAdapter
 
@@ -241,3 +249,217 @@ def test_collect_trading_context_combines_lessons_and_notes() -> None:
     ctx = _collect_trading_context(factory=factory, settings=settings, now=_now())
     assert ctx["lessons"] == []
     assert ctx["recent_notes"] == []
+
+
+def _portfolio() -> PortfolioState:
+    return PortfolioState(
+        cash=CashBalance(total_usd=10000.0, available=10000.0, reserved_for_orders=0.0, timestamp=_now()),
+        positions=[],
+        gross_exposure_usd=0.0,
+        unrealized_pnl=0.0,
+        realized_pnl=0.0,
+        equity=10000.0,
+        timestamp=_now(),
+    )
+
+
+def _prediction(
+    *,
+    p_yes: float,
+    edge: float,
+    market_id: str = "0xa",
+    inference_log: dict[str, Any] | None = None,
+) -> Prediction:
+    return Prediction(
+        market_id=market_id,
+        agent_id="trading-agent",
+        p_yes=p_yes,
+        reasoning="thesis",
+        edge=edge,
+        inference_log=inference_log or {},
+        latency_ms=10,
+        created_at=_now(),
+    )
+
+
+def _decision(market_id: str = "0xa", clipped: float = 50.0) -> Decision:
+    return Decision(
+        cycle_id="cycle-test",
+        market_id=market_id,
+        p_consensus=0.7,
+        q_market=0.5,
+        edge=0.20,
+        gate_results={"clipped_notional": clipped, "notional_usd": clipped},
+        action="trade",
+        rationale="approved",
+        created_at=_now(),
+    )
+
+
+def test_build_sizing_proposals_emits_one_per_actionable_prediction() -> None:
+    portfolio = _portfolio()
+    predictions = [
+        _prediction(p_yes=0.7, edge=0.20),
+        _prediction(p_yes=0.5, edge=0.005, market_id="0xb"),  # below threshold
+    ]
+    proposals = _build_sizing_proposals(predictions=predictions, portfolio=portfolio)
+    assert len(proposals) == 1
+    assert proposals[0].market_id == "0xa"
+    assert proposals[0].side == "yes"
+    assert proposals[0].proposed_notional_usd > 0
+
+
+def test_build_sizing_proposals_negative_edge_marks_no() -> None:
+    portfolio = _portfolio()
+    predictions = [_prediction(p_yes=0.3, edge=-0.20)]
+    proposals = _build_sizing_proposals(predictions=predictions, portfolio=portfolio)
+    assert len(proposals) == 1
+    assert proposals[0].side == "no"
+
+
+def test_build_sizing_proposals_drops_invalid_q_market() -> None:
+    portfolio = _portfolio()
+    # p_yes=0.99, edge=0.99 → q_market = 0.0 (out of range)
+    predictions = [_prediction(p_yes=0.99, edge=0.99)]
+    proposals = _build_sizing_proposals(predictions=predictions, portfolio=portfolio)
+    assert proposals == []
+
+
+def test_place_orders_collects_trades_and_skips_non_trade_decisions() -> None:
+    fake = FakeAdapter()
+    decisions = [
+        _decision(market_id="0xa"),
+        Decision(
+            cycle_id="cycle-test",
+            market_id="0xb",
+            p_consensus=0.4,
+            q_market=0.5,
+            edge=-0.02,
+            gate_results={},
+            action="skip",
+            rationale="low_edge",
+            created_at=_now(),
+        ),
+    ]
+    trades = _place_orders_and_collect_trades(adapter=fake, decisions=decisions, cycle_id="cycle-test", now=_now())
+    assert len(trades) == 1
+    assert trades[0].market_id == "0xa"
+    assert trades[0].status == "filled"
+    assert len(fake.placed_orders) == 1
+
+
+def test_place_orders_skips_rejected_orders() -> None:
+    class _RejectingAdapter:
+        def __init__(self) -> None:
+            self.placed_orders: list[Any] = []
+
+        def get_markets(self, *, limit: int) -> list[Any]:
+            return []
+
+        def get_orderbook(self, market_id: str) -> Any:
+            raise NotImplementedError
+
+        def get_metadata(self, market_id: str) -> Any:
+            raise NotImplementedError
+
+        def get_resolution(self, market_id: str) -> Any:
+            return None
+
+        def place_order(self, order: Any) -> Any:
+            self.placed_orders.append(order)
+            return OrderResult(
+                status="rejected",
+                fill_price=None,
+                filled_size=0.0,
+                fees=0.0,
+                broker_order_id=None,
+            )
+
+        def cancel_order(self, order_id: str) -> Any:
+            raise NotImplementedError
+
+    adapter = _RejectingAdapter()
+    decisions = [_decision()]
+    trades = _place_orders_and_collect_trades(adapter=adapter, decisions=decisions, cycle_id="cycle-test", now=_now())
+    assert trades == []
+
+
+def test_persist_agent_notes_calls_manage_notes_for_each_entry() -> None:
+    captured: list[dict[str, Any]] = []
+
+    def stub_manage_notes(**kwargs: Any) -> list[dict[str, object]]:
+        captured.append(kwargs)
+        return []
+
+    @contextmanager
+    def factory() -> Iterator[MagicMock]:
+        with _fake_factory({}) as sess:
+            yield sess
+
+    predictions = [
+        _prediction(
+            p_yes=0.7,
+            edge=0.20,
+            inference_log={
+                "notes_to_save": [
+                    {"body": "Watch market X", "tags": ["watch"]},
+                    {"body": "Catalyst Y expected", "tags": []},
+                ],
+            },
+        ),
+    ]
+    from execution import lead_bootstrap as lead_module
+
+    original = lead_module.manage_notes  # type: ignore[attr-defined]
+    lead_module.manage_notes = stub_manage_notes  # type: ignore[attr-defined]
+    try:
+        _persist_agent_notes(factory=factory, predictions=predictions)
+    finally:
+        lead_module.manage_notes = original  # type: ignore[attr-defined]
+
+    assert len(captured) == 2
+    assert captured[0]["body"] == "Watch market X"
+    assert captured[0]["tags"] == ["watch"]
+    assert captured[1]["body"] == "Catalyst Y expected"
+
+
+def test_persist_agent_notes_skips_invalid_entries() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def stub_manage_notes(**kwargs: Any) -> list[dict[str, object]]:
+        calls.append(kwargs)
+        return []
+
+    @contextmanager
+    def factory() -> Iterator[MagicMock]:
+        with _fake_factory({}) as sess:
+            yield sess
+
+    predictions = [
+        _prediction(
+            p_yes=0.7,
+            edge=0.20,
+            inference_log={
+                "notes_to_save": [
+                    "not-a-dict",
+                    {"body": ""},  # empty body
+                    {"tags": ["x"]},  # missing body
+                    {"body": "good note", "tags": "not-a-list"},
+                ],
+            },
+        ),
+    ]
+    from execution import lead_bootstrap as lead_module
+
+    original = lead_module.manage_notes  # type: ignore[attr-defined]
+    lead_module.manage_notes = stub_manage_notes  # type: ignore[attr-defined]
+    try:
+        _persist_agent_notes(factory=factory, predictions=predictions)
+    finally:
+        lead_module.manage_notes = original  # type: ignore[attr-defined]
+
+    # Only the {"body": "good note", "tags": "not-a-list"} entry survives
+    # (string tags get normalised to []).
+    assert len(calls) == 1
+    assert calls[0]["body"] == "good note"
+    assert calls[0]["tags"] == []

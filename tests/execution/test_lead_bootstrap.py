@@ -15,6 +15,7 @@ from shared.models import (
     Decision,
     Market,
     Orderbook,
+    OrderResult,
     PortfolioState,
     Prediction,
     RiskExecutionOutput,
@@ -217,7 +218,13 @@ def test_default_trading_mode_is_paper_e2e() -> None:
 
         def place_order(self, order: Any) -> Any:
             placed.append(order)
-            return MagicMock()
+            return OrderResult(
+                status="filled",
+                fill_price=order.price,
+                filled_size=order.size,
+                fees=0.0,
+                broker_order_id="paper-test",
+            )
 
         def cancel_order(self, order_id: str) -> Any:
             return MagicMock()

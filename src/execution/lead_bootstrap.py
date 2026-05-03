@@ -136,20 +136,18 @@ def bootstrap_team(
         )
     )
     decisions = list(risk_out.decisions)
-    trades = list(risk_out.trades)
 
     # Persist predictions + decisions BEFORE order placement so paper_trades and
     # trades can satisfy the decision_id FK on insert.
     _persist_predictions_and_decisions(factory=factory, predictions=predictions, decisions=decisions)
 
-    for decision in decisions:
-        if decision.action != "trade":
-            continue
-        order = _decision_to_order(decision, cycle_id=cycle_id)
-        if order is None:
-            continue
-        with with_decision(decision.id):
-            adapter.place_order(order)
+    trades = _place_orders_and_collect_trades(
+        adapter=adapter,
+        decisions=decisions,
+        cycle_id=cycle_id,
+        now=now,
+    )
+    _persist_agent_notes(factory=factory, predictions=predictions)
 
     cycle_plan = synthesize_cycle_plan(
         cycle_id=cycle_id,
@@ -637,6 +635,105 @@ def _load_recent_notes(
             )
         )
     return notes
+
+
+def _place_orders_and_collect_trades(
+    *,
+    adapter: PredictionMarketAdapter,
+    decisions: list[Decision],
+    cycle_id: str,
+    now: datetime,
+) -> list[Trade]:
+    """Submit each ``trade`` decision through the adapter and collect Trade rows.
+
+    The adapter (Polymarket-real or PaperTrading wrapper) handles
+    venue-side persistence (``paper_trades`` table for paper-mode). We
+    additionally build a Pydantic ``Trade`` per attempt so the
+    ``CycleArtifacts`` and downstream ``cycle_plan`` synthesis see the
+    actual placed orders rather than the empty list the risk-execution
+    agent returns.
+    """
+    trades: list[Trade] = []
+    for decision in decisions:
+        if decision.action != "trade":
+            continue
+        order = _decision_to_order(decision, cycle_id=cycle_id)
+        if order is None:
+            continue
+        with with_decision(decision.id):
+            try:
+                result = adapter.place_order(order)
+            except Exception as exc:
+                logger.warning(
+                    "place_order_failed",
+                    decision_id=str(decision.id),
+                    market_id=decision.market_id,
+                    error=str(exc),
+                )
+                continue
+        if result.status == "rejected":
+            logger.info(
+                "order_rejected",
+                decision_id=str(decision.id),
+                market_id=decision.market_id,
+            )
+            continue
+        trades.append(
+            Trade(
+                decision_id=decision.id,
+                market_id=order.market_id,
+                side=order.side,
+                size=order.size,
+                price=result.fill_price if result.fill_price is not None else order.price,
+                notional_usd=order.notional_usd,
+                fees=result.fees,
+                status=result.status,
+                broker_order_id=result.broker_order_id,
+                created_at=now,
+                filled_at=now if result.status == "filled" else None,
+            )
+        )
+    return trades
+
+
+def _persist_agent_notes(
+    *,
+    factory: Callable[[], AbstractContextManager[Session]],
+    predictions: list[Prediction],
+) -> None:
+    """Persist `inference_log.notes_to_save` entries via manage_notes(write).
+
+    Each entry is a ``{"body": str, "tags": list[str]}`` row produced by
+    the trading-agent. The Lead is responsible for the actual write so
+    the subagent (which has no DB tool) can still maintain its
+    LRU-bounded scratchpad across cycles.
+    """
+    for prediction in predictions:
+        raw_notes = prediction.inference_log.get("notes_to_save")
+        if not isinstance(raw_notes, list):
+            continue
+        for entry in raw_notes:
+            if not isinstance(entry, dict):
+                continue
+            body = entry.get("body")
+            if not isinstance(body, str) or not body.strip():
+                continue
+            tags_raw = entry.get("tags", [])
+            tags = [str(t) for t in tags_raw] if isinstance(tags_raw, list) else []
+            try:
+                manage_notes(
+                    action="write",
+                    agent_id=prediction.agent_id,
+                    body=body,
+                    tags=tags,
+                    session_factory=factory,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "note_persist_failed",
+                    agent_id=prediction.agent_id,
+                    error=str(exc),
+                )
 
 
 def _build_sizing_proposals(
