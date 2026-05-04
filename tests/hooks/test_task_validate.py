@@ -90,6 +90,14 @@ def test_valid_scanner_reviewer_task_passes() -> None:
             "kill_switch_active": False,
             "held_market_ids": [],
             "orders_in_last_hour": 0,
+            "thresholds": {
+                "min_depth_1pct_usd": 100.0,
+                "max_spread": 0.10,
+                "min_ttr_hours": 6,
+                "max_ttr_days": 30,
+                "soon_resolve_threshold_days": 7,
+                "soon_resolve_boost_multiplier": 1.5,
+            },
         },
     }
     result = _run(TASK_CREATED, envelope)

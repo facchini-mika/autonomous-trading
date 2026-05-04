@@ -197,6 +197,35 @@ def test_bootstrap_returns_cycle_plan() -> None:
     assert artifacts.cycle_id.startswith("cycle-")
 
 
+def test_bootstrap_injects_scanner_thresholds_from_settings() -> None:
+    """Lead must hand the scanner-reviewer the threshold knobs from Settings."""
+    captured: list[Any] = []
+
+    def _capturing_scanner(task: Any) -> ScannerReviewerOutput:
+        captured.append(task)
+        return _scanner(task)
+
+    settings = Settings()
+    bootstrap_team(
+        settings=settings,
+        adapter=FakeAdapter(),
+        scanner=_capturing_scanner,
+        trading=_trading,
+        risk=_risk_factory("trade"),
+        session_factory=lambda: _capturing_factory([]),
+        clock=_now,
+    )
+
+    assert len(captured) == 1
+    thresholds = captured[0].thresholds
+    assert thresholds.min_depth_1pct_usd == settings.MIN_DEPTH_1PCT_USD
+    assert thresholds.max_spread == settings.MAX_SPREAD
+    assert thresholds.min_ttr_hours == settings.MIN_TIME_TO_RESOLUTION_HOURS
+    assert thresholds.max_ttr_days == settings.MAX_TIME_TO_RESOLUTION_DAYS
+    assert thresholds.soon_resolve_threshold_days == settings.SOON_RESOLVE_THRESHOLD_DAYS
+    assert thresholds.soon_resolve_boost_multiplier == settings.SOON_RESOLVE_BOOST_MULTIPLIER
+
+
 def test_default_trading_mode_is_paper_e2e() -> None:
     """Cross-stream acceptance test from plan.md."""
     settings = Settings()

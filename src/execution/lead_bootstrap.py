@@ -44,6 +44,7 @@ from shared.models import (
     RiskExecutionTask,
     ScannerReviewerOutput,
     ScannerReviewerTask,
+    ScannerThresholds,
     SizingProposal,
     Trade,
     TradingAgentOutput,
@@ -105,6 +106,14 @@ def bootstrap_team(
             kill_switch_active=universe_inputs["kill_switch_active"],
             held_market_ids=universe_inputs["held_market_ids"],
             orders_in_last_hour=universe_inputs["orders_in_last_hour"],
+            thresholds=ScannerThresholds(
+                min_depth_1pct_usd=settings.MIN_DEPTH_1PCT_USD,
+                max_spread=settings.MAX_SPREAD,
+                min_ttr_hours=settings.MIN_TIME_TO_RESOLUTION_HOURS,
+                max_ttr_days=settings.MAX_TIME_TO_RESOLUTION_DAYS,
+                soon_resolve_threshold_days=settings.SOON_RESOLVE_THRESHOLD_DAYS,
+                soon_resolve_boost_multiplier=settings.SOON_RESOLVE_BOOST_MULTIPLIER,
+            ),
         )
     )
     universe = scanner_out.universe

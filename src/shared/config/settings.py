@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     TOP_K_MARKETS: int = 50
     UNIVERSE_FETCH_LIMIT: int = 200
 
+    # Universe-selection thresholds (scanner-reviewer doctrine inputs)
+    MIN_DEPTH_1PCT_USD: float = 100.0
+    MAX_SPREAD: float = 0.10
+    MIN_TIME_TO_RESOLUTION_HOURS: int = 6
+    MAX_TIME_TO_RESOLUTION_DAYS: int = 30
+    SOON_RESOLVE_THRESHOLD_DAYS: int = 7
+    SOON_RESOLVE_BOOST_MULTIPLIER: float = 1.5
+
     # Risk caps (decimals, e.g. 0.15 = 15%)
     CONCENTRATION_CAP: float = 0.15
     CYCLE_CAP: float = 0.25

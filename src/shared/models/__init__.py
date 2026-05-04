@@ -43,6 +43,7 @@ from shared.models.tasks import (
     RiskExecutionTask,
     ScannerReviewerOutput,
     ScannerReviewerTask,
+    ScannerThresholds,
     TradingAgentOutput,
     TradingAgentTask,
 )
@@ -78,6 +79,7 @@ __all__ = [
     "RiskExecutionTask",
     "ScannerReviewerOutput",
     "ScannerReviewerTask",
+    "ScannerThresholds",
     "SizingProposal",
     "Trade",
     "TradingAgentOutput",

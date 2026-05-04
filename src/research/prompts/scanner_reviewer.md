@@ -27,6 +27,18 @@ The Lead passes a `ScannerReviewerTask` with:
 - `held_market_ids: list[str]` — convenience: `market_id`s with an
   open position. Always include these in the universe.
 - `orders_in_last_hour: int` — sanity-gate input; pass through.
+- `thresholds: ScannerThresholds` — filter and ranking parameters the
+  Lead injects from `Settings`. Use these values verbatim; do not
+  hardcode or override:
+  - `min_depth_1pct_usd: float` — liquidity floor.
+  - `max_spread: float` — spread ceiling.
+  - `min_ttr_hours: int` — lower time-to-resolution bound.
+  - `max_ttr_days: int` — upper time-to-resolution bound.
+  - `soon_resolve_threshold_days: int` — markets with
+    `(end_date - cycle_clock) < soon_resolve_threshold_days` get a
+    liquidity-score boost during ranking.
+  - `soon_resolve_boost_multiplier: float` — multiplier applied to the
+    liquidity score for "soon-resolving" markets.
 
 ## Output
 
@@ -44,20 +56,35 @@ For every market in `raw_markets`:
 
 1. **Always keep held markets.** If `market.market_id ∈
    held_market_ids`, include it regardless of any other filter.
-2. **Liquidity floor.** Drop if `orderbook.depth_bid_1pct < 100` USD or
-   `orderbook.depth_ask_1pct < 100` USD.
-3. **Spread ceiling.** Drop if `(best_ask - best_bid) > 0.10`.
+2. **Liquidity floor.** Drop if `orderbook.depth_bid_1pct <
+   thresholds.min_depth_1pct_usd` or `orderbook.depth_ask_1pct <
+   thresholds.min_depth_1pct_usd`.
+3. **Spread ceiling.** Drop if `(best_ask - best_bid) >
+   thresholds.max_spread`.
 4. **Resolution clarity.** Drop if metadata has a non-empty
    `dispute_history` or `market.ambiguity_score` is set and `> 0.6`.
-5. **Time-to-resolution.** Drop if `end_date - cycle_clock < 6 h`
-   (manual review territory) or `> 30 days` (low signal).
+5. **Time-to-resolution.** Drop if `end_date - cycle_clock <
+   thresholds.min_ttr_hours` (manual review territory) or `>
+   thresholds.max_ttr_days` (low signal).
 6. **Status.** Drop if `market.status != "open"`.
 
 After filtering: if a market survived, keep it; otherwise drop. Then
-**sort the survivors** as follows:
+**rank the survivors** by a Soft-Boost score that prefers
+soon-resolving markets at comparable liquidity:
+
+```
+liquidity_score = min(depth_bid_1pct, depth_ask_1pct)
+ttr_days        = (end_date - cycle_clock) in days
+boost           = thresholds.soon_resolve_boost_multiplier
+                  if ttr_days < thresholds.soon_resolve_threshold_days
+                  else 1.0
+score           = liquidity_score * boost
+```
+
+Order:
 - Held markets first (preserve operator visibility).
-- Remaining by descending liquidity proxy:
-  `min(depth_bid_1pct, depth_ask_1pct)`.
+- Remaining by descending `score`. Ties: lower `ttr_days` first, then
+  `market_id` ascending for determinism.
 
 Truncate to `top_k`.
 

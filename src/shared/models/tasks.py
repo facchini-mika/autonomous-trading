@@ -35,6 +35,19 @@ from shared.models.market import Market, MarketMetadata, Orderbook
 from shared.models.portfolio import CashBalance, PortfolioState, Position
 
 
+class ScannerThresholds(BaseModel):
+    """Filter and ranking thresholds the Lead injects from settings."""
+
+    model_config = ConfigDict(frozen=True)
+
+    min_depth_1pct_usd: float
+    max_spread: float
+    min_ttr_hours: int
+    max_ttr_days: int
+    soon_resolve_threshold_days: int
+    soon_resolve_boost_multiplier: float
+
+
 class ScannerReviewerTask(BaseModel):
     """Lead → scanner-reviewer task payload."""
 
@@ -50,6 +63,7 @@ class ScannerReviewerTask(BaseModel):
     kill_switch_active: bool
     held_market_ids: list[str]
     orders_in_last_hour: int
+    thresholds: ScannerThresholds
 
 
 class TradingAgentTask(BaseModel):
