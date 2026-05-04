@@ -60,5 +60,40 @@ The `specs/engineering.md §9` PreToolUse hook enforces this from Phase 2+.
 Always feature-branch + PR. Never push to `main`. Never `--force`. Never
 `--no-verify`. PR title format: `Phase N: <topic>` for plan-aligned work.
 
+## Parallel-session workflow
+If the operator says they're starting a parallel Claude session for a
+different feature (phrases like "parallele Session", "neuer worktree",
+"parallel feature", "ein zweites Feature parallel"), do not work in the
+current working tree. Instead, set up an isolated `git worktree` and
+move there *before* touching code:
+
+1. Pick a slug from the feature description (kebab-case, ≤ 4 words).
+2. From the current working tree, run:
+   ```
+   git worktree add ../autonomous_trading_<slug> -b feature/<slug>
+   ```
+   The new path is a sibling of the main repo dir. Branch the worktree
+   off `main`, not the current branch, unless the operator says otherwise.
+3. `cd` into the new worktree for the rest of the session — every Read,
+   Edit, Bash command from this point operates on that path.
+4. Symlink the gitignored env file so dependencies / API keys work:
+   ```
+   ln -s ../autonomous_trading/.env .env
+   ```
+5. Run `uv sync` once in the new worktree before any test/lint/type
+   command.
+6. Confirm the operator's intent if any of these hold: the feature
+   would touch `src/risk/**` (still needs Plan Mode), the feature
+   needs a separate `DATABASE_URL` (parallel E2E tests against the
+   same DB will corrupt each other), or the feature is itself a
+   live-cycle / `real_capital` change (never run two cycles in
+   parallel — one wallet, one CLOB).
+7. When the feature ships, the operator removes the worktree:
+   `git worktree remove ../autonomous_trading_<slug>`. Do not remove
+   it yourself unless explicitly asked.
+
+The operator's main working tree may have uncommitted changes — leave
+them alone. The worktree gives you a clean tree without touching theirs.
+
 ## Local notes
 Personal/transient notes go in `CLAUDE.local.md` (gitignored). Do not commit it.
