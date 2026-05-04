@@ -79,7 +79,12 @@ class Settings(BaseSettings):
 
     # Timeouts
     WEB_SEARCH_TIMEOUT_SEC: int = 120
-    AGENT_TIMEOUT_SEC: int = 300
+    # Trading-agent in particular accumulates 2-3 web_searches at 120s each
+    # plus inference time, so 300s was too tight (first cycle hit the wall
+    # mid-trading-agent). The wrapper script (`infra/scripts/run_cycle.sh`)
+    # bounds the whole cycle at 600s anyway; this raises the per-agent cap
+    # so a single agent can use most of that budget when necessary.
+    AGENT_TIMEOUT_SEC: int = 600
 
     # Per-subagent USD budget caps passed to ``claude --max-budget-usd``.
     # The CLI aborts the call once the in-flight cost would exceed the cap,
