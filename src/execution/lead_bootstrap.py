@@ -24,6 +24,7 @@ from sqlalchemy import text
 from execution.cycle_plan import synthesize_cycle_plan
 from execution.decision_context import with_decision
 from execution.notes_tool import manage_notes
+from execution.subagent_runner import SubagentBudgetError
 from risk.sizing import propose_notional
 from shared.db import get_session
 from shared.logging import bind, get_logger, unbind
@@ -74,6 +75,23 @@ class CycleArtifacts:
     cycle_plan: CyclePlan
 
 
+class CycleAbortedError(RuntimeError):
+    """Raised when a cycle terminates early due to a recoverable runtime condition.
+
+    The current trigger is API-side budget exhaustion (out-of-credits,
+    quota, rate-limit) bubbled up from a subagent. The Lead catches the
+    underlying error, refuses to persist partial decisions/trades, and
+    raises this so the caller can exit cleanly without crashing the
+    cron host.
+    """
+
+    def __init__(self, *, reason: str, cycle_id: str, stage: str) -> None:
+        self.reason = reason
+        self.cycle_id = cycle_id
+        self.stage = stage
+        super().__init__(f"cycle {cycle_id} aborted at {stage}: {reason}")
+
+
 def bootstrap_team(
     *,
     settings: Settings,
@@ -94,28 +112,33 @@ def bootstrap_team(
     prev_plan = _load_prev_plan(factory)
 
     universe_inputs = _collect_universe_inputs(adapter=adapter, factory=factory, settings=settings, now=now)
-    scanner_out = scanner(
-        ScannerReviewerTask(
-            top_k=settings.TOP_K_MARKETS,
-            cycle_clock=now.isoformat(),
-            raw_markets=universe_inputs["raw_markets"],
-            raw_orderbooks=universe_inputs["raw_orderbooks"],
-            raw_metadata=universe_inputs["raw_metadata"],
-            current_positions=universe_inputs["current_positions"],
-            current_cash=universe_inputs["current_cash"],
-            kill_switch_active=universe_inputs["kill_switch_active"],
-            held_market_ids=universe_inputs["held_market_ids"],
-            orders_in_last_hour=universe_inputs["orders_in_last_hour"],
-            thresholds=ScannerThresholds(
-                min_depth_1pct_usd=settings.MIN_DEPTH_1PCT_USD,
-                max_spread=settings.MAX_SPREAD,
-                min_ttr_hours=settings.MIN_TIME_TO_RESOLUTION_HOURS,
-                max_ttr_days=settings.MAX_TIME_TO_RESOLUTION_DAYS,
-                soon_resolve_threshold_days=settings.SOON_RESOLVE_THRESHOLD_DAYS,
-                soon_resolve_boost_multiplier=settings.SOON_RESOLVE_BOOST_MULTIPLIER,
-            ),
+    try:
+        scanner_out = scanner(
+            ScannerReviewerTask(
+                top_k=settings.TOP_K_MARKETS,
+                cycle_clock=now.isoformat(),
+                raw_markets=universe_inputs["raw_markets"],
+                raw_orderbooks=universe_inputs["raw_orderbooks"],
+                raw_metadata=universe_inputs["raw_metadata"],
+                current_positions=universe_inputs["current_positions"],
+                current_cash=universe_inputs["current_cash"],
+                kill_switch_active=universe_inputs["kill_switch_active"],
+                held_market_ids=universe_inputs["held_market_ids"],
+                orders_in_last_hour=universe_inputs["orders_in_last_hour"],
+                thresholds=ScannerThresholds(
+                    min_depth_1pct_usd=settings.MIN_DEPTH_1PCT_USD,
+                    max_spread=settings.MAX_SPREAD,
+                    min_ttr_hours=settings.MIN_TIME_TO_RESOLUTION_HOURS,
+                    max_ttr_days=settings.MAX_TIME_TO_RESOLUTION_DAYS,
+                    soon_resolve_threshold_days=settings.SOON_RESOLVE_THRESHOLD_DAYS,
+                    soon_resolve_boost_multiplier=settings.SOON_RESOLVE_BOOST_MULTIPLIER,
+                ),
+            )
         )
-    )
+    except SubagentBudgetError as exc:
+        _log_budget_abort(cycle_id=cycle_id, stage="scanner-reviewer", exc=exc)
+        unbind("cycle_id")
+        raise CycleAbortedError(reason=str(exc), cycle_id=cycle_id, stage="scanner-reviewer") from exc
     universe = scanner_out.universe
     portfolio = scanner_out.portfolio_state
 
@@ -123,28 +146,38 @@ def bootstrap_team(
     _persist_universe(factory=factory, universe=universe, clock=now)
 
     trading_context = _collect_trading_context(factory=factory, settings=settings, now=now)
-    trading_out = trading(
-        TradingAgentTask(
-            universe=universe,
-            portfolio_state=portfolio,
-            lessons=trading_context["lessons"],
-            recent_notes=trading_context["recent_notes"],
-            prev_cycle_plan=prev_plan,
-            cycle_id=cycle_id,
-            edge_threshold=settings.EDGE_THRESHOLD,
+    try:
+        trading_out = trading(
+            TradingAgentTask(
+                universe=universe,
+                portfolio_state=portfolio,
+                lessons=trading_context["lessons"],
+                recent_notes=trading_context["recent_notes"],
+                prev_cycle_plan=prev_plan,
+                cycle_id=cycle_id,
+                edge_threshold=settings.EDGE_THRESHOLD,
+            )
         )
-    )
+    except SubagentBudgetError as exc:
+        _log_budget_abort(cycle_id=cycle_id, stage="trading-agent", exc=exc)
+        unbind("cycle_id")
+        raise CycleAbortedError(reason=str(exc), cycle_id=cycle_id, stage="trading-agent") from exc
     predictions = list(trading_out.predictions)
 
     proposals = _build_sizing_proposals(predictions=predictions, portfolio=portfolio, adapter=adapter)
-    risk_out = risk(
-        RiskExecutionTask(
-            predictions=predictions,
-            portfolio_state=portfolio,
-            cycle_id=cycle_id,
-            proposals=proposals,
+    try:
+        risk_out = risk(
+            RiskExecutionTask(
+                predictions=predictions,
+                portfolio_state=portfolio,
+                cycle_id=cycle_id,
+                proposals=proposals,
+            )
         )
-    )
+    except SubagentBudgetError as exc:
+        _log_budget_abort(cycle_id=cycle_id, stage="risk-execution", exc=exc)
+        unbind("cycle_id")
+        raise CycleAbortedError(reason=str(exc), cycle_id=cycle_id, stage="risk-execution") from exc
     decisions = list(risk_out.decisions)
 
     # Persist predictions + decisions BEFORE order placement so paper_trades and
@@ -187,6 +220,15 @@ def bootstrap_team(
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _log_budget_abort(*, cycle_id: str, stage: str, exc: SubagentBudgetError) -> None:
+    logger.warning(
+        "cycle_aborted_budget",
+        cycle_id=cycle_id,
+        stage=stage,
+        reason=str(exc),
+    )
 
 
 def _default_factory() -> AbstractContextManager[Session]:

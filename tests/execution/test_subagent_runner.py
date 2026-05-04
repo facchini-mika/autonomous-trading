@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING
 import pytest
 from pydantic import BaseModel
 
-from execution.subagent_runner import SubagentError, run_subagent
+from execution.subagent_runner import (
+    SubagentBudgetError,
+    SubagentError,
+    run_subagent,
+)
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -113,14 +117,117 @@ def test_timeout_raises(agent_md: Path, mocker: MockerFixture) -> None:
 
 
 def test_nonzero_exit_raises(agent_md: Path, mocker: MockerFixture) -> None:
-    _mock_run(mocker, returncode=1, stderr="rate limited")
-    with pytest.raises(SubagentError, match="exited 1"):
+    _mock_run(mocker, returncode=1, stderr="internal error: malformed input")
+    with pytest.raises(SubagentError, match="exited 1") as excinfo:
         run_subagent(
             agent_md_path=agent_md,
             task=_Task(market_id="x"),
             output_model=_Output,
             timeout_s=30,
         )
+    assert not isinstance(excinfo.value, SubagentBudgetError)
+
+
+def test_nonzero_exit_with_credit_stderr_maps_to_budget_error(agent_md: Path, mocker: MockerFixture) -> None:
+    _mock_run(mocker, returncode=1, stderr="402 Payment Required: credit balance too low")
+    with pytest.raises(SubagentBudgetError, match="exited 1"):
+        run_subagent(
+            agent_md_path=agent_md,
+            task=_Task(market_id="x"),
+            output_model=_Output,
+            timeout_s=30,
+        )
+
+
+def test_envelope_is_error_quota_maps_to_budget_error(agent_md: Path, mocker: MockerFixture) -> None:
+    payload = json.dumps(
+        {
+            "is_error": True,
+            "api_error_status": "insufficient_quota",
+            "result": "",
+        }
+    )
+    _mock_run(mocker, stdout=payload)
+    with pytest.raises(SubagentBudgetError, match="api_error_status"):
+        run_subagent(
+            agent_md_path=agent_md,
+            task=_Task(market_id="x"),
+            output_model=_Output,
+            timeout_s=30,
+        )
+
+
+def test_envelope_is_error_unknown_status_falls_back_to_subagent_error(agent_md: Path, mocker: MockerFixture) -> None:
+    payload = json.dumps(
+        {
+            "is_error": True,
+            "api_error_status": "internal_server_error",
+            "result": "",
+        }
+    )
+    _mock_run(mocker, stdout=payload)
+    with pytest.raises(SubagentError) as excinfo:
+        run_subagent(
+            agent_md_path=agent_md,
+            task=_Task(market_id="x"),
+            output_model=_Output,
+            timeout_s=30,
+        )
+    assert not isinstance(excinfo.value, SubagentBudgetError)
+
+
+def test_max_budget_usd_added_to_cmd(agent_md: Path, mocker: MockerFixture) -> None:
+    captured: dict[str, list[str]] = {}
+
+    def _fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout=_envelope('{"p_yes": 0.5, "reasoning": "x"}'),
+            stderr="",
+        )
+
+    mocker.patch("shutil.which", return_value="/usr/local/bin/claude")
+    mocker.patch("subprocess.run", side_effect=_fake_run)
+
+    run_subagent(
+        agent_md_path=agent_md,
+        task=_Task(market_id="x"),
+        output_model=_Output,
+        timeout_s=30,
+        max_budget_usd=2.5,
+    )
+    cmd = captured["cmd"]
+    assert "--max-budget-usd" in cmd
+    flag_idx = cmd.index("--max-budget-usd")
+    assert cmd[flag_idx + 1] == "2.5"
+
+
+def test_cost_usd_logged_from_envelope(agent_md: Path, mocker: MockerFixture) -> None:
+    envelope_payload = json.dumps(
+        {
+            "result": '{"p_yes": 0.6, "reasoning": "y"}',
+            "is_error": False,
+            "total_cost_usd": 0.42,
+            "usage": {"input_tokens": 100, "output_tokens": 20},
+        }
+    )
+    _mock_run(mocker, stdout=envelope_payload)
+    log_calls: list[tuple[str, dict[str, object]]] = []
+    mocker.patch(
+        "execution.subagent_runner.logger.info",
+        side_effect=lambda event, **kw: log_calls.append((event, kw)),
+    )
+    run_subagent(
+        agent_md_path=agent_md,
+        task=_Task(market_id="x"),
+        output_model=_Output,
+        timeout_s=30,
+    )
+    completed = next(kw for ev, kw in log_calls if ev == "subagent_completed")
+    assert completed["cost_usd"] == 0.42
+    assert completed["usage"] == {"input_tokens": 100, "output_tokens": 20}
 
 
 def test_malformed_envelope_raises(agent_md: Path, mocker: MockerFixture) -> None:

@@ -21,7 +21,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from research.skills.web_search import WebSearchError, web_search
+from research.skills.web_search import WebSearchError, WebSearchQuotaError, web_search
 from shared.config.settings import Settings
 
 if TYPE_CHECKING:
@@ -84,8 +84,11 @@ def build_server(
             raise ValueError(msg)
         try:
             result = await asyncio.to_thread(web_search, query, settings=cfg, client=openai_client)
+        except WebSearchQuotaError as exc:
+            payload = {"error": str(exc), "error_type": "quota_exhausted", "query": query}
+            return [TextContent(type="text", text=json.dumps(payload))]
         except WebSearchError as exc:
-            payload = {"error": str(exc), "query": query}
+            payload = {"error": str(exc), "error_type": "transient", "query": query}
             return [TextContent(type="text", text=json.dumps(payload))]
         return [TextContent(type="text", text=result.model_dump_json())]
 

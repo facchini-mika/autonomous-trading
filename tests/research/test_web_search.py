@@ -11,6 +11,7 @@ import pytest
 from research.skills.web_search import (
     WebSearchError,
     WebSearchHit,
+    WebSearchQuotaError,
     WebSearchResult,
     web_search,
 )
@@ -178,6 +179,25 @@ def test_openai_exception_wrapped_as_websearch_error() -> None:
     client = MagicMock()
     client.responses.create.side_effect = RuntimeError("network down")
     with pytest.raises(WebSearchError, match="failed"):
+        web_search("q", settings=_settings(), client=client)
+
+
+def test_rate_limit_error_class_maps_to_quota_error() -> None:
+    class RateLimitError(Exception):
+        pass
+
+    client = MagicMock()
+    client.responses.create.side_effect = RateLimitError("Rate limit exceeded")
+    with pytest.raises(WebSearchQuotaError, match="quota/rate-limit"):
+        web_search("q", settings=_settings(), client=client)
+
+
+def test_insufficient_quota_message_maps_to_quota_error() -> None:
+    client = MagicMock()
+    client.responses.create.side_effect = RuntimeError(
+        "Error code: 429 - You exceeded your current quota; insufficient_quota."
+    )
+    with pytest.raises(WebSearchQuotaError, match="quota/rate-limit"):
         web_search("q", settings=_settings(), client=client)
 
 

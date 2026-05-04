@@ -115,6 +115,30 @@ def test_call_tool_returns_error_payload_when_web_search_fails() -> None:
     payload = json.loads(contents[0].text)
     assert "error" in payload
     assert "OPENAI_API_KEY" in payload["error"]
+    assert payload["error_type"] == "transient"
+
+
+def test_call_tool_marks_quota_error_in_payload() -> None:
+    class _RateLimitError(Exception):
+        pass
+
+    client = MagicMock()
+    client.responses.create.side_effect = _RateLimitError("Rate limit exceeded")
+    settings = Settings(OPENAI_API_KEY="test-key")
+    server = mcp_server.build_server(settings=settings, openai_client=client)
+
+    handler = _call_tool_handler(server)
+    request = MagicMock()
+    request.params.name = "web_search"
+    request.params.arguments = {"query": "anything"}
+    result = asyncio.run(handler(request))
+    payload = json.loads(result.root.content[0].text)
+    assert payload["error_type"] == "transient"
+
+    client.responses.create.side_effect = RuntimeError("insufficient_quota")
+    result = asyncio.run(handler(request))
+    payload = json.loads(result.root.content[0].text)
+    assert payload["error_type"] == "quota_exhausted"
 
 
 def test_web_search_error_is_caught_and_serialised() -> None:

@@ -29,6 +29,14 @@ class WebSearchError(RuntimeError):
     """Raised when the OpenAI call fails or returns an unparseable response."""
 
 
+class WebSearchQuotaError(WebSearchError):
+    """Raised when OpenAI refuses the call for billing/quota/rate-limit reasons.
+
+    Distinct subclass so the trading-agent (via the MCP server) can tell apart
+    a transient search miss from a hard "no more searches this cycle" signal.
+    """
+
+
 class WebSearchHit(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -69,6 +77,9 @@ def web_search(
             timeout=float(settings.WEB_SEARCH_TIMEOUT_SEC),
         )
     except Exception as exc:
+        if _is_quota_failure(exc):
+            msg = f"OpenAI web_search quota/rate-limit refusal: {exc}"
+            raise WebSearchQuotaError(msg) from exc
         msg = f"OpenAI web_search failed: {exc}"
         raise WebSearchError(msg) from exc
     elapsed = time.monotonic() - start
@@ -88,6 +99,30 @@ def _default_client(settings: Settings) -> OpenAI:
     from openai import OpenAI  # noqa: PLC0415
 
     return OpenAI(api_key=settings.OPENAI_API_KEY)
+
+
+def _is_quota_failure(exc: BaseException) -> bool:
+    """True if ``exc`` represents an OpenAI billing/quota/rate-limit refusal.
+
+    Uses class name introspection so we don't have to import the optional
+    ``openai`` exception types at module scope. ``insufficient_quota`` shows
+    up in the body of generic ``BadRequestError`` exceptions, so we also
+    string-match the exception message.
+    """
+    cls_name = type(exc).__name__
+    if cls_name in {"RateLimitError", "AuthenticationError", "PermissionDeniedError"}:
+        return True
+    text = str(exc).lower()
+    return any(
+        token in text
+        for token in (
+            "insufficient_quota",
+            "insufficient quota",
+            "credit_balance_too_low",
+            "credit balance",
+            "billing",
+        )
+    )
 
 
 def _extract_summary(response: Any) -> str:

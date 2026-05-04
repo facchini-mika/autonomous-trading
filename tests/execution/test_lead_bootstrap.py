@@ -8,7 +8,10 @@ from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 
-from execution.lead_bootstrap import bootstrap_team
+import pytest
+
+from execution.lead_bootstrap import CycleAbortedError, bootstrap_team
+from execution.subagent_runner import SubagentBudgetError
 from shared.config.settings import Settings
 from shared.models import (
     CashBalance,
@@ -271,3 +274,73 @@ def test_default_trading_mode_is_paper_e2e() -> None:
         clock=_now,
     )
     assert len(placed) == 1
+
+
+def _budget_raiser(_task: Any) -> Any:
+    msg = "subagent envelope reports api_error_status='insufficient_quota'"
+    raise SubagentBudgetError(msg)
+
+
+def test_bootstrap_aborts_when_scanner_runs_out_of_credits() -> None:
+    captures: list[MagicMock] = []
+    fake = FakeAdapter()
+
+    with pytest.raises(CycleAbortedError) as excinfo:
+        bootstrap_team(
+            settings=Settings(),
+            adapter=fake,
+            scanner=_budget_raiser,
+            trading=_trading,
+            risk=_risk_factory("trade"),
+            session_factory=lambda: _capturing_factory(captures),
+            clock=_now,
+        )
+    assert excinfo.value.stage == "scanner-reviewer"
+    # No orders placed, no predictions/decisions written.
+    assert fake.placed_orders == []
+    sql = [str(c.args[0]) for sess in captures for c in sess.execute.call_args_list]
+    assert not any("INSERT INTO predictions" in s for s in sql)
+    assert not any("INSERT INTO decisions" in s for s in sql)
+
+
+def test_bootstrap_aborts_when_trading_runs_out_of_credits() -> None:
+    captures: list[MagicMock] = []
+    fake = FakeAdapter()
+
+    with pytest.raises(CycleAbortedError) as excinfo:
+        bootstrap_team(
+            settings=Settings(),
+            adapter=fake,
+            scanner=_scanner,
+            trading=_budget_raiser,
+            risk=_risk_factory("trade"),
+            session_factory=lambda: _capturing_factory(captures),
+            clock=_now,
+        )
+    assert excinfo.value.stage == "trading-agent"
+    assert fake.placed_orders == []
+    sql = [str(c.args[0]) for sess in captures for c in sess.execute.call_args_list]
+    assert not any("INSERT INTO predictions" in s for s in sql)
+    assert not any("INSERT INTO decisions" in s for s in sql)
+
+
+def test_bootstrap_aborts_when_risk_runs_out_of_credits() -> None:
+    captures: list[MagicMock] = []
+    fake = FakeAdapter()
+
+    with pytest.raises(CycleAbortedError) as excinfo:
+        bootstrap_team(
+            settings=Settings(),
+            adapter=fake,
+            scanner=_scanner,
+            trading=_trading,
+            risk=_budget_raiser,
+            session_factory=lambda: _capturing_factory(captures),
+            clock=_now,
+        )
+    assert excinfo.value.stage == "risk-execution"
+    # Trading-agent already produced predictions, but no orders should land
+    # and decisions are not persisted because risk never returned.
+    assert fake.placed_orders == []
+    sql = [str(c.args[0]) for sess in captures for c in sess.execute.call_args_list]
+    assert not any("INSERT INTO decisions" in s for s in sql)

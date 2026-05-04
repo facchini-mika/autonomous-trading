@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 
 from execution.decision_context import require_decision_id
-from execution.lead_bootstrap import bootstrap_team
+from execution.lead_bootstrap import CycleAbortedError, bootstrap_team
 from execution.subagent_runner import run_subagent
 from shared.adapters.factory import make_adapter
 from shared.config.settings import Settings
@@ -52,6 +52,7 @@ def main() -> int:
             task=task,
             output_model=ScannerReviewerOutput,
             timeout_s=settings.AGENT_TIMEOUT_SEC,
+            max_budget_usd=settings.BUDGET_USD_SCANNER,
         )
 
     def trading(task: TradingAgentTask) -> TradingAgentOutput:
@@ -63,6 +64,7 @@ def main() -> int:
             timeout_s=settings.AGENT_TIMEOUT_SEC,
             mcp_config_path=MCP_CONFIG_PATH if MCP_CONFIG_PATH.exists() else None,
             allowed_mcp_tools=TRADING_AGENT_MCP_TOOLS,
+            max_budget_usd=settings.BUDGET_USD_TRADING,
         )
 
     def risk(task: RiskExecutionTask) -> RiskExecutionOutput:
@@ -72,15 +74,28 @@ def main() -> int:
             task=task,
             output_model=RiskExecutionOutput,
             timeout_s=settings.AGENT_TIMEOUT_SEC,
+            max_budget_usd=settings.BUDGET_USD_RISK,
         )
 
-    artifacts = bootstrap_team(
-        settings=settings,
-        adapter=adapter,
-        scanner=scanner,
-        trading=trading,
-        risk=risk,
-    )
+    try:
+        artifacts = bootstrap_team(
+            settings=settings,
+            adapter=adapter,
+            scanner=scanner,
+            trading=trading,
+            risk=risk,
+        )
+    except CycleAbortedError as exc:
+        # Budget exhaustion (or another recoverable abort) is logged structured
+        # and exits with a distinct non-zero code so cron can alert without
+        # treating it as a hard crash.
+        logger.warning(
+            "run_cycle_aborted",
+            cycle_id=exc.cycle_id,
+            stage=exc.stage,
+            reason=exc.reason,
+        )
+        return 2
     logger.info(
         "run_cycle_done",
         cycle_id=artifacts.cycle_id,

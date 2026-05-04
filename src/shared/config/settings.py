@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     WEB_SEARCH_TIMEOUT_SEC: int = 120
     AGENT_TIMEOUT_SEC: int = 300
 
+    # Per-subagent USD budget caps passed to ``claude --max-budget-usd``.
+    # The CLI aborts the call once the in-flight cost would exceed the cap,
+    # so a runaway agent can never burn more than these amounts in one cycle.
+    BUDGET_USD_SCANNER: float = 3.0
+    BUDGET_USD_TRADING: float = 5.0
+    BUDGET_USD_RISK: float = 1.0
+
     # Web-search blocklist: hosts (and their subdomains) whose URLs are
     # stripped from web_search hits before they reach the trading-agent.
     # NoDecode opts out of pydantic-settings' default JSON decoding so the
