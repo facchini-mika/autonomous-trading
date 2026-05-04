@@ -268,9 +268,32 @@ def _extract_payload(*, stdout: str, agent_name: str) -> tuple[str, dict[str, An
 
 
 def _strip_markdown_fences(raw: str) -> str:
-    """Best-effort: drop surrounding ```json``` fences if the model emitted them."""
+    """Best-effort: extract the JSON object from a Markdown-laced response.
+
+    The ``--append-system-prompt`` reminder asks the agent for a single JSON
+    object with no prose, but compliance is not always perfect — agents
+    sometimes wrap the JSON in ```json``` fences or prefix it with a few
+    paragraphs of narration. This handles both shapes:
+
+    1. Strip surrounding ``` fences if present.
+    2. Otherwise, locate the first ``{`` and use ``json.JSONDecoder.raw_decode``
+       to find the longest valid JSON object starting there. Anything before
+       or after that object is discarded.
+
+    Returns the original text unchanged if neither shape matches; the caller
+    will then surface the Pydantic ``ValidationError`` with the raw input.
+    """
     text = raw.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1] if "\n" in text else text
         text = text.removesuffix("```")
-    return text.strip()
+        text = text.strip()
+    start = text.find("{")
+    if start < 0:
+        return text
+    decoder = json.JSONDecoder()
+    try:
+        _, end = decoder.raw_decode(text[start:])
+    except json.JSONDecodeError:
+        return text
+    return text[start : start + end]

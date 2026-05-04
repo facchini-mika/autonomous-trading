@@ -80,6 +80,36 @@ def test_strips_markdown_fences(agent_md: Path, mocker: MockerFixture) -> None:
     assert result.p_yes == 0.5
 
 
+def test_extracts_json_when_agent_prefixes_prose(agent_md: Path, mocker: MockerFixture) -> None:
+    """Risk-execution sometimes emits Markdown narration before the JSON."""
+    prosey = (
+        "**Gate evaluation trace:** capital_gate passed (paper bypass), "
+        "concentration ok.\n\nFinal decision:\n"
+        '{"p_yes": 0.42, "reasoning": "passed all gates"}'
+    )
+    _mock_run(mocker, stdout=_envelope(prosey))
+    result = run_subagent(
+        agent_md_path=agent_md,
+        task=_Task(market_id="0xa"),
+        output_model=_Output,
+        timeout_s=30,
+    )
+    assert result.p_yes == 0.42
+    assert result.reasoning == "passed all gates"
+
+
+def test_extracts_json_with_trailing_prose(agent_md: Path, mocker: MockerFixture) -> None:
+    trailing = '{"p_yes": 0.6, "reasoning": "x"}\n\nThat is my final answer.'
+    _mock_run(mocker, stdout=_envelope(trailing))
+    result = run_subagent(
+        agent_md_path=agent_md,
+        task=_Task(market_id="0xa"),
+        output_model=_Output,
+        timeout_s=30,
+    )
+    assert result.p_yes == 0.6
+
+
 def test_missing_agent_skeleton_raises(tmp_path: Path) -> None:
     with pytest.raises(SubagentError, match="agent skeleton not found"):
         run_subagent(
