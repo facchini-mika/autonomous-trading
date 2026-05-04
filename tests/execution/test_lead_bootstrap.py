@@ -143,6 +143,34 @@ def test_bootstrap_writes_predictions_and_decisions() -> None:
     assert any("INSERT INTO cycle_plan" in s for s in sql_calls)
 
 
+def test_cycle_plan_jsonb_fields_are_serialised_strings() -> None:
+    """All five JSONB columns on cycle_plan must be json.dumps'd, not raw lists.
+
+    Without serialisation, psycopg renders Python lists as Postgres array
+    literals, and Postgres then tries to parse each element as a bare JSON
+    token — which fails on hex market_ids (`0x7db1...` is not valid JSON).
+    """
+    captures: list[MagicMock] = []
+    bootstrap_team(
+        settings=Settings(),
+        adapter=FakeAdapter(),
+        scanner=_scanner,
+        trading=_trading,
+        risk=_risk_factory("trade"),
+        session_factory=lambda: _capturing_factory(captures),
+        clock=_now,
+    )
+    cycle_plan_calls = [
+        c for sess in captures for c in sess.execute.call_args_list if "INSERT INTO cycle_plan" in str(c.args[0])
+    ]
+    assert len(cycle_plan_calls) == 1
+    params = cycle_plan_calls[0].args[1]
+    for key in ("next", "holds", "pending", "deferred", "blockers"):
+        assert isinstance(params[key], str), (
+            f"cycle_plan param {key!r} must be a json-encoded string, got {type(params[key]).__name__}"
+        )
+
+
 def test_bootstrap_places_order_only_for_trade_decisions() -> None:
     fake = FakeAdapter()
     bootstrap_team(

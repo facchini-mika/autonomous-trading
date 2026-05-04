@@ -428,19 +428,20 @@ def _persist_cycle_plan(
                 """
                 INSERT INTO cycle_plan (id, written_at, written_by_cycle_id, next_priorities,
                     holds_with_rationale, pending_settlements, opportunities_deferred, blockers)
-                VALUES (:id, :written_at, :cycle_id, :next, CAST(:holds AS jsonb),
-                    CAST(:pending AS jsonb), :deferred, :blockers)
+                VALUES (:id, :written_at, :cycle_id, CAST(:next AS jsonb),
+                    CAST(:holds AS jsonb), CAST(:pending AS jsonb),
+                    CAST(:deferred AS jsonb), CAST(:blockers AS jsonb))
                 """,
             ),
             {
                 "id": str(cycle_plan.id),
                 "written_at": cycle_plan.written_at,
                 "cycle_id": cycle_id,
-                "next": cycle_plan.next_priorities,
+                "next": json.dumps(cycle_plan.next_priorities),
                 "holds": json.dumps(cycle_plan.holds_with_rationale),
                 "pending": json.dumps(cycle_plan.pending_settlements),
-                "deferred": cycle_plan.opportunities_deferred,
-                "blockers": cycle_plan.blockers,
+                "deferred": json.dumps(cycle_plan.opportunities_deferred),
+                "blockers": json.dumps(cycle_plan.blockers),
             },
         )
 
