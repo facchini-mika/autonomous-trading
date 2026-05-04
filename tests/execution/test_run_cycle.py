@@ -90,7 +90,7 @@ def fake_subagent_outputs(mocker: MockerFixture) -> dict[str, Any]:
             portfolio_state=portfolio,
         ),
         "trading": TradingAgentOutput(predictions=[prediction]),
-        "risk": RiskExecutionOutput(decisions=[decision], trades=[]),
+        "risk": RiskExecutionOutput(decisions=[decision]),
     }
 
     counter = {"n": 0}

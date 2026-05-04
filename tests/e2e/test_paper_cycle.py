@@ -120,7 +120,7 @@ def _risk(task: Any) -> RiskExecutionOutput:
         rationale="approved by gates",
         created_at=CYCLE_CLOCK,
     )
-    return RiskExecutionOutput(decisions=[decision], trades=[])
+    return RiskExecutionOutput(decisions=[decision])
 
 
 def _table_count(conn: psycopg.Connection, table: str) -> int:

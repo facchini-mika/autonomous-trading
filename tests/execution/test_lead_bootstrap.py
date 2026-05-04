@@ -108,7 +108,7 @@ def _risk_factory(decision_action: str = "trade") -> Any:
             rationale="approved by gates",
             created_at=_now(),
         )
-        return RiskExecutionOutput(decisions=[decision], trades=[])
+        return RiskExecutionOutput(decisions=[decision])
 
     return _risk
 

@@ -28,7 +28,6 @@ from shared.models.agent_io import (
     Note,
     Prediction,
     SizingProposal,
-    Trade,
     Universe,
 )
 from shared.models.market import Market, MarketMetadata, Orderbook
@@ -109,9 +108,15 @@ class TradingAgentOutput(BaseModel):
 
 
 class RiskExecutionOutput(BaseModel):
-    """risk-execution → Lead output."""
+    """risk-execution → Lead output.
+
+    The agent emits gate-evaluated decisions only. The Lead places trades
+    itself from those decisions via the adapter and never reads a trades
+    field from this output, so we don't expose one — emitting it would
+    invite the agent to hallucinate Trade UUIDs / fill / fee fields it
+    cannot know.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     decisions: list[Decision]
-    trades: list[Trade]
