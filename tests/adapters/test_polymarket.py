@@ -47,32 +47,57 @@ def test_satisfies_protocol_static(adapter: PolymarketAdapter) -> None:
     assert typed is adapter
 
 
-def test_get_markets_passes_limit(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
-    fake_clob.get_markets.return_value = {
-        "data": [
-            {
-                "condition_id": f"0x{i:064x}",
-                "id": str(i),
-                "market_slug": f"slug-{i}",
-                "question": f"Q{i}",
-                "category": "test",
-                "end_date_iso": "2026-12-31T00:00:00Z",
-                "tokens": [{"outcome": "yes", "price": 0.5}],
-            }
-            for i in range(10)
+def _active_market(i: int) -> dict[str, object]:
+    return {
+        "condition_id": f"0x{i:064x}",
+        "id": str(i),
+        "market_slug": f"slug-{i}",
+        "question": f"Q{i}",
+        "category": "test",
+        "end_date_iso": "2026-12-31T00:00:00Z",
+        "tokens": [
+            {"outcome": "Yes", "token_id": f"yes-token-{i}", "price": 0.5},
+            {"outcome": "No", "token_id": f"no-token-{i}", "price": 0.5},
         ],
+        "closed": False,
+        "accepting_orders": True,
+        "enable_order_book": True,
     }
+
+
+def test_get_markets_passes_limit(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
+    fake_clob.get_sampling_markets.return_value = {"data": [_active_market(i) for i in range(10)]}
     markets = adapter.get_markets(limit=3)
     assert len(markets) == 3
+    fake_clob.get_sampling_markets.assert_called_once()
+    fake_clob.get_markets.assert_not_called()
+
+
+def test_get_markets_skips_closed_and_non_tradeable(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
+    closed = {**_active_market(0), "closed": True}
+    not_accepting = {**_active_market(1), "accepting_orders": False}
+    no_book = {**_active_market(2), "enable_order_book": False}
+    good = _active_market(3)
+    fake_clob.get_sampling_markets.return_value = {
+        "data": [closed, not_accepting, no_book, good],
+    }
+    markets = adapter.get_markets(limit=10)
+    assert len(markets) == 1
+    assert markets[0].slug == "slug-3"
 
 
 def test_get_orderbook_maps_response(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
+    # Prime the yes-token cache by fetching markets first.
+    fake_clob.get_sampling_markets.return_value = {"data": [_active_market(0)]}
+    market = adapter.get_markets(limit=1)[0]
     fake_clob.get_order_book.return_value = {
         "bids": [{"price": 0.45, "size": 100}, {"price": 0.44, "size": 50}],
         "asks": [{"price": 0.46, "size": 80}, {"price": 0.47, "size": 40}],
     }
-    book = adapter.get_orderbook("0xabc")
-    assert book.market_id == "0xabc"
+    book = adapter.get_orderbook(market.market_id)
+    # CLOB receives the *token id*, not the condition id.
+    fake_clob.get_order_book.assert_called_once_with("yes-token-0")
+    assert book.market_id == market.market_id
     assert book.best_bid == pytest.approx(0.45)
     assert book.best_ask == pytest.approx(0.46)
     assert book.mid == pytest.approx(0.455)
@@ -80,9 +105,21 @@ def test_get_orderbook_maps_response(adapter: PolymarketAdapter, fake_clob: Magi
     assert book.depth_ask_1pct >= 80
 
 
-def test_get_orderbook_handles_empty_book(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
+def test_get_orderbook_falls_back_to_get_market_on_cache_miss(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
+    # No prior get_markets call → cache empty → adapter must fetch the market
+    # to learn the token id, then call get_order_book with the token.
+    fake_clob.get_market.return_value = _active_market(7)
     fake_clob.get_order_book.return_value = {"bids": [], "asks": []}
-    book = adapter.get_orderbook("0xempty")
+    adapter.get_orderbook("0x" + "7" * 64)
+    fake_clob.get_market.assert_called_once()
+    fake_clob.get_order_book.assert_called_once_with("yes-token-7")
+
+
+def test_get_orderbook_handles_empty_book(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
+    fake_clob.get_sampling_markets.return_value = {"data": [_active_market(0)]}
+    market = adapter.get_markets(limit=1)[0]
+    fake_clob.get_order_book.return_value = {"bids": [], "asks": []}
+    book = adapter.get_orderbook(market.market_id)
     assert book.depth_bid_1pct == 0.0
     assert book.depth_ask_1pct == 0.0
 

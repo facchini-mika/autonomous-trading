@@ -31,6 +31,12 @@ class Market(BaseModel):
     created_at: datetime
     last_seen: datetime
     ambiguity_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Polymarket binary markets resolve to two ERC-1155 tokens (yes/no);
+    # CLOB orderbook + order endpoints take the *token* id, not the
+    # condition id. We capture the yes-token at parse time so the adapter
+    # can resolve market_id → token without a second HTTP fetch.
+    yes_token_id: str | None = None
+    no_token_id: str | None = None
 
 
 class Orderbook(BaseModel):

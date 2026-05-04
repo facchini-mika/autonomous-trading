@@ -116,17 +116,62 @@ class PolymarketAdapter:
         self._client = self._make_client(client_factory)
         self._api_creds_set = False
         self._default_fee_rate_bps = default_fee_rate_bps
+        # market_id (condition_id) → yes_token_id, populated lazily during
+        # ``get_markets`` and read by ``get_orderbook`` so the latter does
+        # not have to issue a second HTTP fetch per call.
+        self._yes_token_cache: dict[str, str] = {}
 
     # --- Reads ---------------------------------------------------------------
 
     def get_markets(self, *, limit: int) -> list[Market]:
-        raw = self._retry(self._client.get_markets, op="get_markets")
+        """Return up to ``limit`` actively-tradeable markets from the CLOB.
+
+        Uses ``get_sampling_markets`` rather than ``get_markets`` because the
+        latter paginates the universe of all markets ever (oldest first), so
+        the first 1000 entries are dominated by long-resolved historical
+        markets with no orderbook. ``get_sampling_markets`` returns the
+        rewards-incentivised active subset (currently 1000 markets/page),
+        which by construction are open + accepting orders + have an
+        orderbook. A defensive client-side filter strips any item where
+        Polymarket has flagged it inactive between server snapshots.
+
+        Also populates the yes-token cache so subsequent ``get_orderbook``
+        calls can resolve ``market_id → yes_token_id`` without a second
+        HTTP fetch.
+        """
+        raw = self._retry(self._client.get_sampling_markets, op="get_sampling_markets")
         markets = _parse_markets_response(raw, clock=self._clock)
+        for m in markets:
+            if m.yes_token_id is not None:
+                self._yes_token_cache[m.market_id] = m.yes_token_id
         return markets[:limit]
 
     def get_orderbook(self, market_id: str) -> Orderbook:
-        raw = self._retry(lambda: self._client.get_order_book(market_id), op="get_order_book")
+        """Fetch the orderbook for a market.
+
+        ``market_id`` is the Polymarket condition id, but the CLOB endpoint
+        takes the binary-outcome *token id*. We resolve via the yes-token
+        cache populated during ``get_markets``; on a cache miss we fetch
+        the market record once to learn the token id (then cache it).
+        """
+        token_id = self._resolve_yes_token(market_id)
+        raw = self._retry(lambda: self._client.get_order_book(token_id), op="get_order_book")
         return _parse_orderbook(market_id, raw, clock=self._clock)
+
+    def _resolve_yes_token(self, market_id: str) -> str:
+        cached = self._yes_token_cache.get(market_id)
+        if cached is not None:
+            return cached
+        raw = self._retry(lambda: self._client.get_market(market_id), op="get_market")
+        if not isinstance(raw, dict):
+            msg = f"get_market({market_id!r}) returned non-dict payload"
+            raise PolymarketPermanentError(msg)
+        yes_id, _ = _extract_token_ids(raw)
+        if yes_id is None:
+            msg = f"market {market_id!r} has no yes-token in CLOB response"
+            raise PolymarketPermanentError(msg)
+        self._yes_token_cache[market_id] = yes_id
+        return yes_id
 
     def get_metadata(self, market_id: str) -> MarketMetadata:
         raw = self._retry(lambda: self._client.get_market(market_id), op="get_market")
@@ -280,6 +325,8 @@ def _parse_markets_response(raw: Any, *, clock: Callable[[], datetime]) -> list[
     items = (raw.get("data") or raw.get("markets") or []) if isinstance(raw, dict) else list(raw or [])
     out: list[Market] = []
     for item in items:
+        if not _is_tradeable(item):
+            continue
         try:
             out.append(_parse_market_item(item, clock=clock))
         except (KeyError, ValueError, TypeError):
@@ -287,7 +334,22 @@ def _parse_markets_response(raw: Any, *, clock: Callable[[], datetime]) -> list[
     return out
 
 
+def _is_tradeable(item: dict[str, Any]) -> bool:
+    """Defensive filter: only keep markets that are open AND can take orders.
+
+    Belt-and-suspenders alongside ``get_sampling_markets`` — covers the rare
+    race where an entry is curated into the sampling set but Polymarket has
+    flipped one of these flags before our snapshot lands.
+    """
+    if item.get("closed") is True:
+        return False
+    if item.get("accepting_orders") is False:
+        return False
+    return item.get("enable_order_book") is not False
+
+
 def _parse_market_item(item: dict[str, Any], *, clock: Callable[[], datetime]) -> Market:
+    yes_tok, no_tok = _extract_token_ids(item)
     return Market(
         market_id=str(item.get("condition_id") or item.get("market_id") or item["id"]),
         condition_id=str(item.get("condition_id") or item["id"]),
@@ -300,7 +362,35 @@ def _parse_market_item(item: dict[str, Any], *, clock: Callable[[], datetime]) -
         created_at=_parse_dt(item.get("created_at") or item.get("createdAt")) or clock(),
         last_seen=clock(),
         ambiguity_score=None,
+        yes_token_id=yes_tok,
+        no_token_id=no_tok,
     )
+
+
+def _extract_token_ids(item: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Pull (yes_token_id, no_token_id) from a CLOB market response.
+
+    The ``tokens`` field is a list of ``{"outcome": "Yes"|"No", "token_id": "..."}``
+    entries. Returns ``(None, None)`` for malformed payloads — the adapter
+    will fall back to a ``get_market`` lookup when it needs the token.
+    """
+    tokens = item.get("tokens") or []
+    if not isinstance(tokens, list):
+        return None, None
+    yes_id: str | None = None
+    no_id: str | None = None
+    for tok in tokens:
+        if not isinstance(tok, dict):
+            continue
+        outcome = str(tok.get("outcome") or "").strip().lower()
+        token_id = tok.get("token_id")
+        if token_id is None:
+            continue
+        if outcome == "yes":
+            yes_id = str(token_id)
+        elif outcome == "no":
+            no_id = str(token_id)
+    return yes_id, no_id
 
 
 def _market_status(item: dict[str, Any]) -> str:
