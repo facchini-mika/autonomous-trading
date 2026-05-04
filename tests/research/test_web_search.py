@@ -73,14 +73,14 @@ def test_passes_query_to_openai() -> None:
     web_search("specific query", settings=_settings(), client=client)
     kwargs = client.responses.create.call_args.kwargs
     assert kwargs["input"] == "specific query"
-    assert kwargs["tools"] == [{"type": "web_search_preview"}]
+    assert kwargs["tools"] == [{"type": "web_search"}]
 
 
 def test_passes_timeout() -> None:
     response = SimpleNamespace(output_text="ok", output=[])
     client = _mock_client(response)
     web_search("q", settings=_settings(), client=client)
-    assert client.responses.create.call_args.kwargs["timeout"] == 60.0
+    assert client.responses.create.call_args.kwargs["timeout"] == 120.0
 
 
 def test_missing_api_key_raises() -> None:

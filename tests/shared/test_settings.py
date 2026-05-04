@@ -15,7 +15,8 @@ def test_defaults_are_paper_mode() -> None:
     assert settings.PAPER_STARTING_CASH_USD == 10000.0
     assert settings.CONCENTRATION_CAP == 0.15
     assert settings.CYCLE_CAP == 0.25
-    assert settings.EDGE_THRESHOLD == 0.03
+    assert settings.EDGE_THRESHOLD == 0.05
+    assert settings.WEB_SEARCH_TIMEOUT_SEC == 120
     assert settings.FEE_RATE_BPS == 200
 
 

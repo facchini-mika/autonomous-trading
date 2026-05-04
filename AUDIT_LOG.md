@@ -527,3 +527,66 @@ Every PR that touches one of the following must have an entry here:
   would disappear — call sites are limited to
   `_build_sizing_proposals`, which already tolerates a missing
   adapter (returns 0.0).
+
+## 2026-05-04 — Phase 6c tweaks: edge threshold + web-search timeout + agent models (src/risk/ touch)
+
+- **Category:** Risk-sensitive — modifies `src/risk/limits.py`
+  (`EDGE_THRESHOLD` constant). No `MAX_CAPITAL_EUR` change. No
+  `TRADING_MODE` flip (default still `paper`).
+- **Branch / PR:** `feature/prompt-template-tweaks-2026-05-04` — pending push.
+- **Description:**
+  - `EDGE_THRESHOLD: 0.03 → 0.05` in both `src/shared/config/settings.py`
+    and `src/risk/limits.py` (drift-guard mirrored). Trading-agent
+    doctrine doc-string updated to reflect the new default.
+  - `WEB_SEARCH_TIMEOUT_SEC: 60 → 120` in `src/shared/config/settings.py`.
+    Trading-agent doctrine reflects the new ceiling.
+  - `OPENAI_MODEL: "gpt-4.1" → "gpt-5.5"` for the trading-agent's
+    web-search-backed mispricing reasoning.
+  - `web_search` skill switches the OpenAI Responses tool from
+    `web_search_preview` to GA `web_search`. Test updated.
+  - Subagent frontmatter (`.claude/agents/{risk-execution,
+    scanner-reviewer,trading-agent}.md`) swaps `claude-sonnet-4-6` →
+    `claude-opus-4-7` for the two deterministic gate-runners and
+    cleans up Phase-2 skeleton language. Trading-agent's tool list now
+    reflects the live `mcp__research__web_search` server.
+  - `tests/shared/test_settings.py` updated for the new defaults
+    (`EDGE_THRESHOLD == 0.05`, `WEB_SEARCH_TIMEOUT_SEC == 120`).
+- **What could go wrong:**
+  - **Higher edge threshold = fewer trades.** With `0.05` instead of
+    `0.03`, marginal-edge calls no longer trigger sizing. Cycle output
+    shrinks; risk of false negatives if true-edge clusters in
+    `[0.03, 0.05]`. Acceptable trade-off given Phase-6c's fee-aware
+    solvency gate now enforces a hard floor (gross edge must clear
+    fee + slippage to be net-positive).
+  - **`gpt-5.5` availability.** If the model name is not yet
+    GA-available on the operator's OpenAI account, `web_search` calls
+    will hard-fail with a 404. Mitigation: `Settings.OPENAI_MODEL` is
+    env-overridable; fall back to `gpt-4.1` via `.env` without a
+    redeploy.
+  - **`web_search` (GA) vs `web_search_preview` schema drift.** If
+    OpenAI's GA tool changes the response schema (citations field
+    layout), `_extract_hits` may yield zero hits silently. Mitigation:
+    existing CMC-blocklist test exercises `_extract_hits` end-to-end;
+    failed parsing surfaces as empty `WebSearchResult.hits` rather
+    than an exception.
+  - **Doctrine drift.** If a future PR changes the threshold in
+    `settings.py` without updating the trading-agent doctrine string,
+    the LLM grounds reasoning on a stale number. Same drift risk as
+    pre-PR; not introduced here.
+- **Why it's still safe:**
+  - `paper`-mode default unchanged. `MAX_CAPITAL_EUR` still 0. Real-
+    capital orders blocked at the capital gate.
+  - The drift-guard test (`tests/risk/test_limits_match_settings.py`)
+    keeps `Settings.EDGE_THRESHOLD == limits.EDGE_THRESHOLD`. CI fails
+    if a future edit forgets one side.
+  - 100 % `risk/` coverage maintained; no logic added to gate code,
+    only the constant value moves.
+  - All non-risk changes (web-search API, agent models, doctrine
+    text, timeout) are out-of-band of the risk gates and cannot
+    affect order-placement decisions.
+- **Mitigation / rollback:** Revert PR. `EDGE_THRESHOLD` reverts to
+  `0.03` symmetrically; `WEB_SEARCH_TIMEOUT_SEC` to `60`;
+  `OPENAI_MODEL` to `gpt-4.1`; `web_search_preview` tool restored.
+  Subagent frontmatter is meta-config only (Claude routes to the
+  named model — no code path depends on it). Revert is one squash
+  away from `031aea4f`.

@@ -2,7 +2,7 @@
 name: scanner-reviewer
 description: Phase 6b live. Filters Lead-pre-fetched markets down to top-K and assembles the cycle's PortfolioState snapshot. Deterministic — no tools, no network.
 tools: []
-model: claude-sonnet-4-6
+model: claude-opus-4-7
 ---
 
 # Role
@@ -34,8 +34,6 @@ None. Pure synthesis from inputs handed in by the Lead.
 - `specs/orchestration.md §2` — team topology + cycle clock.
 - `specs/engineering.md §10` — `TOP_K_MARKETS`, `CONCENTRATION_CAP`.
 
-# Phase-2 status
+# Doctrine
 
-Skeleton only. Strategy doctrine and prompt body are deliberately left
-minimal; Phase 4 Stream D fills in the system prompt and finalizes the
-tool allow-list.
+System prompt body lives in `src/research/prompts/scanner_reviewer.md`.

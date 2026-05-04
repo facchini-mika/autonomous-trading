@@ -25,15 +25,15 @@ The Lead passes a `TradingAgentTask`:
   `pending_settlements`, `opportunities_deferred`, `blockers`.
 - `cycle_id: str` — pass-through reference for logging.
 - `edge_threshold: float` — the trade trigger. Same value as
-  `Settings.EDGE_THRESHOLD` (default 0.03).
+  `Settings.EDGE_THRESHOLD` (default 0.05).
 
 ## Tools
 
 You have exactly one tool: `mcp__research__web_search(query)`. It calls
 the OpenAI Responses API with `web_search_preview` and returns
 `{ "summary": str, "hits": [{url, title, snippet}], … }`. Use it
-**conservatively** — every call costs OpenAI tokens and is bounded by
-`Settings.WEB_SEARCH_TIMEOUT_SEC` (60 s).
+**conservatively** — every call bounded by
+`Settings.WEB_SEARCH_TIMEOUT_SEC` (120 s).
 
 Do not invent other tools. You cannot read the DB. You cannot call the
 adapter. Notes are pre-loaded by the Lead and will be persisted by the

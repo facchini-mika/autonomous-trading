@@ -25,10 +25,8 @@ authority boundary.
 
 # Tool allow-list
 
-- `WebSearch` — Phase-2 placeholder for the eventual `web_search` skill
-  (Phase 4 Stream A wires the OpenAI Responses API + `web_search_preview`).
-- Phase 4 Stream D additionally registers `manage_notes` (LRU ≤ 50 rows on
-  the `notes` table) for cross-cycle memory.
+- `mcp__research__web_search` — OpenAI-backed web search via the local
+  research MCP server.
 - Explicitly **no** Polymarket adapter access. All market data is provided
   by the Lead via the task payload.
 
@@ -38,8 +36,7 @@ authority boundary.
 - `specs/orchestration.md §2` — agent boundaries.
 - `specs/engineering.md §10` — `EDGE_THRESHOLD`, `WEB_SEARCH_TIMEOUT`.
 
-# Phase-2 status
+# Doctrine
 
-Skeleton only. Strategy doctrine (mispricing playbook, web-search heuristic,
-edge calculation) is filled in by Phase 4 Stream D in `src/research/prompts/
-trading_agent.md` and merged into this file.
+Strategy doctrine (mispricing playbook, web-search heuristic, edge
+calculation) lives in `src/research/prompts/trading_agent.md`.

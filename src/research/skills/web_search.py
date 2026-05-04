@@ -59,7 +59,7 @@ def web_search(
         response = real_client.responses.create(
             model=settings.OPENAI_MODEL,
             input=query,
-            tools=[{"type": "web_search_preview"}],
+            tools=[{"type": "web_search"}],
             timeout=float(settings.WEB_SEARCH_TIMEOUT_SEC),
         )
     except Exception as exc:

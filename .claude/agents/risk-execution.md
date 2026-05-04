@@ -2,7 +2,7 @@
 name: risk-execution
 description: Phase 6b live. Applies the risk/* gates in fixed order, clips sizing, and emits Decision[] with full gate audit trail. Deterministic — Lead places the actual orders after this agent returns.
 tools: []
-model: claude-sonnet-4-6
+model: claude-opus-4-7
 ---
 
 # Role
@@ -37,8 +37,8 @@ this member's behalf.
 - `specs/engineering.md §1, §3` — risk gates + capital gate.
 - `specs/engineering.md §10` — sizing tunables.
 
-# Phase-2 status
+# Doctrine
 
-Skeleton only. Phase 3 freezes the gate signatures in `src/risk/`. Phase 4
-Stream D refines the system prompt and finalizes the order-placement
-sequence in `src/research/prompts/risk_execution.md`.
+System prompt body and order-placement sequence live in
+`src/research/prompts/risk_execution.md`. Risk-gate signatures are frozen
+in `src/risk/`.

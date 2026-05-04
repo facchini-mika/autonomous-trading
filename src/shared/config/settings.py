@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     PAPER_STARTING_CASH_USD: float = 10000.0
 
     # Strategy
-    EDGE_THRESHOLD: float = 0.03
+    EDGE_THRESHOLD: float = 0.05
     CYCLE_PERIOD_MIN: int = 12
     TOP_K_MARKETS: int = 50
     UNIVERSE_FETCH_LIMIT: int = 200
@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     SURPRISE_THRESHOLD: float = 0.3
 
     # Timeouts
-    WEB_SEARCH_TIMEOUT_SEC: int = 60
+    WEB_SEARCH_TIMEOUT_SEC: int = 120
     AGENT_TIMEOUT_SEC: int = 300
 
     # Web-search blocklist: hosts (and their subdomains) whose URLs are
@@ -111,7 +111,7 @@ class Settings(BaseSettings):
     POLYGON_CHAIN_ID: int = 137
     POLYGON_RPC_URL: str = "https://polygon-bor-rpc.publicnode.com"
     OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4.1"
+    OPENAI_MODEL: str = "gpt-5.5"
 
     # Reconciliation
     RECONCILIATION_DIFF_USD: float = 0.50
