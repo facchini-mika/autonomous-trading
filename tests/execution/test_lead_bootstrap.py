@@ -5,13 +5,16 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from execution.lead_bootstrap import CycleAbortedError, bootstrap_team
 from execution.subagent_runner import SubagentBudgetError
+
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
 from shared.config.settings import Settings
 from shared.models import (
     CashBalance,
@@ -169,6 +172,74 @@ def test_cycle_plan_jsonb_fields_are_serialised_strings() -> None:
         assert isinstance(params[key], str), (
             f"cycle_plan param {key!r} must be a json-encoded string, got {type(params[key]).__name__}"
         )
+
+
+def _decision_with_gates(action: str, gate_results: dict[str, Any]) -> Decision:
+    return Decision(
+        cycle_id="cycle-test",
+        market_id="0xa",
+        p_consensus=0.7,
+        q_market=0.5,
+        edge=0.2,
+        gate_results=gate_results,
+        action=action,
+        rationale="test",
+        created_at=_now(),
+    )
+
+
+def test_decision_notional_reads_top_level_clipped(mocker: MockerFixture) -> None:
+    from execution.lead_bootstrap import _decision_notional
+
+    warnings: list[tuple[str, dict[str, object]]] = []
+    mocker.patch(
+        "execution.lead_bootstrap.logger.warning",
+        side_effect=lambda event, **kw: warnings.append((event, kw)),
+    )
+    decision = _decision_with_gates("trade", {"clipped_notional": 100.0, "notional_usd": 100.0})
+    assert _decision_notional(decision) == 100.0
+    assert not any(ev == "decision_notional_missing" for ev, _ in warnings)
+
+
+def test_decision_notional_logs_warning_when_top_level_keys_missing(
+    mocker: MockerFixture,
+) -> None:
+    """Cycle-4 regression: agent emitted per-gate trail without top-level summary."""
+    from execution.lead_bootstrap import _decision_notional
+
+    warnings: list[tuple[str, dict[str, object]]] = []
+    mocker.patch(
+        "execution.lead_bootstrap.logger.warning",
+        side_effect=lambda event, **kw: warnings.append((event, kw)),
+    )
+    decision = _decision_with_gates(
+        "trade",
+        {
+            "edge_gate": {"passed": True, "reason": "..."},
+            "kill_switch": {"passed": True, "reason": "..."},
+        },
+    )
+    assert _decision_notional(decision) == 0.0
+    fired = [kw for ev, kw in warnings if ev == "decision_notional_missing"]
+    assert len(fired) == 1
+    assert fired[0]["gate_results_keys"] == ["edge_gate", "kill_switch"]
+    assert fired[0]["action"] == "trade"
+
+
+def test_decision_notional_silent_for_skip_actions(mocker: MockerFixture) -> None:
+    """skip / hold decisions never need top-level notional — no warning expected."""
+    from execution.lead_bootstrap import _decision_notional
+
+    warnings: list[tuple[str, dict[str, object]]] = []
+    mocker.patch(
+        "execution.lead_bootstrap.logger.warning",
+        side_effect=lambda event, **kw: warnings.append((event, kw)),
+    )
+    skip_decision = _decision_with_gates("skip", {"edge_gate": {"passed": False, "reason": "low_edge"}})
+    hold_decision = _decision_with_gates("hold", {})
+    assert _decision_notional(skip_decision) == 0.0
+    assert _decision_notional(hold_decision) == 0.0
+    assert not any(ev == "decision_notional_missing" for ev, _ in warnings)
 
 
 def test_bootstrap_places_order_only_for_trade_decisions() -> None:

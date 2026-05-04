@@ -262,6 +262,18 @@ def _decision_notional(decision: Decision) -> float:
     base = decision.gate_results.get("notional_usd")
     if isinstance(base, (int, float)) and base > 0:
         return float(base)
+    if decision.action == "trade":
+        # The agent declared a trade-action but did not supply the top-level
+        # notional keys the Lead reads to size it. Order is silently skipped
+        # downstream; this log gives drift detection so we do not lose another
+        # cycle to a doctrine-vs-Lead schema mismatch unnoticed.
+        logger.warning(
+            "decision_notional_missing",
+            market_id=decision.market_id,
+            cycle_id=decision.cycle_id,
+            action=decision.action,
+            gate_results_keys=sorted(decision.gate_results.keys()),
+        )
     return 0.0
 
 
