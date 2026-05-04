@@ -39,3 +39,21 @@ def test_extra_env_vars_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings()
     assert os.getenv("UNRELATED_VAR") == "ignored"
     assert not hasattr(settings, "UNRELATED_VAR")
+
+
+def test_web_search_blocked_domains_default() -> None:
+    assert Settings().WEB_SEARCH_BLOCKED_DOMAINS == ["coinmarketcap.com"]
+
+
+def test_web_search_blocked_domains_csv_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEB_SEARCH_BLOCKED_DOMAINS", "a.com, b.com ,c.com")
+    assert Settings().WEB_SEARCH_BLOCKED_DOMAINS == ["a.com", "b.com", "c.com"]
+
+
+def test_web_search_blocked_domains_json_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEB_SEARCH_BLOCKED_DOMAINS", '["x.com","y.com"]')
+    assert Settings().WEB_SEARCH_BLOCKED_DOMAINS == ["x.com", "y.com"]

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -67,7 +68,7 @@ def web_search(
     elapsed = time.monotonic() - start
 
     summary = _extract_summary(response)
-    hits = _extract_hits(response, summary)
+    hits = _extract_hits(response, summary, settings.WEB_SEARCH_BLOCKED_DOMAINS)
     return WebSearchResult(
         query=query,
         summary=summary,
@@ -100,7 +101,20 @@ def _extract_summary(response: Any) -> str:
     return "\n".join(parts)
 
 
-def _extract_hits(response: Any, summary: str) -> list[WebSearchHit]:
+def _is_blocked(url: str, blocked_domains: list[str]) -> bool:
+    """True if the URL's host equals or is a subdomain of any blocked entry.
+
+    Case-insensitive. Empty/malformed URLs and an empty blocklist return False.
+    """
+    if not blocked_domains or not url:
+        return False
+    host = (urlparse(url).hostname or "").lower()
+    if not host:
+        return False
+    return any(host == d.lower() or host.endswith("." + d.lower()) for d in blocked_domains if d)
+
+
+def _extract_hits(response: Any, summary: str, blocked_domains: list[str]) -> list[WebSearchHit]:
     output = getattr(response, "output", None) or []
     hits: list[WebSearchHit] = []
     for item in output:
@@ -111,7 +125,7 @@ def _extract_hits(response: Any, summary: str) -> list[WebSearchHit]:
                 url = _attr(res, "url")
                 title = _attr(res, "title") or url
                 snippet = _attr(res, "snippet") or ""
-                if url:
+                if url and not _is_blocked(str(url), blocked_domains):
                     hits.append(
                         WebSearchHit(
                             url=str(url),

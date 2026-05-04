@@ -6,10 +6,12 @@ lives here. Never hardcode values in risk/, execution/, or research/.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 TradingMode = Literal["paper", "real_capital"]
 KeyProviderKind = Literal["encrypted_file", "aws_kms"]
@@ -67,6 +69,22 @@ class Settings(BaseSettings):
     # Timeouts
     WEB_SEARCH_TIMEOUT_SEC: int = 60
     AGENT_TIMEOUT_SEC: int = 300
+
+    # Web-search blocklist: hosts (and their subdomains) whose URLs are
+    # stripped from web_search hits before they reach the trading-agent.
+    # NoDecode opts out of pydantic-settings' default JSON decoding so the
+    # env override can be a plain comma-separated string.
+    WEB_SEARCH_BLOCKED_DOMAINS: Annotated[list[str], NoDecode] = ["coinmarketcap.com"]
+
+    @field_validator("WEB_SEARCH_BLOCKED_DOMAINS", mode="before")
+    @classmethod
+    def _split_csv_domains(cls, v: object) -> object:
+        if isinstance(v, str):
+            stripped = v.strip()
+            if stripped.startswith("["):
+                return json.loads(stripped)
+            return [s.strip() for s in stripped.split(",") if s.strip()]
+        return v
 
     # Retention
     MARKET_SNAPSHOTS_RETENTION_DAYS: int = 30

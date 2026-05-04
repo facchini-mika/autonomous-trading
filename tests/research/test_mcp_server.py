@@ -119,3 +119,25 @@ def test_web_search_error_is_caught_and_serialised() -> None:
     """Smoke that the WebSearchError import works in this module."""
     err = WebSearchError("boom")
     assert "boom" in str(err)
+
+
+def test_call_tool_strips_blocked_domains_from_hits() -> None:
+    response = _stub_openai_response(
+        "Bitcoin closed up.",
+        hits=[
+            {"url": "https://pro.coinmarketcap.com/btc", "title": "CMC"},
+            {"url": "https://www.bloomberg.com/btc", "title": "Bloomberg"},
+        ],
+    )
+    client = _build_stub_client(response)
+    settings = Settings(OPENAI_API_KEY="test-key", WEB_SEARCH_BLOCKED_DOMAINS=["coinmarketcap.com"])
+    server = mcp_server.build_server(settings=settings, openai_client=client)
+
+    handler = _call_tool_handler(server)
+    request = MagicMock()
+    request.params.name = "web_search"
+    request.params.arguments = {"query": "Will BTC close above 100k?"}
+    result = asyncio.run(handler(request))
+    payload = json.loads(result.root.content[0].text)
+    urls = [h["url"] for h in payload["hits"]]
+    assert urls == ["https://www.bloomberg.com/btc"]
