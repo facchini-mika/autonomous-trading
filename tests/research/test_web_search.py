@@ -41,28 +41,114 @@ def test_returns_pydantic_result() -> None:
     assert res.model_used == _settings().OPENAI_MODEL
 
 
-def test_extracts_hits_from_web_search_call() -> None:
-    response = SimpleNamespace(
-        output_text="see https://x.test for details",
+def _ga_response(summary: str, citations: list[dict[str, str]]) -> SimpleNamespace:
+    """Build a GA `web_search` response shape with `message.content[*].annotations`."""
+    annotations = [
+        SimpleNamespace(
+            type="url_citation",
+            url=c["url"],
+            title=c.get("title", c["url"]),
+            start_index=c.get("start_index", 0),
+            end_index=c.get("end_index", len(summary)),
+        )
+        for c in citations
+    ]
+    message = SimpleNamespace(
+        type="message",
+        content=[SimpleNamespace(text=summary, annotations=annotations)],
+    )
+    return SimpleNamespace(
+        output_text=summary,
         output=[
-            SimpleNamespace(
-                type="web_search_call",
-                results=[
-                    SimpleNamespace(url="https://x.test", title="X", snippet="X test"),
-                    SimpleNamespace(url="https://y.test", title="Y", snippet="Y test"),
-                ],
-            ),
+            SimpleNamespace(type="reasoning"),
+            SimpleNamespace(type="web_search_call", action=None, status="completed", id="ws_x"),
+            message,
+        ],
+    )
+
+
+def test_extracts_hits_from_message_annotations() -> None:
+    response = _ga_response(
+        "Story summary citing two sources.",
+        [
+            {"url": "https://x.test", "title": "X article"},
+            {"url": "https://y.test", "title": "Y article"},
         ],
     )
     res = web_search("q", settings=_settings(), client=_mock_client(response))
     urls = {h.url for h in res.hits}
     assert urls == {"https://x.test", "https://y.test"}
-    cited = next(h for h in res.hits if h.url == "https://x.test")
-    assert cited.cited_in_summary is True
+    titles = {h.title for h in res.hits}
+    assert titles == {"X article", "Y article"}
+    # GA annotations are citations by construction → always cited.
+    assert all(h.cited_in_summary for h in res.hits)
+    # GA does not surface a snippet field on annotations.
+    assert all(h.snippet == "" for h in res.hits)
+
+
+def test_extracts_hits_deduplicates_repeated_urls() -> None:
+    response = _ga_response(
+        "Same source cited twice.",
+        [
+            {"url": "https://x.test", "title": "X"},
+            {"url": "https://x.test", "title": "X (again)"},
+        ],
+    )
+    res = web_search("q", settings=_settings(), client=_mock_client(response))
+    assert [h.url for h in res.hits] == ["https://x.test"]
+
+
+def test_extracts_hits_skips_blocked_domains() -> None:
+    response = _ga_response(
+        "CMC and Bloomberg cited.",
+        [
+            {"url": "https://pro.coinmarketcap.com/btc", "title": "CMC"},
+            {"url": "https://www.bloomberg.com/btc", "title": "Bloomberg"},
+        ],
+    )
+    settings = Settings(OPENAI_API_KEY="sk-test", WEB_SEARCH_BLOCKED_DOMAINS=["coinmarketcap.com"])
+    res = web_search("q", settings=settings, client=_mock_client(response))
+    assert [h.url for h in res.hits] == ["https://www.bloomberg.com/btc"]
+
+
+def test_extracts_hits_ignores_non_url_citation_annotations() -> None:
+    response = SimpleNamespace(
+        output_text="text",
+        output=[
+            SimpleNamespace(
+                type="message",
+                content=[
+                    SimpleNamespace(
+                        text="text",
+                        annotations=[
+                            SimpleNamespace(type="file_citation", url="ignored://x"),
+                            SimpleNamespace(type="url_citation", url="https://kept.test", title="Kept"),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    )
+    res = web_search("q", settings=_settings(), client=_mock_client(response))
+    assert [h.url for h in res.hits] == ["https://kept.test"]
 
 
 def test_handles_no_hits() -> None:
     response = SimpleNamespace(output_text="no results", output=[])
+    res = web_search("q", settings=_settings(), client=_mock_client(response))
+    assert res.hits == []
+
+
+def test_handles_message_without_annotations() -> None:
+    response = SimpleNamespace(
+        output_text="model answered without citing",
+        output=[
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(text="model answered without citing", annotations=None)],
+            ),
+        ],
+    )
     res = web_search("q", settings=_settings(), client=_mock_client(response))
     assert res.hits == []
 

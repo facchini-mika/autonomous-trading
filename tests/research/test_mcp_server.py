@@ -23,14 +23,16 @@ def _settings_with_key() -> Settings:
 
 
 def _stub_openai_response(summary: str, hits: list[dict[str, str]] | None = None) -> MagicMock:
+    """Stub a GA `web_search` response with `message.content[*].annotations`."""
     response = MagicMock()
     response.output_text = summary
     if hits is None:
         response.output = []
-    else:
-        results = [MagicMock(url=h["url"], title=h["title"], snippet=h.get("snippet", "")) for h in hits]
-        web_call = MagicMock(type="web_search_call", results=results)
-        response.output = [web_call]
+        return response
+    annotations = [MagicMock(type="url_citation", url=h["url"], title=h.get("title", h["url"])) for h in hits]
+    chunk = MagicMock(text=summary, annotations=annotations)
+    message = MagicMock(type="message", content=[chunk])
+    response.output = [message]
     return response
 
 

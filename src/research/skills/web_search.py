@@ -1,8 +1,14 @@
-"""OpenAI Responses API + `web_search_preview` Tool wrapper.
+"""OpenAI Responses API + `web_search` (GA) Tool wrapper.
 
 Returns a frozen Pydantic `WebSearchResult` so trading-agent inference can
 log the result deterministically. Errors propagate as `WebSearchError`; no
 silent fallback (the caller decides whether to skip the cycle or proceed).
+
+GA `web_search` exposes citations on `output[i].type == "message"` items
+under `content[j].annotations[k]` with `type == "url_citation"` and fields
+`url`, `title`, `start_index`, `end_index`. The deprecated `web_search_preview`
+shape (`web_search_call.results[*].{url,title,snippet}`) is no longer
+parsed — see PR #37 for the GA switch.
 """
 
 from __future__ import annotations
@@ -68,7 +74,7 @@ def web_search(
     elapsed = time.monotonic() - start
 
     summary = _extract_summary(response)
-    hits = _extract_hits(response, summary, settings.WEB_SEARCH_BLOCKED_DOMAINS)
+    hits = _extract_hits(response, settings.WEB_SEARCH_BLOCKED_DOMAINS)
     return WebSearchResult(
         query=query,
         summary=summary,
@@ -114,26 +120,32 @@ def _is_blocked(url: str, blocked_domains: list[str]) -> bool:
     return any(host == d.lower() or host.endswith("." + d.lower()) for d in blocked_domains if d)
 
 
-def _extract_hits(response: Any, summary: str, blocked_domains: list[str]) -> list[WebSearchHit]:
+def _extract_hits(response: Any, blocked_domains: list[str]) -> list[WebSearchHit]:
     output = getattr(response, "output", None) or []
     hits: list[WebSearchHit] = []
+    seen: set[str] = set()
     for item in output:
-        item_type = getattr(item, "type", None) or (item.get("type") if isinstance(item, dict) else None)
-        if item_type == "web_search_call":
-            results = getattr(item, "results", None) or (item.get("results") if isinstance(item, dict) else None) or []
-            for res in results:
-                url = _attr(res, "url")
-                title = _attr(res, "title") or url
-                snippet = _attr(res, "snippet") or ""
-                if url and not _is_blocked(str(url), blocked_domains):
-                    hits.append(
-                        WebSearchHit(
-                            url=str(url),
-                            title=str(title),
-                            snippet=str(snippet),
-                            cited_in_summary=str(url) in summary,
-                        ),
-                    )
+        if _attr(item, "type") != "message":
+            continue
+        for chunk in _attr(item, "content") or []:
+            for ann in _attr(chunk, "annotations") or []:
+                if _attr(ann, "type") != "url_citation":
+                    continue
+                url = _attr(ann, "url")
+                if not url or url in seen:
+                    continue
+                if _is_blocked(str(url), blocked_domains):
+                    continue
+                seen.add(url)
+                title = _attr(ann, "title") or url
+                hits.append(
+                    WebSearchHit(
+                        url=str(url),
+                        title=str(title),
+                        snippet="",
+                        cited_in_summary=True,
+                    ),
+                )
     return hits
 
 
