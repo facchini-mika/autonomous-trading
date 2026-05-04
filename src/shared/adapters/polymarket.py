@@ -106,6 +106,7 @@ class PolymarketAdapter:
         idempotency_store: IdempotencyStore | None = None,
         clock: Callable[[], datetime] | None = None,
         client_factory: Callable[..., Any] | None = None,
+        default_fee_rate_bps: int = 0,
     ) -> None:
         self._key_provider = key_provider
         self._host = host
@@ -114,6 +115,7 @@ class PolymarketAdapter:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._client = self._make_client(client_factory)
         self._api_creds_set = False
+        self._default_fee_rate_bps = default_fee_rate_bps
 
     # --- Reads ---------------------------------------------------------------
 
@@ -133,6 +135,24 @@ class PolymarketAdapter:
     def get_resolution(self, market_id: str) -> Resolution | None:
         raw = self._retry(lambda: self._client.get_market(market_id), op="get_market")
         return _parse_resolution(market_id, raw)
+
+    def estimate_fee(self, order: Order) -> float:
+        """Estimate the taker fee in USD for `order` from the market metadata.
+
+        Reads ``fee_rate_bps`` (or the v2 alias ``feeRateBps``) from the
+        market response if present and falls back to ``default_fee_rate_bps``
+        otherwise. Network failure also falls back so the cycle does not
+        abort on a flaky metadata call — the solvency gate then operates
+        on a conservative Settings-driven default.
+        """
+        try:
+            raw = self._retry(lambda: self._client.get_market(order.market_id), op="get_market")
+        except Exception as exc:
+            logger.warning("Fee estimate fetch failed for %s: %s", order.market_id, exc)
+            rate_bps = self._default_fee_rate_bps
+        else:
+            rate_bps = _parse_fee_rate_bps(raw, default=self._default_fee_rate_bps)
+        return float(order.notional_usd) * rate_bps / 10000.0
 
     # --- Writes --------------------------------------------------------------
 
@@ -339,6 +359,25 @@ def _depth_within(levels: list[tuple[float, float]], reference: float, *, side: 
         if (side == "bid" and price >= bound) or (side == "ask" and price <= bound):
             total += size
     return total
+
+
+def _parse_fee_rate_bps(raw: Any, *, default: int) -> int:
+    """Pull a fee-rate-bps field from a market metadata response.
+
+    Tries snake_case (``fee_rate_bps``) and v2 camelCase (``feeRateBps``).
+    Returns ``default`` if neither is present or the value is unparseable.
+    """
+    if not isinstance(raw, dict):
+        return default
+    for key in ("fee_rate_bps", "feeRateBps"):
+        value = raw.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return default
 
 
 def _parse_metadata(market_id: str, raw: Any) -> MarketMetadata:

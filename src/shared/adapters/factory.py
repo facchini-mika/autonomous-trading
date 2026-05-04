@@ -58,6 +58,7 @@ def make_adapter(
         key_provider=key,
         host=settings.POLYMARKET_HOST,
         chain_id=settings.POLYGON_CHAIN_ID,
+        default_fee_rate_bps=settings.FEE_RATE_BPS,
     )
 
     mode = cast("str", settings.TRADING_MODE)
@@ -68,6 +69,7 @@ def make_adapter(
             live_adapter=live,
             session_factory=session_factory or _default_session_factory,
             decision_id_provider=decision_id_provider or _missing_decision_id,
+            fee_rate_bps=settings.FEE_RATE_BPS,
         )
     msg = f"Unknown TRADING_MODE: {mode}"
     raise ValueError(msg)

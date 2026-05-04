@@ -42,6 +42,16 @@ class PredictionMarketAdapter(Protocol):
         """Return the settled resolution, or None if not yet resolved."""
         ...
 
+    def estimate_fee(self, order: Order) -> float:
+        """Return the estimated fee in USD for `order` before submission.
+
+        The Lead calls this once per `SizingProposal` so the solvency gate
+        can require ``cash >= notional + fee``. Implementations should be
+        cheap (cached/static) — adapters that need a live API call must
+        retry/timeout themselves and fall back to a Settings-driven default.
+        """
+        ...
+
     # Writes
     def place_order(self, order: Order) -> OrderResult:
         """Submit an order and return the immediate result."""

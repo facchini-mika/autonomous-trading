@@ -12,6 +12,7 @@ from risk.limits import (
     CYCLE_CAP,
     EDGE_SIZING_SCALE,
     EDGE_THRESHOLD,
+    FEE_RATE_BPS,
     MAX_OPEN_POSITIONS,
     MAX_ORDER_PCT_EQUITY,
     MAX_TRADE_FRACTION,
@@ -35,3 +36,4 @@ def test_constants_match_settings_defaults() -> None:
     assert BASE_TRADE_FRACTION == s.BASE_TRADE_FRACTION
     assert EDGE_SIZING_SCALE == s.EDGE_SIZING_SCALE
     assert MAX_TRADE_FRACTION == s.MAX_TRADE_FRACTION
+    assert FEE_RATE_BPS == s.FEE_RATE_BPS

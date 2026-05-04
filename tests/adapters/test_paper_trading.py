@@ -212,6 +212,71 @@ def test_cancel_order_marks_paper_row(
     assert res.cancelled_size == pytest.approx(3.5)
 
 
+def test_estimate_fee_uses_fee_rate_bps(
+    fake_live: FakeAdapter,
+    session_factory,
+    decision_id: UUID,
+    fixed_now: datetime,
+) -> None:
+    adapter = PaperTradingAdapter(
+        live_adapter=fake_live,
+        session_factory=session_factory,
+        decision_id_provider=lambda: decision_id,
+        clock=lambda: fixed_now,
+        fee_rate_bps=200,
+    )
+    order = Order(market_id="0xa", side="yes", size=10, price=0.5, notional_usd=5.0, idempotency_key="fee")
+    assert adapter.estimate_fee(order) == pytest.approx(0.10)  # 5.0 * 200 / 10000
+
+
+def test_estimate_fee_zero_when_unset(
+    fake_live: FakeAdapter,
+    session_factory,
+    decision_id: UUID,
+    fixed_now: datetime,
+) -> None:
+    adapter = PaperTradingAdapter(
+        live_adapter=fake_live,
+        session_factory=session_factory,
+        decision_id_provider=lambda: decision_id,
+        clock=lambda: fixed_now,
+    )
+    order = Order(market_id="0xa", side="yes", size=10, price=0.5, notional_usd=5.0, idempotency_key="fee")
+    assert adapter.estimate_fee(order) == 0.0
+
+
+def test_place_order_writes_simulated_fees(
+    fake_live: FakeAdapter,
+    decision_id: UUID,
+    fixed_now: datetime,
+) -> None:
+    seen: dict[str, object] = {}
+
+    @contextmanager
+    def capture_factory():
+        sess = MagicMock()
+
+        def remember(stmt, params=None):
+            if params:
+                seen.update(params)
+            return sess
+
+        sess.execute = remember
+        yield sess
+
+    adapter = PaperTradingAdapter(
+        live_adapter=fake_live,
+        session_factory=capture_factory,
+        decision_id_provider=lambda: decision_id,
+        clock=lambda: fixed_now,
+        fee_rate_bps=200,
+    )
+    order = Order(market_id="0xa", side="yes", size=10, price=0.5, notional_usd=5.0, idempotency_key="fee-write")
+    result = adapter.place_order(order)
+    assert result.fees == pytest.approx(0.10)
+    assert seen["fees"] == pytest.approx(0.10)
+
+
 def test_cancel_order_not_found(
     fake_live: FakeAdapter,
     decision_id: UUID,

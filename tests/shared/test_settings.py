@@ -16,6 +16,7 @@ def test_defaults_are_paper_mode() -> None:
     assert settings.CONCENTRATION_CAP == 0.15
     assert settings.CYCLE_CAP == 0.25
     assert settings.EDGE_THRESHOLD == 0.03
+    assert settings.FEE_RATE_BPS == 200
 
 
 def test_real_capital_override(monkeypatch: pytest.MonkeyPatch) -> None:

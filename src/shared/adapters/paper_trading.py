@@ -51,11 +51,13 @@ class PaperTradingAdapter:
         session_factory: Callable[[], AbstractContextManager[Session]],
         decision_id_provider: Callable[[], UUID],
         clock: Callable[[], datetime] | None = None,
+        fee_rate_bps: int = 0,
     ) -> None:
         self._live = live_adapter
         self._session_factory = session_factory
         self._decision_id_provider = decision_id_provider
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._fee_rate_bps = fee_rate_bps
 
     # --- Reads (forward) -----------------------------------------------------
 
@@ -71,12 +73,22 @@ class PaperTradingAdapter:
     def get_resolution(self, market_id: str) -> Resolution | None:
         return self._live.get_resolution(market_id)
 
+    def estimate_fee(self, order: Order) -> float:
+        """Return the simulated paper fee for `order`.
+
+        Paper-mode fees are deterministic — we don't call the live adapter
+        here so paper cycles stay reproducible. ``fee_rate_bps`` is wired
+        from ``Settings.FEE_RATE_BPS`` by the factory.
+        """
+        return float(order.notional_usd) * self._fee_rate_bps / 10000.0
+
     # --- Writes (redirect) ---------------------------------------------------
 
     def place_order(self, order: Order) -> OrderResult:
         decision_id = self._decision_id_provider()
         broker_id = f"{PAPER_BROKER_PREFIX}{uuid.uuid4()}"
         now = self._clock()
+        fees = self.estimate_fee(order)
 
         with self._session_factory() as session:
             session.execute(
@@ -87,7 +99,7 @@ class PaperTradingAdapter:
                         fees, gas, status, broker_order_id, created_at, filled_at
                     ) VALUES (
                         :decision_id, :market_id, :side, :size, :price, :notional_usd,
-                        0, 0, 'filled', :broker_order_id, :now, :now
+                        :fees, 0, 'filled', :broker_order_id, :now, :now
                     )
                     """,
                 ),
@@ -98,6 +110,7 @@ class PaperTradingAdapter:
                     "size": order.size,
                     "price": order.price,
                     "notional_usd": order.notional_usd,
+                    "fees": fees,
                     "broker_order_id": broker_id,
                     "now": now,
                 },
@@ -107,7 +120,7 @@ class PaperTradingAdapter:
             status="filled",
             fill_price=order.price,
             filled_size=order.size,
-            fees=0.0,
+            fees=fees,
             broker_order_id=broker_id,
         )
 

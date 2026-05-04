@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     EDGE_SIZING_SCALE: float = 1.0
     MAX_TRADE_FRACTION: float = 0.10
 
+    # Fee management (Phase 6c — pre-live integration)
+    FEE_RATE_BPS: int = 200
+
     # Lessons / learning
     LESSONS_TOP_K: int = 10
     LESSONS_LOOKBACK_DAYS: int = 30

@@ -453,3 +453,77 @@ Every PR that touches one of the following must have an entry here:
   `_decision_to_order` path falls back to `gate_results.notional_usd`
   (PR 1 behaviour), so the system degrades to "no sizing" rather than
   "wrong sizing".
+
+
+## 2026-05-03 — Phase 6c: Fee-management pre-live integration (src/risk/ touch)
+
+- **Category:** Risk-sensitive — modifies `src/risk/solvency_gate.py`
+  signature and adds one constant to `src/risk/limits.py`. No
+  `MAX_CAPITAL_EUR` change. No `TRADING_MODE` flip (default still
+  `paper`).
+- **Branch / PR:** `feature/fee-management-pre-live` — pending push.
+- **Description:**
+  - New `Settings.FEE_RATE_BPS = 200` (2 %) and mirrored
+    `risk.limits.FEE_RATE_BPS`. Drift-guard test extended.
+  - New `PredictionMarketAdapter.estimate_fee(order) -> float` Protocol
+    method. Implemented in `PolymarketAdapter` (reads `fee_rate_bps` /
+    `feeRateBps` from `get_market` response, falls back to the
+    Settings-driven default on missing field or network error) and in
+    `PaperTradingAdapter` (deterministic `notional × fee_rate_bps /
+    10000`, no live delegation). `FakeAdapter` test double matches.
+  - Factory wires `Settings.FEE_RATE_BPS` into both adapters at
+    construction time.
+  - `SizingProposal` gains `fee_estimate_usd: float`. The Lead's
+    `_build_sizing_proposals` calls `adapter.estimate_fee` per
+    proposal and packs the result; risk-execution doctrine instructs
+    the subagent to forward this value into `solvency_gate.evaluate`.
+  - `solvency_gate.evaluate(state, order, fee_estimate=0.0)` now
+    requires `cash.available >= notional + fee_estimate`. Default
+    keeps backwards-compat for existing tests; risk-execution always
+    passes the proposal value in production.
+  - `PaperTradingAdapter.place_order` now writes the simulated fee
+    into `paper_trades.fees` and `OrderResult.fees` (was hardcoded 0).
+    Paper-PnL is now realistic against `outcome_math.realized_pnl =
+    gross - fees - gas`.
+  - Doctrine prompts updated: `risk_execution.md` documents the
+    fee-aware solvency call; `trading_agent.md` warns that the
+    edge-threshold is gross and that marginal trades may have negative
+    EV after fees.
+  - 17 new tests added across solvency_gate, polymarket adapter,
+    paper_trading adapter, and lead_bootstrap (property + unit).
+- **What could go wrong:**
+  - **Stale fee estimate** — if a market's CLOB fee changes between
+    the `get_market` call and the actual order fill, the solvency
+    check buffer is wrong by the delta. Worst case: order rejected
+    by CLOB (false positive on solvency); no negative-cash failure.
+  - **API call cost** — every `SizingProposal` now triggers a live
+    `get_market` call in real-mode. With ≤ 50 proposals per cycle
+    over 12 minutes, this is well within rate limits, but adds
+    latency. Out of cycle budget if the API hangs; the network-error
+    fallback to default ensures the cycle continues.
+  - **Default 200 bps** — chosen as a conservative upper bound for
+    Polymarket CLOB taker fees (currently 0–200 bps depending on
+    market). If real fees are higher, the solvency check passes
+    optimistically. Mitigation: operator can raise via env override.
+  - **Paper PnL changes** — every paper backtest after this change
+    will show 2 % lower notional return per trade. Pre-merge paper
+    cycles cannot be compared 1:1 with post-merge cycles.
+- **Why it's still safe:**
+  - `paper`-mode default unchanged. `MAX_CAPITAL_EUR` still hardcoded
+    0 in `capital_gate.py`. Real-capital orders still rejected by the
+    capital gate before solvency runs.
+  - Fee estimate failure path is non-fatal: returns 0.0, the cycle
+    continues, the solvency gate operates without the fee buffer
+    (same as pre-PR behaviour). One cycle of degraded behaviour, not
+    a system-wide failure.
+  - 100 % `risk/` coverage maintained. New solvency property test
+    covers the full `(available, notional, fee) ∈ ℝ³` space.
+  - No DB schema change — `fees`/`gas` columns already existed on
+    `paper_trades` and `trades` since `0001_initial_schema.py`.
+- **Mitigation / rollback:** Revert PR. `solvency_gate.evaluate`
+  reverts to no-fee semantics. `PaperTradingAdapter` resumes writing
+  `fees=0`. `Settings.FEE_RATE_BPS` is unread by any other code path.
+  Polymarket-adapter `estimate_fee` is the only Protocol method that
+  would disappear — call sites are limited to
+  `_build_sizing_proposals`, which already tolerates a missing
+  adapter (returns 0.0).

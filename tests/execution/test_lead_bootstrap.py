@@ -216,6 +216,9 @@ def test_default_trading_mode_is_paper_e2e() -> None:
         def get_resolution(self, market_id: str):
             return None
 
+        def estimate_fee(self, order: Any) -> float:
+            return 0.0
+
         def place_order(self, order: Any) -> Any:
             placed.append(order)
             return OrderResult(

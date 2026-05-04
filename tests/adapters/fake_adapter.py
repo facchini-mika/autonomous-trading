@@ -23,13 +23,15 @@ from shared.models import (
 class FakeAdapter:
     """Test double for `PredictionMarketAdapter`."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, fee_rate_bps: int = 0) -> None:
         self.markets: dict[str, Market] = {}
         self.orderbooks: dict[str, Orderbook] = {}
         self.metadata: dict[str, MarketMetadata] = {}
         self.resolutions: dict[str, Resolution] = {}
         self.placed_orders: list[Order] = []
         self.cancelled_orders: list[str] = []
+        self.fee_rate_bps = fee_rate_bps
+        self.fee_estimate_calls: list[Order] = []
 
     def get_markets(self, *, limit: int) -> list[Market]:
         return list(self.markets.values())[:limit]
@@ -42,6 +44,10 @@ class FakeAdapter:
 
     def get_resolution(self, market_id: str) -> Resolution | None:
         return self.resolutions.get(market_id)
+
+    def estimate_fee(self, order: Order) -> float:
+        self.fee_estimate_calls.append(order)
+        return order.notional_usd * self.fee_rate_bps / 10000.0
 
     def place_order(self, order: Order) -> OrderResult:
         self.placed_orders.append(order)

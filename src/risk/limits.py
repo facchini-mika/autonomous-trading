@@ -23,3 +23,6 @@ EDGE_THRESHOLD: Final[float] = 0.03
 BASE_TRADE_FRACTION: Final[float] = 0.02
 EDGE_SIZING_SCALE: Final[float] = 1.0
 MAX_TRADE_FRACTION: Final[float] = 0.10
+
+# Fee management (Phase 6c — pre-live integration)
+FEE_RATE_BPS: Final[int] = 200

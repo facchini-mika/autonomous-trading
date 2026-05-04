@@ -31,6 +31,7 @@ class SizingProposal(BaseModel):
     proposed_notional_usd: float = Field(gt=0.0)
     side: OrderSide
     q_market: float = Field(gt=0.0, lt=1.0)
+    fee_estimate_usd: float = Field(default=0.0, ge=0.0)
 
 
 class Universe(BaseModel):

@@ -53,6 +53,16 @@ negative edge → NO is cheap.
 edge_threshold`. Below that, *do not* emit a row — silence is the
 correct output for non-actionable markets.
 
+**Fee awareness.** `edge_threshold` is gross. Polymarket taker fees
+are typically 1–2 % per side (`Settings.FEE_RATE_BPS`, default 200 bps
+= 2 %). The risk-engine's solvency gate buffers cash for the fee, but
+the threshold itself does not. A trade with `|edge| ≈ threshold` may
+have *zero or negative* expected value after fees. Your conviction
+should reflect this: marginal edges near the threshold need stronger
+signal (recent catalyst, multiple confirming sources) than mid-range
+edges where the fee is a smaller fraction of the gain. Don't pad
+predictions with low-conviction marginal calls.
+
 **Mispricing playbook.** Three patterns to look for, in priority order:
 
 1. **News catalyst.** A relevant event happened in the last 24 h and

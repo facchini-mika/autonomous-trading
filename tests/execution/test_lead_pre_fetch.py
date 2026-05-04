@@ -15,6 +15,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+
 from execution.lead_bootstrap import (
     _build_sizing_proposals,
     _collect_trading_context,
@@ -34,6 +36,7 @@ from shared.models import (
     Decision,
     Market,
     MarketMetadata,
+    Order,
     Orderbook,
     OrderResult,
     PortfolioState,
@@ -325,6 +328,46 @@ def test_build_sizing_proposals_drops_invalid_q_market() -> None:
     assert proposals == []
 
 
+def test_build_sizing_proposals_fee_estimate_zero_without_adapter() -> None:
+    portfolio = _portfolio()
+    predictions = [_prediction(p_yes=0.7, edge=0.20)]
+    proposals = _build_sizing_proposals(predictions=predictions, portfolio=portfolio)
+    assert len(proposals) == 1
+    assert proposals[0].fee_estimate_usd == 0.0
+
+
+def test_build_sizing_proposals_fee_estimate_uses_adapter() -> None:
+    portfolio = _portfolio()
+    predictions = [_prediction(p_yes=0.7, edge=0.20)]
+    adapter = FakeAdapter(fee_rate_bps=200)
+    proposals = _build_sizing_proposals(
+        predictions=predictions,
+        portfolio=portfolio,
+        adapter=adapter,
+    )
+    assert len(proposals) == 1
+    expected = proposals[0].proposed_notional_usd * 200 / 10000.0
+    assert proposals[0].fee_estimate_usd == pytest.approx(expected)
+    assert len(adapter.fee_estimate_calls) == 1
+
+
+def test_build_sizing_proposals_fee_estimate_swallows_adapter_error() -> None:
+    class _ExplodingAdapter(FakeAdapter):
+        def estimate_fee(self, order: Order) -> float:
+            raise RuntimeError("boom")
+
+    portfolio = _portfolio()
+    predictions = [_prediction(p_yes=0.7, edge=0.20)]
+    adapter = _ExplodingAdapter()
+    proposals = _build_sizing_proposals(
+        predictions=predictions,
+        portfolio=portfolio,
+        adapter=adapter,
+    )
+    assert len(proposals) == 1
+    assert proposals[0].fee_estimate_usd == 0.0
+
+
 def test_place_orders_collects_trades_and_skips_non_trade_decisions() -> None:
     fake = FakeAdapter()
     decisions = [
@@ -364,6 +407,9 @@ def test_place_orders_skips_rejected_orders() -> None:
 
         def get_resolution(self, market_id: str) -> Any:
             return None
+
+        def estimate_fee(self, order: Any) -> float:
+            return 0.0
 
         def place_order(self, order: Any) -> Any:
             self.placed_orders.append(order)

@@ -25,6 +25,13 @@ infer the proposal from `inference_log.proposed_notional_usd` if
 present, else use a default of `0.02 × portfolio_state.equity` so the
 gate logic is exercised).
 
+Each `SizingProposal` carries a Lead-pre-computed
+`fee_estimate_usd` (Phase 6c — pulled from `adapter.estimate_fee` per
+proposal). Pass that value into `solvency_gate.evaluate` so the gate
+checks `cash >= notional + fee`. If the proposal lacks a fee estimate,
+default to `0.0` and proceed; the gate then operates without a fee
+buffer.
+
 ## Settings the Lead encodes for you
 
 - `Settings.TRADING_MODE` — `paper` or `real_capital`. Read off
@@ -59,8 +66,9 @@ gate logic is exercised).
    gates for this prediction.
 2. **`capital_gate.evaluate(state, order)`** — paper-mode passes
    automatically. Real-capital with `MAX_CAPITAL_EUR=0` rejects.
-3. **`solvency_gate.evaluate(state, order)`** — fail closed when
-   available cash is insufficient.
+3. **`solvency_gate.evaluate(state, order, fee_estimate=proposal.fee_estimate_usd)`**
+   — fail closed when `cash.available < notional + fee_estimate`.
+   Pass the proposal's pre-computed fee, or 0.0 if missing.
 4. **`sanity_gates.evaluate(state, order)`** — composite of size,
    price, rate, and position-count checks. Position-count is advisory
    (`requires_approval=True`); other failures are hard rejects.

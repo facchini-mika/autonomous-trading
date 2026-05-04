@@ -247,6 +247,98 @@ def test_place_order_parses_v2_response_shape(adapter: PolymarketAdapter, fake_c
     assert res.fill_price == pytest.approx(0.51)
 
 
+def test_estimate_fee_reads_market_fee_rate(fake_clob: MagicMock) -> None:
+    fixed_now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    adapter = PolymarketAdapter(
+        key_provider=MagicMock(),
+        host="http://test",
+        chain_id=137,
+        clock=lambda: fixed_now,
+        client_factory=lambda **_kw: fake_clob,
+        default_fee_rate_bps=200,
+    )
+    fake_clob.get_market.return_value = {"fee_rate_bps": 50}
+    order = Order(
+        market_id="0xmarket",
+        side="yes",
+        size=10.0,
+        price=0.50,
+        notional_usd=5.0,
+        idempotency_key="fee-1",
+    )
+    fee = adapter.estimate_fee(order)
+    assert fee == pytest.approx(0.025)  # 5.0 * 50 / 10000
+
+
+def test_estimate_fee_reads_v2_camelcase(fake_clob: MagicMock) -> None:
+    fixed_now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    adapter = PolymarketAdapter(
+        key_provider=MagicMock(),
+        host="http://test",
+        chain_id=137,
+        clock=lambda: fixed_now,
+        client_factory=lambda **_kw: fake_clob,
+        default_fee_rate_bps=200,
+    )
+    fake_clob.get_market.return_value = {"feeRateBps": 100}
+    order = Order(
+        market_id="0xmarket",
+        side="yes",
+        size=10.0,
+        price=0.50,
+        notional_usd=5.0,
+        idempotency_key="fee-2",
+    )
+    fee = adapter.estimate_fee(order)
+    assert fee == pytest.approx(0.05)  # 5.0 * 100 / 10000
+
+
+def test_estimate_fee_falls_back_to_default(fake_clob: MagicMock) -> None:
+    fixed_now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    adapter = PolymarketAdapter(
+        key_provider=MagicMock(),
+        host="http://test",
+        chain_id=137,
+        clock=lambda: fixed_now,
+        client_factory=lambda **_kw: fake_clob,
+        default_fee_rate_bps=200,
+    )
+    fake_clob.get_market.return_value = {}  # No fee field
+    order = Order(
+        market_id="0xmarket",
+        side="yes",
+        size=10.0,
+        price=0.50,
+        notional_usd=100.0,
+        idempotency_key="fee-3",
+    )
+    fee = adapter.estimate_fee(order)
+    assert fee == pytest.approx(2.0)  # 100.0 * 200 / 10000
+
+
+def test_estimate_fee_falls_back_on_network_error(fake_clob: MagicMock) -> None:
+    fixed_now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    adapter = PolymarketAdapter(
+        key_provider=MagicMock(),
+        host="http://test",
+        chain_id=137,
+        clock=lambda: fixed_now,
+        client_factory=lambda **_kw: fake_clob,
+        default_fee_rate_bps=200,
+    )
+    fake_clob.get_market.side_effect = RuntimeError("network down")
+    order = Order(
+        market_id="0xmarket",
+        side="yes",
+        size=10.0,
+        price=0.50,
+        notional_usd=100.0,
+        idempotency_key="fee-4",
+    )
+    fee = adapter.estimate_fee(order)
+    assert fee == pytest.approx(2.0)  # falls back to default
+
+
 def test_to_clob_order_args_maps_side() -> None:
     o = _make_order("k", side="yes")
     args = _to_clob_order_args(o)

@@ -36,6 +36,7 @@ from shared.models import (
     Note,
     Order,
     Orderbook,
+    OrderSide,
     PortfolioState,
     Position,
     Prediction,
@@ -126,7 +127,7 @@ def bootstrap_team(
     )
     predictions = list(trading_out.predictions)
 
-    proposals = _build_sizing_proposals(predictions=predictions, portfolio=portfolio)
+    proposals = _build_sizing_proposals(predictions=predictions, portfolio=portfolio, adapter=adapter)
     risk_out = risk(
         RiskExecutionTask(
             predictions=predictions,
@@ -740,6 +741,7 @@ def _build_sizing_proposals(
     *,
     predictions: list[Prediction],
     portfolio: PortfolioState,
+    adapter: PredictionMarketAdapter | None = None,
 ) -> list[SizingProposal]:
     """Compute one ``SizingProposal`` per prediction with non-zero notional.
 
@@ -747,6 +749,10 @@ def _build_sizing_proposals(
     trading-agent computes ``edge = p_yes - q_market`` against the
     side-relevant orderbook quote, we can invert. Predictions with
     out-of-range derived ``q_market`` or zero notional are dropped.
+
+    When ``adapter`` is supplied, ``adapter.estimate_fee`` is called for
+    each proposal so risk-execution can solvency-check ``cash >= notional
+    + fee``. Tests that don't care about fees may omit it.
     """
     out: list[SizingProposal] = []
     equity = portfolio.equity
@@ -761,7 +767,14 @@ def _build_sizing_proposals(
         )
         if notional <= 0.0:
             continue
-        side = "yes" if prediction.edge > 0 else "no"
+        side: OrderSide = "yes" if prediction.edge > 0 else "no"
+        fee_estimate = _estimate_proposal_fee(
+            adapter=adapter,
+            market_id=prediction.market_id,
+            side=side,
+            notional=notional,
+            q_market=q_market,
+        )
         out.append(
             SizingProposal(
                 market_id=prediction.market_id,
@@ -769,9 +782,46 @@ def _build_sizing_proposals(
                 proposed_notional_usd=notional,
                 side=side,
                 q_market=q_market,
+                fee_estimate_usd=fee_estimate,
             )
         )
     return out
+
+
+def _estimate_proposal_fee(
+    *,
+    adapter: PredictionMarketAdapter | None,
+    market_id: str,
+    side: OrderSide,
+    notional: float,
+    q_market: float,
+) -> float:
+    """Best-effort fee estimate for one proposal.
+
+    Builds a probe ``Order`` with the same ``market_id``/``side``/notional
+    the proposal will eventually become and asks the adapter for a fee.
+    Returns 0.0 when no adapter is supplied (tests) or when the call
+    raises — solvency can still operate, just without the fee buffer.
+    """
+    if adapter is None:
+        return 0.0
+    price = q_market if side == "yes" else (1.0 - q_market)
+    if price <= 0 or price >= 1:
+        return 0.0
+    size = notional / price
+    probe = Order(
+        market_id=market_id,
+        side=side,
+        size=size,
+        price=price,
+        notional_usd=notional,
+        idempotency_key=f"fee-probe:{market_id}:{side}",
+    )
+    try:
+        return float(adapter.estimate_fee(probe))
+    except Exception as exc:
+        logger.warning("fee_estimate_failed", market_id=market_id, error=str(exc))
+        return 0.0
 
 
 def _team_cleanup(*, cycle_id: str) -> None:
