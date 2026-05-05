@@ -60,6 +60,7 @@ class Prediction(BaseModel):
     edge: float
     inference_log: dict[str, Any] = Field(default_factory=dict)
     latency_ms: int = Field(ge=0)
+    cycle_id: str | None = None
     outcome: bool | None = None
     realized_pnl: float | None = None
     created_at: datetime

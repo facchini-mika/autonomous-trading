@@ -177,7 +177,7 @@ def bootstrap_team(
         _log_budget_abort(cycle_id=cycle_id, stage="trading-agent", exc=exc)
         unbind("cycle_id")
         raise CycleAbortedError(reason=str(exc), cycle_id=cycle_id, stage="trading-agent") from exc
-    predictions = list(trading_out.predictions)
+    predictions = [p.model_copy(update={"cycle_id": cycle_id}) for p in trading_out.predictions]
 
     proposals = _build_sizing_proposals(predictions=predictions, portfolio=portfolio, adapter=adapter)
     try:
@@ -561,9 +561,9 @@ def _persist_predictions_and_decisions(
                 text(
                     """
                     INSERT INTO predictions (id, market_id, agent_id, p_raw, inference_log,
-                        latency_ms, outcome, realized_pnl, created_at)
+                        latency_ms, cycle_id, outcome, realized_pnl, created_at)
                     VALUES (:id, :market_id, :agent_id, :p_raw, CAST(:log AS jsonb),
-                        :latency_ms, :outcome, :realized_pnl, :created_at)
+                        :latency_ms, :cycle_id, :outcome, :realized_pnl, :created_at)
                     """,
                 ),
                 {
@@ -573,6 +573,7 @@ def _persist_predictions_and_decisions(
                     "p_raw": p.p_yes,
                     "log": json.dumps(p.inference_log),
                     "latency_ms": p.latency_ms,
+                    "cycle_id": p.cycle_id,
                     "outcome": p.outcome,
                     "realized_pnl": p.realized_pnl,
                     "created_at": p.created_at,

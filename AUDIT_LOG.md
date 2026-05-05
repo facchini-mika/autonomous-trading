@@ -590,3 +590,68 @@ Every PR that touches one of the following must have an entry here:
   Subagent frontmatter is meta-config only (Claude routes to the
   named model — no code path depends on it). Revert is one squash
   away from `031aea4f`.
+
+## 2026-05-05 — outcome_ingestion realized_pnl aggregation + predictions.cycle_id
+
+- **Category:** Schema migration + spec update. No `src/risk/**` touch,
+  no TRADING_MODE flip, no `MAX_CAPITAL_EUR` change. Logged here because
+  the bug masked the entire Tier-1 performance-feedback signal and the
+  fix introduces a new persisted column.
+- **PR:** #54
+- **Description:**
+  - `_set_predictions_outcome` in `src/execution/outcome_ingestion.py`
+    historically wrote only `outcome`, never `realized_pnl`, despite
+    the docstring, `trading_feedback.md §31-32`, `orchestration.md §37`,
+    and the migration-0001 column-level GRANT all requiring both.
+    Effect: `predictions.realized_pnl` was deterministically NULL on
+    every resolved row; Tier-1 metrics (`pnl_30d`, `sharpe_30d`)
+    sourced from it returned 0/NULL for the entire history of the
+    project.
+  - Migration `0007_predictions_cycle_id` adds a nullable `cycle_id`
+    column on `predictions` plus index `ix_predictions_cycle_market`
+    on `(cycle_id, market_id)`. Required because `predictions` had
+    no FK or shared identifier with `decisions`/`trades` — only
+    `market_id`, which fans out across cycles.
+  - Lead now stamps the active `cycle_id` onto each prediction via
+    `model_copy` before INSERT (`lead_bootstrap.py:180`).
+  - New `_set_predictions_realized_pnl` aggregates
+    `SUM(trades + paper_trades.realized_pnl)` over
+    `JOIN decisions ON (cycle_id, market_id)`, COALESCE-ing 0-trade
+    predictions to `0.0`. Idempotent via `realized_pnl IS NULL` plus
+    `cycle_id IS NOT NULL` guard for legacy rows.
+  - Same fragile `market_id`-only JOIN in `lessons_summary.py` is
+    tightened to `(cycle_id, market_id)` in the same PR so reader
+    and writer share the contract.
+  - Spec clarification in `trading_feedback.md §3` documents the
+    prediction-level aggregation convention and the 0.0-vs-NULL
+    semantics for hold/skip/gate-blocked predictions.
+- **Risk:**
+  - Schema additive only (nullable column + index) — backwards-compatible
+    by construction. Existing rows with `cycle_id IS NULL` are skipped
+    by the aggregator's WHERE-clause guard, not corrupted.
+  - The aggregator runs inside `outcome_ingestion`, which binds to the
+    `outcome_ingestion` Postgres role. That role already had
+    `UPDATE (outcome, realized_pnl)` privilege from migration 0001;
+    no new grant needed. `INSERT`/`DELETE` still denied by role.
+  - Live-aggregation correctness depends on every paper/real-capital
+    cycle stamping `cycle_id` correctly. Verified by
+    `test_bootstrap_writes_predictions_and_decisions` in
+    `tests/execution/test_lead_bootstrap.py`.
+- **Why it's still safe:**
+  - `paper`-mode default unchanged. `MAX_CAPITAL_EUR` still 0. No
+    `src/risk/**` touch — order-placement decisions unaffected.
+  - Migration applied locally against dev DB without errors; head is
+    `0007_predictions_cycle_id`.
+  - 401 unit tests pass; CI green (10/10 checks); `ruff`,
+    `ruff format`, `mypy --strict`, `gitleaks`, `trufflehog` clean.
+  - End-to-end smoke against a real resolved market not yet performed
+    in this branch — local cycle aborted at the scanner-reviewer stage
+    on subagent timeout (orthogonal, pre-existing operational issue
+    unrelated to this PR). Schema and code paths verified by tests +
+    CI's `e2e-paper-cycle` job. First post-merge cycle that produces a
+    resolution will produce the first non-NULL `predictions.realized_pnl`.
+- **Mitigation / rollback:** `alembic downgrade 0006_agent_performance`
+  drops the column + index. `git revert` of PR #54 restores the
+  prior outcome_ingestion semantics (NULL on resolved). No data loss
+  — the aggregator only writes where `realized_pnl IS NULL`, never
+  overwrites.

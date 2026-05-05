@@ -48,7 +48,7 @@ def run_once(
     """Single ingestion pass; returns counts of {predictions, trades, positions}."""
     factory = session_factory or _default_factory
     now = (clock or _utcnow)()
-    counts = {"predictions": 0, "trades": 0, "paper_trades": 0, "positions": 0}
+    counts = {"predictions": 0, "trades": 0, "paper_trades": 0, "positions": 0, "predictions_pnl": 0}
 
     since = _read_high_water_mark(factory, fallback=now - timedelta(days=lookback_days))
     logger.info("outcome_ingestion_scanning", since=since.isoformat())
@@ -71,6 +71,7 @@ def run_once(
                 table="paper_trades",
             )
             counts["positions"] += _close_positions(session, market_id, outcome_yes=outcome_yes)
+            counts["predictions_pnl"] += _set_predictions_realized_pnl(session, market_id)
 
     _write_high_water_mark(factory, now)
     logger.info("outcome_ingestion_done", counts=counts)
@@ -171,6 +172,44 @@ def _set_trades_pnl(session: Session, market_id: str, *, outcome_yes: bool, tabl
             total_pnl_by_position.get((market_id, str(row.side)), 0.0) + pnl
         )
     return len(rows)
+
+
+def _set_predictions_realized_pnl(session: Session, market_id: str) -> int:
+    # Aggregates SUM(trades.realized_pnl + paper_trades.realized_pnl) onto each
+    # prediction sharing the (cycle_id, market_id) join key with the decision
+    # the trades hang off. COALESCE collapses 0-trade predictions (hold/skip
+    # actions, gate-blocked decisions) to 0.0 instead of NULL — semantically
+    # "resolved with no trade" rather than "not yet resolved". The
+    # ``cycle_id IS NOT NULL`` guard skips legacy rows written before
+    # migration 0005.
+    result = session.execute(
+        text(
+            """
+            UPDATE predictions p
+            SET realized_pnl = agg.pnl
+            FROM (
+                SELECT p2.id AS pid,
+                       COALESCE(SUM(t.realized_pnl), 0.0)
+                       + COALESCE(SUM(pt.realized_pnl), 0.0) AS pnl
+                FROM predictions p2
+                LEFT JOIN decisions d
+                    ON d.cycle_id = p2.cycle_id AND d.market_id = p2.market_id
+                LEFT JOIN trades t
+                    ON t.decision_id = d.id AND t.realized_pnl IS NOT NULL
+                LEFT JOIN paper_trades pt
+                    ON pt.decision_id = d.id AND pt.realized_pnl IS NOT NULL
+                WHERE p2.market_id = :market_id
+                  AND p2.outcome IS NOT NULL
+                  AND p2.realized_pnl IS NULL
+                  AND p2.cycle_id IS NOT NULL
+                GROUP BY p2.id
+            ) agg
+            WHERE p.id = agg.pid
+            """,
+        ),
+        {"market_id": market_id},
+    )
+    return int(getattr(result, "rowcount", 0) or 0)
 
 
 def _close_positions(session: Session, market_id: str, *, outcome_yes: bool) -> int:

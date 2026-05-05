@@ -122,5 +122,27 @@ def test_high_water_mark_written() -> None:
     assert len(insert_state_calls) == 1
 
 
+def test_join_uses_cycle_id_to_disambiguate_multi_cycle_markets() -> None:
+    # The pre-fix LEFT JOIN matched predictions to decisions on market_id
+    # alone, fanning out across every cycle that touched the same market.
+    # Migration 0005 + this query change tighten the join to (cycle_id,
+    # market_id), so each prediction picks up exactly its own cycle's
+    # decision/trade.
+    sess = MagicMock()
+    selected = MagicMock()
+    selected.all.return_value = []
+    sess.execute.return_value = selected
+
+    @contextmanager
+    def factory() -> Iterator[MagicMock]:
+        yield sess
+
+    run_once(settings=Settings(), session_factory=factory)
+    select_calls = [c for c in sess.execute.call_args_list if "FROM predictions p" in str(c.args[0])]
+    assert len(select_calls) == 1
+    sql = str(select_calls[0].args[0])
+    assert "d.cycle_id = p.cycle_id" in sql
+
+
 def test_constants() -> None:
     assert HIGH_WATER_MARK_KEY == "last_lessons_summary_at"

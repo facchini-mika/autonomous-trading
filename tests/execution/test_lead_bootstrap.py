@@ -145,6 +145,17 @@ def test_bootstrap_writes_predictions_and_decisions() -> None:
     assert any("INSERT INTO decisions" in s for s in sql_calls)
     assert any("INSERT INTO cycle_plan" in s for s in sql_calls)
 
+    # Predictions arriving from the trading-agent carry no cycle_id; the
+    # Lead must stamp it on before the INSERT so outcome_ingestion can
+    # later aggregate trade PnL via (cycle_id, market_id).
+    prediction_inserts = [
+        c for sess in captures for c in sess.execute.call_args_list if "INSERT INTO predictions" in str(c.args[0])
+    ]
+    assert prediction_inserts
+    insert_params = prediction_inserts[0].args[1]
+    assert insert_params["cycle_id"] == artifacts.cycle_id
+    assert insert_params["cycle_id"]
+
 
 def test_cycle_plan_jsonb_fields_are_serialised_strings() -> None:
     """All five JSONB columns on cycle_plan must be json.dumps'd, not raw lists.

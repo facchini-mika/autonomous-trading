@@ -85,6 +85,8 @@ trade_pnl = (settlement_price − fill_price) · size − fees − gas
 
 `fees` and `gas` are recorded at fill time on the `trades` / `paper_trades` row; the script reads them, doesn't recompute.
 
+**Prediction-level aggregation.** `predictions.realized_pnl` is the sum of `realized_pnl` across all `trades` and `paper_trades` whose `decision_id` shares the prediction's `(cycle_id, market_id)` join key. Predictions whose decision produced no trade (hold, skip, or gate-blocked) settle to `0.0`, not `NULL` — the row is "resolved with no trade", not "not yet resolved". The aggregation runs after the per-trade math below has populated the underlying `trades` / `paper_trades` rows.
+
 **Position-level aggregation.** Sum `realized_pnl` across all entry trades on the same `market_id × side`. **Cost basis = weighted-average entry:**
 
 ```

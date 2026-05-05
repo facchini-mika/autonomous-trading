@@ -12,6 +12,7 @@ from execution.outcome_ingestion import (
     HIGH_WATER_MARK_KEY,
     _read_high_water_mark,
     _set_predictions_outcome,
+    _set_predictions_realized_pnl,
     _set_trades_pnl,
     run_once,
 )
@@ -28,6 +29,35 @@ def test_set_predictions_outcome_updates_only_null() -> None:
     assert n == 3
     sql = str(sess.execute.call_args.args[0])
     assert "outcome IS NULL" in sql
+    # outcome and realized_pnl are written in separate UPDATEs: this one
+    # only sets outcome; realized_pnl is aggregated downstream after trades
+    # have been priced.
+    assert "realized_pnl" not in sql
+
+
+def test_set_predictions_realized_pnl_aggregates_via_cycle_id() -> None:
+    sess = MagicMock()
+    sess.execute.return_value.rowcount = 2
+    n = _set_predictions_realized_pnl(sess, "0xabc")
+    assert n == 2
+    sql = str(sess.execute.call_args.args[0])
+    # Aggregation joins predictions to decisions on (cycle_id, market_id),
+    # then sums trades + paper_trades realized_pnl, COALESCE-ing 0-trade
+    # predictions to 0.0 instead of NULL.
+    assert "UPDATE predictions" in sql
+    assert "cycle_id = p2.cycle_id" in sql
+    assert "trades" in sql
+    assert "paper_trades" in sql
+    assert "COALESCE" in sql.upper()
+    assert "realized_pnl IS NULL" in sql
+    assert "p2.cycle_id IS NOT NULL" in sql
+
+
+def test_set_predictions_realized_pnl_idempotent_with_zero_rows() -> None:
+    sess = MagicMock()
+    sess.execute.return_value.rowcount = 0
+    n = _set_predictions_realized_pnl(sess, "0xabc")
+    assert n == 0
 
 
 def test_set_trades_pnl_writes_one_update_per_filled_trade() -> None:
@@ -69,7 +99,13 @@ def test_run_once_iterates_and_writes_high_water_mark() -> None:
         yield sess
 
     counts = run_once(gamma=gamma, session_factory=factory, lookback_days=7)
-    assert counts == {"predictions": 0, "trades": 0, "paper_trades": 0, "positions": 0}
+    assert counts == {
+        "predictions": 0,
+        "trades": 0,
+        "paper_trades": 0,
+        "positions": 0,
+        "predictions_pnl": 0,
+    }
     last_sql = str(sessions[-1].execute.call_args.args[0])
     assert "system_state" in last_sql.lower()
     assert "INSERT" in last_sql.upper()

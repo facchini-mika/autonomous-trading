@@ -62,7 +62,9 @@ def run_once(
                        d.cycle_id, d.edge, d.action, t.notional_usd
                 FROM predictions p
                 LEFT JOIN decisions d
-                    ON d.market_id = p.market_id AND d.cycle_id IS NOT NULL
+                    ON d.market_id = p.market_id
+                   AND d.cycle_id IS NOT NULL
+                   AND d.cycle_id = p.cycle_id
                 LEFT JOIN trades t ON t.decision_id = d.id
                 WHERE p.outcome IS NOT NULL
                   AND p.created_at >= :cutoff
