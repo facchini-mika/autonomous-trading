@@ -17,14 +17,14 @@ from collections.abc import Callable  # noqa: TC003
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import text
 
 from execution.cycle_plan import synthesize_cycle_plan
 from execution.decision_context import with_decision
 from execution.notes_tool import manage_notes
-from execution.subagent_runner import SubagentBudgetError
+from execution.subagent_runner import _INSERT_SUBAGENT_RUN, SubagentBudgetError
 from risk.sizing import propose_notional
 from shared.db import get_session
 from shared.logging import bind, get_logger, unbind
@@ -121,27 +121,41 @@ def bootstrap_team(
         soon_resolve_threshold_days=settings.SOON_RESOLVE_THRESHOLD_DAYS,
         soon_resolve_boost_multiplier=settings.SOON_RESOLVE_BOOST_MULTIPLIER,
     )
-    try:
-        scanner_out = scanner(
-            ScannerReviewerTask(
-                top_k=settings.TOP_K_MARKETS,
-                cycle_id=cycle_id,
-                cycle_clock=now.isoformat(),
-                raw_markets=universe_inputs["raw_markets"],
-                raw_orderbooks=universe_inputs["raw_orderbooks"],
-                raw_metadata=universe_inputs["raw_metadata"],
-                current_positions=universe_inputs["current_positions"],
-                current_cash=universe_inputs["current_cash"],
-                kill_switch_active=universe_inputs["kill_switch_active"],
-                held_market_ids=universe_inputs["held_market_ids"],
-                orders_in_last_hour=universe_inputs["orders_in_last_hour"],
-                thresholds=thresholds,
-            )
+    scanner_task = ScannerReviewerTask(
+        top_k=settings.TOP_K_MARKETS,
+        cycle_id=cycle_id,
+        cycle_clock=now.isoformat(),
+        raw_markets=universe_inputs["raw_markets"],
+        raw_orderbooks=universe_inputs["raw_orderbooks"],
+        raw_metadata=universe_inputs["raw_metadata"],
+        current_positions=universe_inputs["current_positions"],
+        current_cash=universe_inputs["current_cash"],
+        kill_switch_active=universe_inputs["kill_switch_active"],
+        held_market_ids=universe_inputs["held_market_ids"],
+        orders_in_last_hour=universe_inputs["orders_in_last_hour"],
+        thresholds=thresholds,
+    )
+    if settings.UNIVERSE_FETCH_LIMIT <= settings.TOP_K_MARKETS:
+        # Identity / sub-identity filter — Lead's Python implementation mirrors
+        # the scanner doctrine 1:1 and skips the LLM call. ~$0.71/cycle saved
+        # plus eliminates the 13-24k output-token wall-time tail.
+        bypass_started_at = _utcnow()
+        scanner_out = _python_scanner(scanner_task, clock=now)
+        _persist_scanner_bypass_audit(
+            factory=factory,
+            cycle_id=cycle_id,
+            task=scanner_task,
+            output=scanner_out,
+            started_at=bypass_started_at,
+            finished_at=_utcnow(),
         )
-    except SubagentBudgetError as exc:
-        _log_budget_abort(cycle_id=cycle_id, stage="scanner-reviewer", exc=exc)
-        unbind("cycle_id")
-        raise CycleAbortedError(reason=str(exc), cycle_id=cycle_id, stage="scanner-reviewer") from exc
+    else:
+        try:
+            scanner_out = scanner(scanner_task)
+        except SubagentBudgetError as exc:
+            _log_budget_abort(cycle_id=cycle_id, stage="scanner-reviewer", exc=exc)
+            unbind("cycle_id")
+            raise CycleAbortedError(reason=str(exc), cycle_id=cycle_id, stage="scanner-reviewer") from exc
     portfolio = scanner_out.portfolio_state
 
     # Defensive post-filter. The scanner is an LLM and was observed in cycle-7
@@ -351,6 +365,160 @@ def _universe_drop_reason(
         if failed:
             return reason
     return None
+
+
+def _python_scanner(task: ScannerReviewerTask, *, clock: datetime) -> ScannerReviewerOutput:
+    """Deterministic Python equivalent of the scanner-reviewer subagent.
+
+    Mirrors ``research/prompts/scanner_reviewer.md §54-124`` 1:1 — filter,
+    rank by Soft-Boost score, truncate to ``top_k``, then assemble
+    ``PortfolioState``. Used when ``UNIVERSE_FETCH_LIMIT <= TOP_K_MARKETS``;
+    the LLM scanner has no real filtering job in that configuration and the
+    bypass eliminates ~$0.71/cycle plus the 13-24k output-token wall-time
+    tail observed on Opus 4.7.
+    """
+    held_ids = set(task.held_market_ids)
+    min_ttr = timedelta(hours=task.thresholds.min_ttr_hours)
+    max_ttr = timedelta(days=task.thresholds.max_ttr_days)
+
+    survivors: list[Market] = []
+    for market in task.raw_markets:
+        if market.market_id in held_ids:
+            survivors.append(market)
+            continue
+        orderbook = task.raw_orderbooks.get(market.market_id)
+        if orderbook is None:
+            continue
+        reason = _universe_drop_reason(
+            market=market,
+            orderbook=orderbook,
+            min_ttr=min_ttr,
+            max_ttr=max_ttr,
+            min_depth_1pct_usd=task.thresholds.min_depth_1pct_usd,
+            max_spread=task.thresholds.max_spread,
+            clock=clock,
+        )
+        if reason is not None:
+            continue
+        metadata = task.raw_metadata.get(market.market_id)
+        if metadata is not None and metadata.dispute_history:
+            continue
+        survivors.append(market)
+
+    boost_threshold = timedelta(days=task.thresholds.soon_resolve_threshold_days)
+    boost_multiplier = task.thresholds.soon_resolve_boost_multiplier
+
+    def _rank_key(market: Market) -> tuple[float, datetime, str]:
+        orderbook = task.raw_orderbooks.get(market.market_id)
+        if orderbook is None:
+            score = 0.0
+        else:
+            liquidity = min(orderbook.depth_bid_1pct, orderbook.depth_ask_1pct)
+            ttr = market.end_date - clock
+            boost = boost_multiplier if ttr < boost_threshold else 1.0
+            score = liquidity * boost
+        # Negative score for descending sort; tie-break by earlier end_date, then market_id.
+        return (-score, market.end_date, market.market_id)
+
+    held_markets = [m for m in survivors if m.market_id in held_ids]
+    other_markets = sorted([m for m in survivors if m.market_id not in held_ids], key=_rank_key)
+    ranked = held_markets + other_markets
+    truncated = ranked[: task.top_k]
+
+    timestamp = datetime.fromisoformat(task.cycle_clock)
+    universe = Universe(
+        markets=truncated,
+        orderbooks={
+            m.market_id: task.raw_orderbooks[m.market_id] for m in truncated if m.market_id in task.raw_orderbooks
+        },
+        timestamp=timestamp,
+    )
+    portfolio = _assemble_portfolio_state(task=task, timestamp=timestamp)
+
+    logger.info(
+        "scanner_python_bypass_done",
+        kept_count=len(truncated),
+        candidate_count=len(task.raw_markets),
+        held_count=len(held_markets),
+    )
+    return ScannerReviewerOutput(universe=universe, portfolio_state=portfolio)
+
+
+def _assemble_portfolio_state(*, task: ScannerReviewerTask, timestamp: datetime) -> PortfolioState:
+    """Doctrine §104-124 — pure arithmetic from cash, positions, orderbooks."""
+    positions = list(task.current_positions)
+    gross_exposure = sum(p.size * p.avg_price for p in positions)
+    unrealized = 0.0
+    for position in positions:
+        orderbook = task.raw_orderbooks.get(position.market_id)
+        if orderbook is None:
+            continue
+        if position.side == "yes":
+            unrealized += (orderbook.best_bid - position.avg_price) * position.size
+        else:
+            unrealized += ((1.0 - orderbook.best_ask) - position.avg_price) * position.size
+    realized = sum(p.realized_pnl for p in positions)
+    return PortfolioState(
+        cash=task.current_cash,
+        positions=positions,
+        gross_exposure_usd=gross_exposure,
+        unrealized_pnl=unrealized,
+        realized_pnl=realized,
+        equity=task.current_cash.total_usd + unrealized + realized,
+        cycle_notional_opened=0.0,
+        kill_switch_active=task.kill_switch_active,
+        orders_in_last_hour=task.orders_in_last_hour,
+        timestamp=timestamp,
+    )
+
+
+def _persist_scanner_bypass_audit(
+    *,
+    factory: Callable[[], AbstractContextManager[Session]],
+    cycle_id: str,
+    task: ScannerReviewerTask,
+    output: ScannerReviewerOutput,
+    started_at: datetime,
+    finished_at: datetime,
+) -> None:
+    """Best-effort audit row mirroring the LLM-path ``subagent_runs`` shape.
+
+    Tier-1 evaluation, Prometheus, and cycle-completeness queries scan
+    ``subagent_runs`` for one row per (cycle_id, agent_name). Skipping the row
+    on bypass would create a silent gap; instead we write the same columns
+    with ``cost_usd=0``, ``prompt_sha='python-bypass'``, no LLM ``usage``.
+    Wrapped in try/except so an audit failure cannot poison a healthy cycle.
+    """
+    latency_ms = max(int((finished_at - started_at).total_seconds() * 1000), 0)
+    try:
+        with factory() as session:
+            session.execute(
+                _INSERT_SUBAGENT_RUN,
+                {
+                    "cycle_id": cycle_id,
+                    "agent_name": "scanner-reviewer",
+                    "run_id": str(uuid4()),
+                    "correlation_id": None,
+                    "prompt_sha": "python-bypass",
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "latency_ms": latency_ms,
+                    "cost_usd": 0.0,
+                    "usage": None,
+                    "task_payload": task.model_dump_json(),
+                    "raw_stdout": None,
+                    "envelope": output.model_dump_json(),
+                    "error": None,
+                    "error_class": None,
+                },
+            )
+    except Exception:
+        logger.warning(
+            "audit_persist_failed",
+            agent="scanner-reviewer",
+            cycle_id=cycle_id,
+            exc_info=True,
+        )
 
 
 def _log_budget_abort(*, cycle_id: str, stage: str, exc: SubagentBudgetError) -> None:

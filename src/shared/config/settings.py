@@ -52,7 +52,11 @@ class Settings(BaseSettings):
     EDGE_THRESHOLD: float = 0.05
     CYCLE_PERIOD_MIN: int = 12
     TOP_K_MARKETS: int = 50
-    UNIVERSE_FETCH_LIMIT: int = 100
+    # When ``UNIVERSE_FETCH_LIMIT <= TOP_K_MARKETS`` the scanner-reviewer LLM
+    # has nothing real to filter, so the Lead routes through a deterministic
+    # Python implementation (``_python_scanner``). Raise above TOP_K_MARKETS
+    # only if a future strategy genuinely needs the LLM to rank a wider pool.
+    UNIVERSE_FETCH_LIMIT: int = 50
 
     # Universe-selection thresholds (scanner-reviewer doctrine inputs)
     MIN_DEPTH_1PCT_USD: float = 100.0

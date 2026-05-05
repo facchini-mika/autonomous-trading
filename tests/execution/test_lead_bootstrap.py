@@ -268,6 +268,42 @@ def test_bootstrap_places_order_only_for_trade_decisions() -> None:
     assert fake.placed_orders[0].market_id == "0xa"
 
 
+def test_bootstrap_skips_scanner_callable_when_limit_eq_topk() -> None:
+    """Default settings (LIMIT=TOP_K=50) → Lead never invokes the scanner LLM."""
+    scanner_calls: list[Any] = []
+
+    def _scanner_must_not_run(task: Any) -> ScannerReviewerOutput:
+        scanner_calls.append(task)
+        return _scanner(task)
+
+    captures: list[MagicMock] = []
+    artifacts = bootstrap_team(
+        settings=Settings(),  # default: UNIVERSE_FETCH_LIMIT=50, TOP_K_MARKETS=50
+        adapter=FakeAdapter(),
+        scanner=_scanner_must_not_run,
+        trading=_trading,
+        risk=_risk_factory("skip"),
+        session_factory=lambda: _capturing_factory(captures),
+        clock=_now,
+    )
+    assert scanner_calls == [], "scanner LLM callable invoked despite LIMIT<=TOP_K bypass"
+    # Bypass should still produce a valid Universe + PortfolioState,
+    # and write a subagent_runs audit row with cost_usd=0.
+    assert artifacts.cycle_id.startswith("cycle-")
+    sql_calls = [
+        (str(c.args[0]), c.args[1] if len(c.args) > 1 else None)
+        for sess in captures
+        for c in sess.execute.call_args_list
+    ]
+    bypass_audit = [params for sql, params in sql_calls if "INSERT INTO subagent_runs" in sql]
+    assert len(bypass_audit) == 1, f"expected one scanner-reviewer bypass audit row, got {len(bypass_audit)}"
+    audit_params = bypass_audit[0]
+    assert audit_params is not None
+    assert audit_params["agent_name"] == "scanner-reviewer"
+    assert audit_params["cost_usd"] == 0.0
+    assert audit_params["prompt_sha"] == "python-bypass"
+
+
 def test_bootstrap_places_order_when_risk_emits_alias_keys() -> None:
     """Cycle-7 regression: risk-LLM wrote `final_notional_usd` instead of canonical
     keys → Lead's `_decision_notional` returned 0 → no order. The Pydantic
@@ -354,7 +390,10 @@ def test_bootstrap_injects_scanner_thresholds_from_settings() -> None:
         captured.append(task)
         return _scanner(task)
 
-    settings = Settings()
+    # Force the LLM scanner path by widening the fetch limit beyond top-K;
+    # at default settings (LIMIT==TOP_K==50) Lead routes through
+    # ``_python_scanner`` and the LLM callable is never invoked.
+    settings = Settings(UNIVERSE_FETCH_LIMIT=100)
     bootstrap_team(
         settings=settings,
         adapter=FakeAdapter(),
@@ -431,9 +470,10 @@ def test_bootstrap_aborts_when_scanner_runs_out_of_credits() -> None:
     captures: list[MagicMock] = []
     fake = FakeAdapter()
 
+    # Budget abort is an LLM-path-only signal — force the LLM scanner path.
     with pytest.raises(CycleAbortedError) as excinfo:
         bootstrap_team(
-            settings=Settings(),
+            settings=Settings(UNIVERSE_FETCH_LIMIT=100),
             adapter=fake,
             scanner=_budget_raiser,
             trading=_trading,

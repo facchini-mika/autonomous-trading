@@ -747,6 +747,73 @@ Every PR that touches one of the following must have an entry here:
   `paper_trades`). Reverting the PR removes the generator and doc
   section; nothing in `main` depends on either at runtime.
 
+## 2026-05-05 — Scanner-reviewer Python bypass + UNIVERSE_FETCH_LIMIT 100→50
+
+- **Category:** Operations + tunable. No `src/risk/**` touch, no
+  `TRADING_MODE` flip, no `MAX_CAPITAL_EUR` change. Logged because the
+  cycle's primary-stage agent invocation pattern changes shape.
+- **PR:** _pending_
+- **Description:** When `UNIVERSE_FETCH_LIMIT <= TOP_K_MARKETS`, Lead now
+  routes the scanner-reviewer step through a deterministic Python helper
+  (`execution.lead_bootstrap._python_scanner`) that mirrors
+  `research/prompts/scanner_reviewer.md §54-124` 1:1. Same Pydantic
+  `ScannerReviewerOutput`. Same defensive post-filter
+  (`_enforce_universe_invariants`, untouched). The LLM scanner is invoked
+  only when Lead pre-fetches a wider pool than `top_k` requires.
+  - `Settings.UNIVERSE_FETCH_LIMIT 100 → 50` — equals `TOP_K_MARKETS`,
+    activates the bypass at default config.
+  - `_python_scanner` + `_assemble_portfolio_state` + `_persist_scanner_bypass_audit`
+    in `lead_bootstrap.py` (~150 lines).
+  - Doctrine header note in `scanner_reviewer.md` documents the bypass.
+  - 11 new unit tests in `tests/execution/test_python_scanner.py`
+    cover filter, rank, truncate, Soft-Boost, PortfolioState math,
+    YES/NO MtM, missing-orderbook degradation, dispute-history drop,
+    held-bypass, kill-switch passthrough.
+  - 1 new test in `test_lead_bootstrap.py` confirms the LLM callable is
+    not invoked at default settings and a `subagent_runs` audit row with
+    `cost_usd=0`, `prompt_sha='python-bypass'` is written.
+  - 2 existing tests (`test_bootstrap_injects_scanner_thresholds_from_settings`,
+    `test_bootstrap_aborts_when_scanner_runs_out_of_credits`) now pass
+    `Settings(UNIVERSE_FETCH_LIMIT=100)` to opt into the LLM path they
+    cover.
+- **Risks:**
+  - Python implementation diverges silently from the LLM doctrine if a
+    future doctrine edit isn't mirrored. Mitigation: header note in
+    `scanner_reviewer.md` calls out the bypass; per-step unit tests
+    pin the algorithm.
+  - Soft-Boost ranking edge cases (ties, missing orderbooks for held
+    markets) — covered by dedicated tests; tie-break is deterministic
+    (lower `end_date` first, then `market_id` ascending).
+  - Audit-row writes via the same `factory` injected into
+    `bootstrap_team`. Test path uses MagicMock; production uses
+    `_default_factory()` → real DB. Best-effort try/except wraps the
+    insert so an audit failure cannot poison a cycle.
+  - LLM path still wired for `LIMIT > TOP_K`; if a future operator
+    forgets to also widen `TOP_K_MARKETS`, the bypass catches it
+    automatically — equality wins.
+- **Why safe:** `ScannerReviewerOutput` Pydantic shape unchanged →
+  trading-agent + risk-execution see byte-equivalent inputs (modulo
+  market-id set, which depends on filter input not on which path
+  produced it). `src/risk/**` untouched. `MAX_CAPITAL_EUR=0` and
+  `TRADING_MODE=paper` defaults unchanged. Defensive
+  `_enforce_universe_invariants` still runs after the bypass output,
+  catching any drift between Python implementation and doctrine.
+  413 unit tests green (was 401 before this PR). `mypy --strict` clean.
+- **Mitigation / rollback:** Set `UNIVERSE_FETCH_LIMIT=100` in `.env` to
+  re-route to the LLM scanner without code change. Or revert PR — the
+  conditional collapses, scanner-reviewer LLM path becomes unconditional
+  again as before.
+- **Expected operational impact:** Pre-#59 (frontmatter `model:` was
+  silently ignored) the scanner ran on Sonnet 4.6 at ~$0.71/cycle and
+  213-296s typical wall, with timeout tails at 600-900s+
+  (cycles 1777990078, 1778013504). Post-#59 the scanner would actually
+  run on Opus 4.7 as the agent declares — projected cost ~$2-3/cycle
+  and longer wall-time variance given Opus's verbosity. This bypass
+  collapses both regimes to $0 and <1s for the default config.
+  Live smoke (cycle-1778016580 on Sonnet baseline): cycle wall 12-14
+  min → 2:41, total cost $1.31 → $0.60. Post-#59 the same bypass
+  saves the (otherwise ~$2-3) Opus cost entirely.
+
 ## 2026-05-05 — TIF=FAK on order submission (immediate-fill-only)
 
 - **Category:** Order-execution semantics — code change to
