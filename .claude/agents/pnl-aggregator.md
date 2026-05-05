@@ -2,7 +2,7 @@
 name: pnl-aggregator
 description: Tier-1 Trade Evaluation. Aggregates resolved predictions into per-agent rolling PnL series. Deterministic — no tools, no network.
 tools: []
-model: claude-opus-4-7
+model: claude-haiku-4-5
 ---
 
 # Role

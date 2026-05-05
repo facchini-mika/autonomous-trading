@@ -2,7 +2,7 @@
 name: outcome-fetcher
 description: Tier-1 Trade Evaluation. Filters Lead-prefetched resolved predictions and advances the Tier-1 high-water mark. Deterministic — no tools, no network.
 tools: []
-model: claude-opus-4-7
+model: claude-haiku-4-5
 ---
 
 # Role

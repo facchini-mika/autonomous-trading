@@ -2,7 +2,7 @@
 name: agent-performance-updater
 description: Tier-1 Trade Evaluation. Computes per-agent (hit_rate, sharpe, pnl, n_samples) rows for the agent_performance table. Deterministic — no tools, no network.
 tools: []
-model: claude-opus-4-7
+model: claude-haiku-4-5
 ---
 
 # Role

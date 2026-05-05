@@ -153,8 +153,10 @@ def run_subagent[T: BaseModel](
 
     agent_name = agent_md_path.stem
     run_id = str(uuid.uuid4())
+    agent_md_content = agent_md_path.read_text(encoding="utf-8")
+    model = _extract_model_from_frontmatter(agent_md_content)
     system_prompt = _build_system_prompt(
-        agent_md_path=agent_md_path,
+        agent_md_content=agent_md_content,
         doctrine_path=doctrine_path,
         output_model=output_model,
     )
@@ -168,6 +170,7 @@ def run_subagent[T: BaseModel](
         mcp_config_path=mcp_config_path,
         allowed_mcp_tools=allowed_mcp_tools,
         max_budget_usd=max_budget_usd,
+        model=model,
     )
     env = _build_subprocess_env(
         cycle_id=cycle_id,
@@ -390,6 +393,7 @@ def _build_cmd(
     mcp_config_path: Path | None,
     allowed_mcp_tools: tuple[str, ...],
     max_budget_usd: float | None,
+    model: str | None,
 ) -> list[str]:
     cmd = [
         binary,
@@ -400,6 +404,8 @@ def _build_cmd(
         "--output-format",
         "json",
     ]
+    if model is not None:
+        cmd.extend(["--model", model])
     if mcp_config_path is not None:
         if not mcp_config_path.exists():
             msg = f"mcp config not found: {mcp_config_path}"
@@ -414,11 +420,11 @@ def _build_cmd(
 
 def _build_system_prompt(
     *,
-    agent_md_path: Path,
+    agent_md_content: str,
     doctrine_path: Path | None,
     output_model: type[BaseModel],
 ) -> str:
-    body = _strip_yaml_frontmatter(agent_md_path.read_text(encoding="utf-8"))
+    body = _strip_yaml_frontmatter(agent_md_content)
     if doctrine_path is not None and doctrine_path.exists():
         body += "\n\n" + doctrine_path.read_text(encoding="utf-8")
     schema = json.dumps(output_model.model_json_schema(), indent=2)
@@ -436,6 +442,27 @@ def _strip_yaml_frontmatter(content: str) -> str:
     if len(parts) < 3:  # noqa: PLR2004 — three parts: empty, frontmatter, body.
         return content
     return parts[2].lstrip()
+
+
+def _extract_model_from_frontmatter(content: str) -> str | None:
+    """Return the ``model:`` value from the agent's YAML frontmatter, or ``None``.
+
+    Without this hook, ``claude -p`` falls back to the CLI default model
+    regardless of what the agent skeleton declares. The frontmatter is the
+    single source of truth for per-agent model selection.
+    """
+    if not content.startswith("---"):
+        return None
+    parts = content.split("---", 2)
+    if len(parts) < 3:  # noqa: PLR2004 — three parts: empty, frontmatter, body.
+        return None
+    for raw_line in parts[1].splitlines():
+        line = raw_line.strip()
+        if not line.startswith("model:"):
+            continue
+        value = line.split(":", 1)[1].strip().strip("\"'")
+        return value or None
+    return None
 
 
 def _truncate(content: str | None) -> str | None:

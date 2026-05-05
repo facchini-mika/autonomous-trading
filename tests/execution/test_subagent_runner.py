@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from execution.subagent_runner import (
     SubagentBudgetError,
     SubagentError,
+    _extract_model_from_frontmatter,
     run_subagent,
 )
 
@@ -215,6 +216,82 @@ def test_envelope_is_error_unknown_status_falls_back_to_subagent_error(agent_md:
             cycle_id="cycle-test",
         )
     assert not isinstance(excinfo.value, SubagentBudgetError)
+
+
+def test_extract_model_from_frontmatter_returns_value() -> None:
+    content = "---\nname: x\nmodel: claude-haiku-4-5\ntools: []\n---\n\n# Role"
+    assert _extract_model_from_frontmatter(content) == "claude-haiku-4-5"
+
+
+def test_extract_model_from_frontmatter_strips_quotes() -> None:
+    content = '---\nname: x\nmodel: "claude-opus-4-7"\n---\n\n# Role'
+    assert _extract_model_from_frontmatter(content) == "claude-opus-4-7"
+
+
+def test_extract_model_from_frontmatter_missing_field_returns_none() -> None:
+    content = "---\nname: x\ntools: []\n---\n\n# Role"
+    assert _extract_model_from_frontmatter(content) is None
+
+
+def test_extract_model_from_frontmatter_no_frontmatter_returns_none() -> None:
+    assert _extract_model_from_frontmatter("# Role\n\nNo frontmatter here.") is None
+
+
+def test_model_flag_added_to_cmd_when_frontmatter_declares_it(tmp_path: Path, mocker: MockerFixture) -> None:
+    agent_path = tmp_path / "agent.md"
+    agent_path.write_text(
+        "---\nname: x\nmodel: claude-haiku-4-5\ntools: []\n---\n\n# Role",
+        encoding="utf-8",
+    )
+    captured: dict[str, list[str]] = {}
+
+    def _fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout=_envelope('{"p_yes": 0.5, "reasoning": "x"}'),
+            stderr="",
+        )
+
+    mocker.patch("shutil.which", return_value="/usr/local/bin/claude")
+    mocker.patch("subprocess.run", side_effect=_fake_run)
+
+    run_subagent(
+        agent_md_path=agent_path,
+        task=_Task(market_id="x"),
+        output_model=_Output,
+        timeout_s=30,
+        cycle_id="cycle-test",
+    )
+    cmd = captured["cmd"]
+    assert "--model" in cmd
+    assert cmd[cmd.index("--model") + 1] == "claude-haiku-4-5"
+
+
+def test_model_flag_omitted_when_frontmatter_lacks_model(agent_md: Path, mocker: MockerFixture) -> None:
+    captured: dict[str, list[str]] = {}
+
+    def _fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout=_envelope('{"p_yes": 0.5, "reasoning": "x"}'),
+            stderr="",
+        )
+
+    mocker.patch("shutil.which", return_value="/usr/local/bin/claude")
+    mocker.patch("subprocess.run", side_effect=_fake_run)
+
+    run_subagent(
+        agent_md_path=agent_md,
+        task=_Task(market_id="x"),
+        output_model=_Output,
+        timeout_s=30,
+        cycle_id="cycle-test",
+    )
+    assert "--model" not in captured["cmd"]
 
 
 def test_max_budget_usd_added_to_cmd(agent_md: Path, mocker: MockerFixture) -> None:

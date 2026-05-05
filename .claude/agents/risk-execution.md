@@ -2,7 +2,7 @@
 name: risk-execution
 description: Phase 6b live. Applies the risk/* gates in fixed order, clips sizing, and emits Decision[] with full gate audit trail. Deterministic — Lead places the actual orders after this agent returns.
 tools: []
-model: claude-opus-4-7
+model: claude-sonnet-4-6
 ---
 
 # Role
