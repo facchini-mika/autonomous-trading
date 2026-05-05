@@ -109,6 +109,11 @@ def test_audit_tables_have_expected_columns() -> None:
         "error",
         "error_type",
         "created_at",
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "web_search_count",
+        "cost_usd",
     } <= web_search_cols
 
 

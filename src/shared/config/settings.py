@@ -7,8 +7,9 @@ lives here. Never hardcode values in risk/, execution/, or research/.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -132,6 +133,30 @@ class Settings(BaseSettings):
     POLYGON_RPC_URL: str = "https://polygon-bor-rpc.publicnode.com"
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-5.5"
+
+    # OpenAI pricing for the Responses-API calls made by the web_search MCP
+    # skill. ClassVar so pydantic-settings does not treat these as overridable
+    # fields — pricing is a constant, not a tunable, and must not be set via
+    # env. Keys are model names (matching ``OPENAI_MODEL``); values are USD
+    # rates that ``research.skills.openai_cost.calculate_cost_usd`` consumes.
+    #
+    # gpt-5.5 rates as of 2026-05-05 from openai.com/api/pricing:
+    #   - $5.00 / 1M input tokens
+    #   - $30.00 / 1M output tokens
+    #   - $0.50 / 1M cached input tokens (90% prompt-cache discount)
+    #   - $10.00 / 1k web_search tool invocations
+    # Search-content tokens (the page text returned by the web_search tool)
+    # are billed at $0 by OpenAI — they are excluded from
+    # ``response.usage.input_tokens`` upstream, so the formula below does not
+    # need a special case for them.
+    OPENAI_PRICING: ClassVar[dict[str, dict[str, Decimal]]] = {
+        "gpt-5.5": {
+            "input_per_1m_usd": Decimal("5.00"),
+            "output_per_1m_usd": Decimal("30.00"),
+            "cached_input_per_1m_usd": Decimal("0.50"),
+            "web_search_per_1k_usd": Decimal("10.00"),
+        },
+    }
 
     # Reconciliation
     RECONCILIATION_DIFF_USD: float = 0.50

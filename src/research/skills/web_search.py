@@ -14,6 +14,12 @@ Phase 6c: every call also writes a best-effort row to ``web_search_calls``
 that joins back to ``subagent_runs`` via the ``RUN_ID`` env var the
 subagent_runner propagates into the subprocess. Audit-write failures are
 logged and swallowed so a hiccupped DB never poisons a healthy search.
+
+P1.x: each successful response also extracts ``response.usage`` token
+counts and the number of internal ``web_search_call`` items so the
+per-cycle OpenAI cost-report CLI can aggregate exact USD spend. Failed
+calls (quota_exhausted / transient) skip cost computation and persist
+NULL.
 """
 
 from __future__ import annotations
@@ -29,9 +35,12 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text as sql_text
 
+from research.skills.openai_cost import UnknownModelError, calculate_cost_usd
 from shared.db import get_session
 
 if TYPE_CHECKING:
+    from decimal import Decimal
+
     from openai import OpenAI
 
     from shared.config.settings import Settings
@@ -42,11 +51,13 @@ _INSERT_WEB_SEARCH_CALL = sql_text(
     """
     INSERT INTO web_search_calls (
         run_id, cycle_id, agent_name, query, summary, hits,
-        model_used, elapsed_sec, started_at, finished_at, error, error_type
+        model_used, elapsed_sec, started_at, finished_at, error, error_type,
+        input_tokens, output_tokens, cached_input_tokens, web_search_count, cost_usd
     ) VALUES (
         :run_id, :cycle_id, :agent_name, :query, :summary,
         CAST(:hits AS jsonb),
-        :model_used, :elapsed_sec, :started_at, :finished_at, :error, :error_type
+        :model_used, :elapsed_sec, :started_at, :finished_at, :error, :error_type,
+        :input_tokens, :output_tokens, :cached_input_tokens, :web_search_count, :cost_usd
     )
     """
 )
@@ -83,6 +94,17 @@ class WebSearchResult(BaseModel):
     model_used: str
 
 
+class _Usage(BaseModel):
+    """Token + search counts extracted from a Responses-API response."""
+
+    model_config = ConfigDict(frozen=True)
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_input_tokens: int = 0
+    web_search_count: int = 0
+
+
 def web_search(
     query: str,
     *,
@@ -101,6 +123,8 @@ def web_search(
     hits: list[WebSearchHit] = []
     error_msg: str | None = None
     error_type: str | None = None
+    usage = _Usage()
+    cost_usd: Decimal | None = None
 
     try:
         try:
@@ -121,6 +145,8 @@ def web_search(
 
         summary = _extract_summary(response)
         hits = _extract_hits(response, settings.WEB_SEARCH_BLOCKED_DOMAINS)
+        usage = _extract_usage(response)
+        cost_usd = _safe_calculate_cost(settings, usage)
         elapsed = time.monotonic() - start
         return WebSearchResult(
             query=query,
@@ -140,7 +166,34 @@ def web_search(
             finished_at=datetime.now(UTC),
             error=error_msg,
             error_type=error_type,
+            usage=usage,
+            cost_usd=cost_usd,
         )
+
+
+def _safe_calculate_cost(settings: Settings, usage: _Usage) -> Decimal | None:
+    """Return cost_usd or None if pricing is missing for the configured model.
+
+    A missing pricing entry is logged once and treated as "unknown cost" —
+    the audit row still gets the token counts, the cost_usd column stays
+    NULL, and the cost-report CLI surfaces it as ``Unknown`` rather than
+    silently summing 0.
+    """
+    try:
+        return calculate_cost_usd(
+            model=settings.OPENAI_MODEL,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cached_input_tokens=usage.cached_input_tokens,
+            web_search_count=usage.web_search_count,
+            settings=settings,
+        )
+    except UnknownModelError:
+        _logger.warning(
+            "openai_pricing_missing: model=%s — cost_usd will be NULL",
+            settings.OPENAI_MODEL,
+        )
+        return None
 
 
 def _persist_web_search_call(
@@ -154,6 +207,8 @@ def _persist_web_search_call(
     finished_at: datetime,
     error: str | None,
     error_type: str | None,
+    usage: _Usage,
+    cost_usd: Decimal | None,
 ) -> None:
     """Best-effort INSERT into ``web_search_calls``.
 
@@ -162,10 +217,15 @@ def _persist_web_search_call(
     subprocess so each search joins back to its parent ``subagent_runs``
     row. If the env var is missing (e.g. the search is invoked outside a
     cycle) the row is still written with NULL keys.
+
+    Token counts and ``cost_usd`` are persisted only for successful calls.
+    For failed calls (``error_type`` set) all five usage/cost columns
+    stay NULL — there is no real ``response.usage`` to read.
     """
     run_id = os.environ.get("RUN_ID") or None
     cycle_id = os.environ.get("CYCLE_ID") or None
     agent_name = os.environ.get("AGENT_NAME") or None
+    persist_usage = error_type is None
     try:
         with get_session("trading_cycle") as session:
             session.execute(
@@ -183,6 +243,11 @@ def _persist_web_search_call(
                     "finished_at": finished_at,
                     "error": error,
                     "error_type": error_type,
+                    "input_tokens": usage.input_tokens if persist_usage else None,
+                    "output_tokens": usage.output_tokens if persist_usage else None,
+                    "cached_input_tokens": usage.cached_input_tokens if persist_usage else None,
+                    "web_search_count": usage.web_search_count if persist_usage else None,
+                    "cost_usd": cost_usd if persist_usage else None,
                 },
             )
     except Exception:
@@ -281,6 +346,35 @@ def _extract_hits(response: Any, blocked_domains: list[str]) -> list[WebSearchHi
                     ),
                 )
     return hits
+
+
+def _extract_usage(response: Any) -> _Usage:
+    """Pull token counts + ``web_search_call`` count off a Responses response.
+
+    The Responses GA shape exposes ``response.usage`` with
+    ``input_tokens``, ``output_tokens``, and an optional
+    ``input_tokens_details.cached_tokens`` for prompt-cache hits. The
+    number of internal searches is the count of ``response.output`` items
+    whose ``type == "web_search_call"``. All fields default to 0 if the
+    SDK shape changes; a malformed response should not crash the persist
+    path.
+    """
+    usage_obj = _attr(response, "usage")
+    input_tokens = int(_attr(usage_obj, "input_tokens") or 0)
+    output_tokens = int(_attr(usage_obj, "output_tokens") or 0)
+
+    details = _attr(usage_obj, "input_tokens_details")
+    cached = int(_attr(details, "cached_tokens") or 0) if details is not None else 0
+
+    output = _attr(response, "output") or []
+    search_count = sum(1 for item in output if _attr(item, "type") == "web_search_call")
+
+    return _Usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_input_tokens=cached,
+        web_search_count=search_count,
+    )
 
 
 def _attr(obj: Any, name: str) -> Any:
