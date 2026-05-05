@@ -257,6 +257,42 @@ def test_bootstrap_places_order_only_for_trade_decisions() -> None:
     assert fake.placed_orders[0].market_id == "0xa"
 
 
+def test_bootstrap_places_order_when_risk_emits_alias_keys() -> None:
+    """Cycle-7 regression: risk-LLM wrote `final_notional_usd` instead of canonical
+    keys → Lead's `_decision_notional` returned 0 → no order. The Pydantic
+    alias-normaliser hoists the value at parse-time so the Lead reader is
+    unchanged and the order goes through."""
+
+    def _risk_with_aliases(task: Any) -> RiskExecutionOutput:
+        prediction = task.predictions[0]
+        decision = Decision(
+            cycle_id="cycle-test",
+            market_id=prediction.market_id,
+            p_consensus=prediction.p_yes,
+            q_market=0.5,
+            edge=prediction.edge,
+            gate_results={"final_notional_usd": 168.47, "side": "yes"},
+            action="trade",
+            rationale="approved (cycle-7 alias pattern)",
+            created_at=_now(),
+        )
+        return RiskExecutionOutput(decisions=[decision])
+
+    fake = FakeAdapter()
+    bootstrap_team(
+        settings=Settings(),
+        adapter=fake,
+        scanner=_scanner,
+        trading=_trading,
+        risk=_risk_with_aliases,
+        session_factory=lambda: _capturing_factory([]),
+        clock=_now,
+    )
+    assert len(fake.placed_orders) == 1
+    assert fake.placed_orders[0].market_id == "0xa"
+    assert fake.placed_orders[0].notional_usd == 168.47
+
+
 def test_bootstrap_skips_order_for_skip_decision() -> None:
     fake = FakeAdapter()
     bootstrap_team(

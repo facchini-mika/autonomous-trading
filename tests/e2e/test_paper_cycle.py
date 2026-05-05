@@ -56,10 +56,12 @@ def _market() -> Market:
 
 
 def _orderbook() -> Orderbook:
+    # Spread = 0.05, well within MAX_SPREAD=0.10 ceiling enforced by
+    # _enforce_universe_invariants in lead_bootstrap.
     return Orderbook(
         market_id=MARKET_ID,
-        best_bid=0.45,
-        best_ask=0.55,
+        best_bid=0.475,
+        best_ask=0.525,
         mid=0.50,
         depth_bid_1pct=500,
         depth_ask_1pct=500,

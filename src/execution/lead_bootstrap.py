@@ -33,6 +33,7 @@ from shared.models import (
     CyclePlan,
     Decision,
     Lesson,
+    Market,
     MarketMetadata,
     Note,
     Order,
@@ -112,6 +113,14 @@ def bootstrap_team(
     prev_plan = _load_prev_plan(factory)
 
     universe_inputs = _collect_universe_inputs(adapter=adapter, factory=factory, settings=settings, now=now)
+    thresholds = ScannerThresholds(
+        min_depth_1pct_usd=settings.MIN_DEPTH_1PCT_USD,
+        max_spread=settings.MAX_SPREAD,
+        min_ttr_hours=settings.MIN_TIME_TO_RESOLUTION_HOURS,
+        max_ttr_days=settings.MAX_TIME_TO_RESOLUTION_DAYS,
+        soon_resolve_threshold_days=settings.SOON_RESOLVE_THRESHOLD_DAYS,
+        soon_resolve_boost_multiplier=settings.SOON_RESOLVE_BOOST_MULTIPLIER,
+    )
     try:
         scanner_out = scanner(
             ScannerReviewerTask(
@@ -126,22 +135,27 @@ def bootstrap_team(
                 kill_switch_active=universe_inputs["kill_switch_active"],
                 held_market_ids=universe_inputs["held_market_ids"],
                 orders_in_last_hour=universe_inputs["orders_in_last_hour"],
-                thresholds=ScannerThresholds(
-                    min_depth_1pct_usd=settings.MIN_DEPTH_1PCT_USD,
-                    max_spread=settings.MAX_SPREAD,
-                    min_ttr_hours=settings.MIN_TIME_TO_RESOLUTION_HOURS,
-                    max_ttr_days=settings.MAX_TIME_TO_RESOLUTION_DAYS,
-                    soon_resolve_threshold_days=settings.SOON_RESOLVE_THRESHOLD_DAYS,
-                    soon_resolve_boost_multiplier=settings.SOON_RESOLVE_BOOST_MULTIPLIER,
-                ),
+                thresholds=thresholds,
             )
         )
     except SubagentBudgetError as exc:
         _log_budget_abort(cycle_id=cycle_id, stage="scanner-reviewer", exc=exc)
         unbind("cycle_id")
         raise CycleAbortedError(reason=str(exc), cycle_id=cycle_id, stage="scanner-reviewer") from exc
-    universe = scanner_out.universe
     portfolio = scanner_out.portfolio_state
+
+    # Defensive post-filter. The scanner is an LLM and was observed in cycle-7
+    # to violate its threshold contract under universe-pressure (picked
+    # markets with TTR=239d despite max_ttr_days=14). The trading-agent
+    # would skip web_search for any such pick, so we filter them here.
+    held_market_ids = universe_inputs["held_market_ids"]
+    assert isinstance(held_market_ids, list)  # noqa: S101 — _collect_universe_inputs always sets this.
+    universe = _enforce_universe_invariants(
+        universe=scanner_out.universe,
+        thresholds=thresholds,
+        held_market_ids=set(held_market_ids),
+        clock=now,
+    )
 
     # Upsert markets + record per-cycle snapshots before any FK-dependent insert.
     _persist_universe(factory=factory, universe=universe, clock=now)
@@ -221,6 +235,115 @@ def bootstrap_team(
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _enforce_universe_invariants(
+    *,
+    universe: Universe,
+    thresholds: ScannerThresholds,
+    held_market_ids: set[str],
+    clock: datetime,
+) -> Universe:
+    """Drop scanner-picked markets that violate the deterministic filter contract.
+
+    The scanner is an LLM and was observed in cycle-7 to break its
+    `max_ttr_days` constraint under universe-pressure (picked markets at
+    TTR=239d despite max_ttr_days=14). We enforce the deterministic side
+    of the filter policy here so the trading-agent never sees a
+    non-compliant market. Held markets are always preserved regardless
+    of any threshold — operators must keep visibility on positions under
+    management.
+
+    Mirrors the doctrine in ``research/prompts/scanner_reviewer.md``
+    sections "Filtering policy" steps 1-6 (held bypass, status, TTR
+    window, liquidity floor, spread ceiling, ambiguity). Ranking,
+    soft-boost, and top_k truncation remain the scanner's job.
+
+    Per-drop ``scanner_violation`` warnings give forensics; one summary
+    ``scanner_post_filter_done`` info log carries the kept/dropped split.
+    """
+    min_ttr = timedelta(hours=thresholds.min_ttr_hours)
+    max_ttr = timedelta(days=thresholds.max_ttr_days)
+    kept_markets: list[Market] = []
+    dropped_reasons: dict[str, int] = {}
+
+    for market in universe.markets:
+        if market.market_id in held_market_ids:
+            kept_markets.append(market)
+            continue
+        reason = _universe_drop_reason(
+            market=market,
+            orderbook=universe.orderbooks.get(market.market_id),
+            min_ttr=min_ttr,
+            max_ttr=max_ttr,
+            min_depth_1pct_usd=thresholds.min_depth_1pct_usd,
+            max_spread=thresholds.max_spread,
+            clock=clock,
+        )
+        if reason is None:
+            kept_markets.append(market)
+            continue
+        dropped_reasons[reason] = dropped_reasons.get(reason, 0) + 1
+        logger.warning(
+            "scanner_violation",
+            market_id=market.market_id,
+            reason=reason,
+        )
+
+    kept_market_ids = {m.market_id for m in kept_markets}
+    kept_orderbooks = {mid: ob for mid, ob in universe.orderbooks.items() if mid in kept_market_ids}
+    logger.info(
+        "scanner_post_filter_done",
+        kept_count=len(kept_markets),
+        dropped_count=len(universe.markets) - len(kept_markets),
+        dropped_reasons=dropped_reasons,
+    )
+    return Universe(
+        markets=kept_markets,
+        orderbooks=kept_orderbooks,
+        timestamp=universe.timestamp,
+    )
+
+
+_AMBIGUITY_CEILING: float = 0.6
+
+
+def _universe_drop_reason(
+    *,
+    market: Market,
+    orderbook: Orderbook | None,
+    min_ttr: timedelta,
+    max_ttr: timedelta,
+    min_depth_1pct_usd: float,
+    max_spread: float,
+    clock: datetime,
+) -> str | None:
+    """Return a short reason string if the market violates a filter, else None.
+
+    Iterates a fixed list of (predicate, reason) pairs so adding a new
+    invariant is one line and the function stays under the return-count
+    threshold (Ruff PLR0911).
+    """
+    if orderbook is None:
+        return "orderbook_missing"
+    ttr = market.end_date - clock
+    spread = orderbook.best_ask - orderbook.best_bid
+    min_depth = min(orderbook.depth_bid_1pct, orderbook.depth_ask_1pct)
+    checks: list[tuple[bool, str]] = [
+        (market.status != "open", "status_not_open"),
+        (ttr < min_ttr, "ttr_below_min"),
+        (ttr > max_ttr, "ttr_above_max"),
+        (min_depth < min_depth_1pct_usd, "liquidity_below_floor"),
+        (spread > max_spread, "spread_above_ceiling"),
+        (
+            market.ambiguity_score is not None and market.ambiguity_score > _AMBIGUITY_CEILING,
+            "ambiguity_above_ceiling",
+        ),
+    ]
+    for failed, reason in checks:
+        if failed:
+            return reason
+    return None
 
 
 def _log_budget_abort(*, cycle_id: str, stage: str, exc: SubagentBudgetError) -> None:

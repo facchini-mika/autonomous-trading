@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from shared.models.market import Market, Orderbook
 from shared.models.order import OrderSide, OrderStatus
@@ -67,6 +67,16 @@ class Decision(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    # Risk-execution-LLM was observed in cycle-7 emitting non-canonical sizing
+    # keys (``final_notional_usd`` / ``clipped_notional_usd``) instead of the
+    # ``clipped_notional`` / ``notional_usd`` the Lead's ``_decision_notional``
+    # reads. Doctrine alone (PR #46) did not stop the drift. This map lists
+    # known aliases per canonical key, in lookup priority order.
+    _NOTIONAL_ALIASES: ClassVar[dict[str, tuple[str, ...]]] = {
+        "clipped_notional": ("clipped_notional_usd", "final_notional_usd"),
+        "notional_usd": ("final_notional_usd", "clipped_notional_usd"),
+    }
+
     id: UUID = Field(default_factory=uuid4)
     cycle_id: str
     market_id: str
@@ -77,6 +87,32 @@ class Decision(BaseModel):
     action: DecisionAction
     rationale: str
     created_at: datetime
+
+    @field_validator("gate_results", mode="before")
+    @classmethod
+    def _normalize_notional_aliases(cls, v: Any) -> Any:
+        """Hoist non-canonical notional keys into canonical names at parse-time.
+
+        Canonical wins over alias if both are present and positive. Zero or
+        non-numeric values are not hoisted (the Lead reads positive-only).
+        Non-dict input passes through untouched (Pydantic will raise on
+        type mismatch downstream).
+        """
+        if not isinstance(v, dict):
+            return v
+        for canonical, aliases in cls._NOTIONAL_ALIASES.items():
+            if cls._has_positive_number(v.get(canonical)):
+                continue
+            for alias in aliases:
+                value = v.get(alias)
+                if cls._has_positive_number(value):
+                    v[canonical] = value
+                    break
+        return v
+
+    @staticmethod
+    def _has_positive_number(value: Any) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
 
 
 class Trade(BaseModel):

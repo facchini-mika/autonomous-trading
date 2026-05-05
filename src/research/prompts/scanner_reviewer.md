@@ -70,6 +70,14 @@ For every market in `raw_markets`:
    skip-threshold in `prompts/trading_agent.md`; markets beyond it
    are guaranteed to skip web_search and therefore cannot produce
    actionable predictions.
+
+> **Lead enforces these deterministic filters defensively after your
+> output** (`execution.lead_bootstrap._enforce_universe_invariants`).
+> Picks that violate `max_ttr_days`, `min_depth_1pct_usd`, `max_spread`,
+> `status="open"`, or the ambiguity ceiling are dropped client-side
+> before reaching the trading-agent. Held markets are always preserved.
+> Ranking, soft-boost, and `top_k` truncation remain your job;
+> threshold compliance is non-negotiable.
 6. **Status.** Drop if `market.status != "open"`.
 
 After filtering: if a market survived, keep it; otherwise drop. Then

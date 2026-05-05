@@ -112,6 +112,14 @@ but not used for sizing.** If both top-level keys are missing or
 non-positive on a `trade` decision, the Lead skips the order
 silently — so emit them.
 
+**Alias safety net (Phase 6c).** As of cycle-7-followups the
+`Decision` Pydantic model also accepts `final_notional_usd` and
+`clipped_notional_usd` as aliases — they are hoisted to the
+canonical names at parse-time so the Lead's reader contract still
+sees `clipped_notional` / `notional_usd`. **Prefer the canonical
+names.** Aliases are accepted as a safety net but not contractually
+guaranteed; future Lead refactors may drop them.
+
 For `action="skip"` or `action="hold"`, the top-level
 `clipped_notional`/`notional_usd` may be omitted (the Lead does not
 place orders for those). The per-gate audit trail remains required.
