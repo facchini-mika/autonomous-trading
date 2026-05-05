@@ -1,5 +1,9 @@
 """PolymarketAdapter — sync REST wrapper around `py-clob-client-v2`.
 
+All orders are submitted with TIF=FAK (Fill-And-Kill / IOC). Any
+unfilled portion is cancelled immediately by Polymarket — no resting
+orders, by design. See `specs/data_infrastructure.md §2`.
+
 Phase-6a swap: Polymarket's CLOB v2 cutover (2026-04-28) made the v1
 EIP-712 domain (version="1", legacy exchange addresses) reject every
 order with `order_version_mismatch`. The v2 client signs against the new
@@ -202,6 +206,11 @@ class PolymarketAdapter:
     # --- Writes --------------------------------------------------------------
 
     def place_order(self, order: Order) -> OrderResult:
+        # Idempotency cache reflects the single FAK submission outcome.
+        # Partial fills are terminal (Polymarket cancels the unfilled remainder
+        # immediately); the cached result is the right answer to return on
+        # adapter-internal retries. It does *not* protect against a
+        # process-crash mid-submit — that would need broker-side dedup.
         cached = self._idempotency.get(order.idempotency_key)
         if cached is not None:
             logger.debug("Idempotency hit for key=%s; returning cached result", order.idempotency_key)
@@ -261,8 +270,10 @@ class PolymarketAdapter:
         self._api_creds_set = True
 
     def _submit_order(self, order: Order) -> Any:
+        from py_clob_client_v2 import OrderType  # noqa: PLC0415
+
         signed = self._client.create_order(_to_clob_order_args(order))
-        return self._client.post_order(signed)
+        return self._client.post_order(signed, order_type=OrderType.FAK)
 
     def _retry(self, fn: Callable[[], T], *, op: str) -> T:
         last_exc: BaseException | None = None
@@ -563,6 +574,15 @@ def _parse_order_result(raw: Any, *, order: Order | None = None) -> OrderResult:
         # V1-shape fallback (legacy tests + any pre-migration response).
         filled_size = float(item.get("filled_size", item.get("size_matched", 0)) or 0)
         fill_price = _optional_float(item.get("fill_price") or item.get("price"))
+
+    # Under FAK, Polymarket reports `status="matched"` for both full and partial
+    # fills — the unfilled remainder is cancelled silently. Disambiguate against
+    # the requested order size so downstream consumers see the right state.
+    if order is not None and status == "filled":
+        if float(filled_size) <= 0.0:
+            status = "rejected"
+        elif float(filled_size) < float(order.size):
+            status = "partial"
 
     return OrderResult(
         status=status,

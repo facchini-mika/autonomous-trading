@@ -257,3 +257,4 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 - **Single-Operator-Audit-Pattern** ist organisatorische Disziplin: GitHub kann es nicht erzwingen (Self-Approval verboten, daher 0 Required Approvals); `AUDIT_LOG.md`-Einträge bei `src/risk/**`-, `MAX_CAPITAL_EUR`- oder `TRADING_MODE`-Touches sind die einzige Spur.
 - **`MAX_CAPITAL_EUR=0` blockt real_capital-Orders by design.** Operator muss aktiv setzen — Feature, kein Bug.
 - **Polymarket-API-Versions-Drift:** `py-clob-client`-Pin in `pyproject.toml` essenziell; manueller Smoke vor jedem Bump.
+- **TIF=FAK ist hardcoded** im `PolymarketAdapter` (`specs/data_infrastructure.md §2`). Beim ersten `real_capital`-Sandbox-Smoke verifizieren, dass eine künstlich-zu-große Order tatsächlich nur einen Partial-Fill produziert und keine Resting-Order auf dem Buch liegen lässt (`get_open_orders()` muss leer sein).

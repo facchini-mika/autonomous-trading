@@ -157,6 +157,16 @@ A live strategy must run **≥ 5–7 days in `real_capital` mode** (default 5, c
   proposal accepted  →  ≥ 30d paper mode  →  flip to real_capital  →  ≥ 5–7d live  →  eligible for replacement
   ```
 
+### Resting / limit / TWAP order types
+
+MVP submits every order with TIF=FAK (Fill-And-Kill / IOC) per `data_infrastructure.md §2` — the unfilled remainder is cancelled, no order rests on the book. Lifting this restriction (TIF=GTC for limit-on-book, GTD for time-bounded resting, FOK for atomic-fill) is post-MVP because it requires:
+- open-order tracking in a new `open_orders` table or `positions` extension,
+- locked-capital math in `solvency_gate.py` so reserved-but-unfilled notional is not double-spent,
+- cross-cycle order-state in `cycle_plan` so the next cycle's Lead knows what's still resting,
+- a long-running canceller for stale orders past their TIF window.
+
+These are introduced together when the operator wants execution-strategy sophistication (TWAP, queue-priority laddering, post-only) on top of pure prediction quality. The PA baseline (FAK only) is the explicit MVP choice.
+
 ### Learning Loop Cadence
 
 - **Daily:** `risk-auditor` scans last-24h trades; writes lessons for near-misses, outliers, slippage anomalies.

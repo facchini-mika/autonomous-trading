@@ -184,7 +184,7 @@ def test_place_order_retry_on_transient_then_succeeds(adapter: PolymarketAdapter
     fake_clob.post_order.side_effect = [
         PolymarketTransientError("503"),
         PolymarketTransientError("503"),
-        {"status": "matched", "order_id": "x", "price": 0.5},
+        {"status": "matched", "order_id": "x", "price": 0.5, "size_matched": 1.0},
     ]
     res = adapter.place_order(_make_order("k-retry"))
     assert res.status == "filled"
@@ -217,7 +217,7 @@ def test_rate_limit_error_is_transient_and_retried(adapter: PolymarketAdapter, f
     fake_clob.create_order.return_value = {}
     fake_clob.post_order.side_effect = [
         PolymarketRateLimitError("429"),
-        {"status": "matched", "order_id": "x"},
+        {"status": "matched", "order_id": "x", "size_matched": 1.0},
     ]
     res = adapter.place_order(_make_order("k-429"))
     assert res.status == "filled"
@@ -383,6 +383,77 @@ def test_to_clob_order_args_maps_side() -> None:
     o2 = _make_order("k2", side="no")
     args2 = _to_clob_order_args(o2)
     assert args2.side == "SELL"
+
+
+def test_place_order_submits_with_fak_tif(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
+    """Every Polymarket submission must explicitly set TIF=FAK.
+
+    Without this flag the py-clob-client default kicks in (`OrderType.GTC`),
+    leaving unfilled portions as resting orders — the spec forbids that
+    (`specs/data_infrastructure.md §2`).
+    """
+    from py_clob_client_v2 import OrderType
+
+    fake_clob.create_or_derive_api_key.return_value = MagicMock()
+    fake_clob.create_order.return_value = {"signed": True}
+    fake_clob.post_order.return_value = {"status": "matched", "order_id": "x", "size_matched": 1.0}
+    adapter.place_order(_make_order("fak-tif"))
+
+    assert fake_clob.post_order.call_count == 1
+    call = fake_clob.post_order.call_args
+    # FAK must be passed explicitly (kwarg or positional); reject the default GTC path.
+    if "order_type" in call.kwargs:
+        assert call.kwargs["order_type"] == OrderType.FAK
+    else:
+        assert len(call.args) >= 2
+        assert call.args[1] == OrderType.FAK
+
+
+def test_place_order_partial_fill_v2_shape(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
+    """Polymarket reports `status="matched"` even on partial FAK fills.
+
+    The adapter must compare `takingAmount` against the requested order size
+    and report `status="partial"` in that case so downstream PnL math sees
+    the right state.
+    """
+    fake_clob.create_or_derive_api_key.return_value = MagicMock()
+    fake_clob.create_order.return_value = {}
+    # Order requests size=5, only 2 filled; v2 response has status="matched" anyway.
+    fake_clob.post_order.return_value = {
+        "errorMsg": "",
+        "orderID": "0xpartial",
+        "takingAmount": "2",
+        "makingAmount": "1.0",
+        "status": "matched",
+    }
+    order = Order(
+        market_id="0xmarket",
+        side="yes",
+        size=5.0,
+        price=0.5,
+        notional_usd=2.5,
+        idempotency_key="partial-v2",
+    )
+    res = adapter.place_order(order)
+    assert res.status == "partial"
+    assert res.filled_size == pytest.approx(2.0)
+    assert res.fill_price == pytest.approx(0.5)
+
+
+def test_place_order_zero_fill_becomes_rejected(adapter: PolymarketAdapter, fake_clob: MagicMock) -> None:
+    """A FAK that found no matchable depth comes back with size=0 → rejected."""
+    fake_clob.create_or_derive_api_key.return_value = MagicMock()
+    fake_clob.create_order.return_value = {}
+    fake_clob.post_order.return_value = {
+        "errorMsg": "",
+        "orderID": "0xzero",
+        "takingAmount": "0",
+        "makingAmount": "0",
+        "status": "matched",
+    }
+    res = adapter.place_order(_make_order("zero"))
+    assert res.status == "rejected"
+    assert res.filled_size == 0.0
 
 
 def _make_order(key: str, *, side: Any = "yes") -> Order:

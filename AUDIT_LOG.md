@@ -746,3 +746,118 @@ Every PR that touches one of the following must have an entry here:
   decisions audit in `decisions`, paper-only writes in
   `paper_trades`). Reverting the PR removes the generator and doc
   section; nothing in `main` depends on either at runtime.
+
+## 2026-05-05 — TIF=FAK on order submission (immediate-fill-only)
+
+- **Category:** Order-execution semantics — code change to
+  `src/shared/adapters/{polymarket,paper_trading}.py` and the
+  associated specs. No `src/risk/**` touch, no `TRADING_MODE` flip,
+  no `MAX_CAPITAL_EUR` change. Logged because order-execution
+  behavior on the live CLOB write surface changes — the Polymarket
+  side now sees explicit `OrderType.FAK` instead of the
+  py-clob-client default `OrderType.GTC`.
+- **PR:** _pending_ (`feature/fak-orders`)
+- **Description:**
+  - `polymarket.py:_submit_order` now calls
+    `post_order(signed, order_type=OrderType.FAK)`. The previous
+    code relied on the py-clob-client-v2 default, which is
+    `OrderType.GTC` — meaning any unfilled portion of a marketable
+    limit was left on the Polymarket book as a resting order.
+    The spec (`specs/trading.md §5`,
+    `specs/data_infrastructure.md §2`) has always said
+    "marketable-limit, immediate execution"; the code reality
+    diverged silently because `post_order` accepted `order_type`
+    only as a kwarg and we never set it. This PR closes the gap.
+  - `_parse_order_result` now disambiguates `status="matched"`
+    against the requested order size: a `matched` response with
+    `taking < requested` becomes `status="partial"`; with
+    `taking == 0` becomes `status="rejected"`. Necessary because
+    Polymarket reports `matched` for both full and partial FAK
+    fills.
+  - `paper_trading.py:place_order` now simulates FAK behavior by
+    clipping the fill to the live adapter's
+    `Orderbook.depth_{ask,bid}_1pct` at marketable prices. Status
+    becomes `partial` when depth < requested, `rejected` when
+    price isn't marketable or depth is 0. Fees are charged on the
+    actually filled notional only, not on the requested notional.
+  - `OrderType` Pydantic Literal in `src/shared/models/order.py`
+    is left unchanged but gains a doc comment clarifying it is the
+    *pricing style* (marketable-limit), not the Polymarket-CLOB
+    `OrderType` (TIF). The TIF is hardcoded to FAK in the adapter.
+  - Spec updates: `specs/trading.md §5` step 6 +
+    `specs/trading.md §6` add explicit "TIF=FAK / no resting
+    orders" wording; `specs/data_infrastructure.md §2`
+    Order-types table extended with a TIF row + reconciler-no-
+    resting note; `specs/optimization.md §5` Weiterer-Ausbau
+    gains a "Resting / limit / TWAP order types" subsection
+    documenting what would need to change to lift the
+    restriction; `plan.md` Phase-6 Risiken bullet added.
+- **Risk:**
+  - **Behavioral diff vs. prior cycles:** previously, in the
+    extremely unlikely event that the trading-agent placed a
+    marketable order whose top-of-book depth was insufficient,
+    the unfilled remainder sat on the Polymarket book as a GTC
+    resting order — invisible to subsequent cycles
+    (no `cycle_plan` field tracks it, no `open_orders` table
+    exists). Cycles 5/6/7 ran in `paper`, so no real resting
+    orders were ever created; the risk is forward-looking only.
+  - **Paper-PnL realism shift:** paper-mode previously always
+    full-filled at the requested limit price. With depth-based
+    clipping, a sufficiently large or thin-market paper order
+    now produces a `partial` or `rejected` result. Equity curves
+    for paper cycles starting from this PR are not directly
+    comparable to pre-PR paper cycles. Acceptable — the new
+    behavior is closer to what `real_capital` will see.
+  - **Fee math change:** paper fees are now `fee_rate_bps *
+    actual_filled_notional` (was: `* order.notional_usd`). On a
+    full fill the values are identical; on a partial they match
+    what FAK actually charges. No `src/risk/**` consumer reads
+    this field — the trading-cycle role's UPDATE on
+    `paper_trades.realized_pnl` flows through
+    `outcome_math.py`, which uses the persisted notional, so the
+    aggregation stays consistent.
+  - **Status-refinement in `_parse_order_result`:** a v1-shape
+    response with no `size_matched` (already a degenerate test
+    fixture) now resolves to `status="rejected"` instead of
+    `status="filled"`. Two existing tests
+    (`test_place_order_retry_on_transient_then_succeeds`,
+    `test_rate_limit_error_is_transient_and_retried`) had to add
+    `size_matched=1.0` to their mock responses — this is a more
+    accurate fixture, not a regression. No production code path
+    changes.
+- **Test coverage:**
+  - `tests/adapters/test_polymarket.py` +3 tests:
+    `test_place_order_submits_with_fak_tif`,
+    `test_place_order_partial_fill_v2_shape`,
+    `test_place_order_zero_fill_becomes_rejected`.
+  - `tests/adapters/test_paper_trading.py` +5 tests:
+    `test_place_order_partial_when_size_exceeds_depth`,
+    `test_place_order_rejected_when_price_not_marketable`,
+    `test_place_order_rejected_when_no_liquidity`,
+    `test_place_order_sell_consumes_bid_side`,
+    `test_place_order_partial_fee_tracks_filled_notional`. Two
+    existing tests adjusted to use marketable price (best_ask)
+    instead of below-market prices that were silently accepted
+    by the old full-fill stub.
+  - 83/83 adapter tests + 15/15 lead-bootstrap tests green
+    locally.
+- **Why it's still safe:**
+  - `TRADING_MODE` stays `paper` default; `MAX_CAPITAL_EUR=0`
+    unchanged. The behavior change only manifests on the
+    Polymarket CLOB write surface, which is gated by both flags.
+  - `src/risk/**` untouched — concentration / solvency / cycle-
+    cap / capital / kill-switch gates all run pre-submit, and
+    their decisions are unaffected by what happens inside
+    `place_order`. 100% risk-coverage holds.
+  - The first `real_capital` order will exercise this path; the
+    Phase-6 sandbox-smoke check (now noted in `plan.md`)
+    explicitly asks the operator to verify
+    `client.get_open_orders()` returns empty after a partial-
+    fill smoke order, confirming the Polymarket side honors FAK
+    as the spec assumes.
+- **Mitigation / rollback:** `git revert` of this PR restores
+  the prior implicit-GTC behavior. `OrderType.FAK` is referenced
+  at exactly one call site in `polymarket.py`; the paper-side
+  partial-fill simulator is self-contained in
+  `paper_trading.py:_simulate_fak_fill`. No schema or migration
+  change — purely code + spec.

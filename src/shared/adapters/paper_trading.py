@@ -5,6 +5,14 @@ universe matches reality. Writes (`place_order`, `cancel_order`) skip the venue
 entirely and persist to the `paper_trades` table with `broker_order_id`
 prefixed `paper-` for easy log-grepping.
 
+Paper writes simulate Polymarket's TIF=FAK (Fill-And-Kill / IOC) behavior:
+the fill is clipped to the available top-of-book depth at or better than the
+order's limit price; the unfilled remainder is *not* persisted (no resting
+orders, by design — see `specs/data_infrastructure.md §2`). Because our
+`Orderbook` model carries top-of-book + ±1% aggregate depth (not multi-level),
+fill_price is simplified to `best_ask` (BUY) / `best_bid` (SELL) rather than
+a true volume-weighted average — conservative and matches the spec for MVP.
+
 `decision_id` is supplied via an injected `Callable[[], UUID]` (Stream D
 provides the ContextVar-backed implementation). The adapter never imports
 `shared.db`; the caller injects a `session_factory` callable that yields a
@@ -73,22 +81,39 @@ class PaperTradingAdapter:
     def get_resolution(self, market_id: str) -> Resolution | None:
         return self._live.get_resolution(market_id)
 
-    def estimate_fee(self, order: Order) -> float:
-        """Return the simulated paper fee for `order`.
+    def estimate_fee(self, order: Order, *, filled_notional: float | None = None) -> float:
+        """Return the simulated paper fee.
 
         Paper-mode fees are deterministic — we don't call the live adapter
         here so paper cycles stay reproducible. ``fee_rate_bps`` is wired
-        from ``Settings.FEE_RATE_BPS`` by the factory.
+        from ``Settings.FEE_RATE_BPS`` by the factory. ``filled_notional``
+        overrides ``order.notional_usd`` so fees track the actual fill on
+        partial-fill outcomes (FAK: unfilled remainder is cancelled, no fee).
         """
-        return float(order.notional_usd) * self._fee_rate_bps / 10000.0
+        notional = float(order.notional_usd) if filled_notional is None else filled_notional
+        return notional * self._fee_rate_bps / 10000.0
 
     # --- Writes (redirect) ---------------------------------------------------
 
     def place_order(self, order: Order) -> OrderResult:
+        book = self._live.get_orderbook(order.market_id)
+        filled_size, fill_price = _simulate_fak_fill(book, order)
+
+        if filled_size <= 0.0 or fill_price is None:
+            return OrderResult(
+                status="rejected",
+                fill_price=None,
+                filled_size=0.0,
+                fees=0.0,
+                broker_order_id=None,
+            )
+
         decision_id = self._decision_id_provider()
         broker_id = f"{PAPER_BROKER_PREFIX}{uuid.uuid4()}"
         now = self._clock()
-        fees = self.estimate_fee(order)
+        filled_notional = filled_size * fill_price
+        fees = self.estimate_fee(order, filled_notional=filled_notional)
+        status = "filled" if filled_size >= order.size else "partial"
 
         with self._session_factory() as session:
             session.execute(
@@ -99,7 +124,7 @@ class PaperTradingAdapter:
                         fees, gas, status, broker_order_id, created_at, filled_at
                     ) VALUES (
                         :decision_id, :market_id, :side, :size, :price, :notional_usd,
-                        :fees, 0, 'filled', :broker_order_id, :now, :now
+                        :fees, 0, :status, :broker_order_id, :now, :now
                     )
                     """,
                 ),
@@ -107,19 +132,20 @@ class PaperTradingAdapter:
                     "decision_id": str(decision_id),
                     "market_id": order.market_id,
                     "side": order.side,
-                    "size": order.size,
-                    "price": order.price,
-                    "notional_usd": order.notional_usd,
+                    "size": filled_size,
+                    "price": fill_price,
+                    "notional_usd": filled_notional,
                     "fees": fees,
+                    "status": status,
                     "broker_order_id": broker_id,
                     "now": now,
                 },
             )
 
         return OrderResult(
-            status="filled",
-            fill_price=order.price,
-            filled_size=order.size,
+            status=status,
+            fill_price=fill_price,
+            filled_size=filled_size,
             fees=fees,
             broker_order_id=broker_id,
         )
@@ -141,3 +167,29 @@ class PaperTradingAdapter:
         if row is None:
             return CancelResult(order_id=order_id, status="not_found", cancelled_size=0.0)
         return CancelResult(order_id=order_id, status="cancelled", cancelled_size=float(row[0]))
+
+
+def _simulate_fak_fill(book: Orderbook, order: Order) -> tuple[float, float | None]:
+    """Clip an order against top-of-book depth — FAK semantics.
+
+    Returns ``(filled_size, fill_price)``. ``order.side="yes"`` means BUY
+    (consumes the ask side); ``order.side="no"`` means SELL (consumes the
+    bid side). If the limit price isn't marketable against the top, the
+    order is rejected (filled_size=0, fill_price=None). Otherwise the
+    available ±1% depth caps the fill; the remainder is cancelled by FAK.
+    """
+    if order.side == "yes":
+        if order.price < book.best_ask:
+            return 0.0, None
+        available = book.depth_ask_1pct
+        fill_price = book.best_ask
+    else:
+        if order.price > book.best_bid:
+            return 0.0, None
+        available = book.depth_bid_1pct
+        fill_price = book.best_bid
+
+    filled_size = min(order.size, available)
+    if filled_size <= 0.0:
+        return 0.0, None
+    return filled_size, fill_price

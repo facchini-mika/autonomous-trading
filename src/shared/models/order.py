@@ -8,6 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 OrderSide = Literal["yes", "no"]
 OrderStatus = Literal["open", "partial", "filled", "cancelled", "rejected"]
+# `OrderType` here is the *pricing style* (limit price set to the current best
+# ask/bid for immediate execution). Distinct from the Polymarket-CLOB-internal
+# `OrderType` (TIF: GTC/FAK/FOK/GTD) — that is hardcoded to FAK in
+# `PolymarketAdapter` per `specs/data_infrastructure.md §2`. If a second pricing
+# style is ever added, rename this enum to `PricingStyle` and add `Order.tif`
+# as a separate field.
 OrderType = Literal["marketable_limit"]
 CancelStatus = Literal["cancelled", "not_found", "error"]
 

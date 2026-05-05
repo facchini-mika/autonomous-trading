@@ -111,11 +111,14 @@ def _trading(_task: Any) -> TradingAgentOutput:
 
 def _risk(task: Any) -> RiskExecutionOutput:
     prediction = task.predictions[0]
+    # q_market = best_ask for BUY YES (per `specs/trading.md §6`). The Lead
+    # uses this as the order's limit price; with FAK the price must be
+    # marketable against best_ask or the order is rejected.
     decision = Decision(
         cycle_id="cycle-test",
         market_id=prediction.market_id,
         p_consensus=prediction.p_yes,
-        q_market=0.5,
+        q_market=0.525,
         edge=prediction.edge,
         gate_results={"clipped_notional": 100.0, "notional_usd": 100.0},
         action="trade",

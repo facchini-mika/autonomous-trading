@@ -97,7 +97,7 @@ Decision cycle (T = scheduler fire time). Four-stage spine (Prediction-Arena pat
 | 3 | +45s – +5m | Analyze | `trading-agent` runs inference per market (parallelism inside the agent's own session; `web_search` calls inline as needed). Output: `Prediction(p_yes, reasoning_blob, edge)` per scored market. Per-market timeout 60s. |
 | 4 | +5m | Analyze | Edge computation per `Prediction`: `q = best_ask` (buying YES) / `1 − best_bid` (buying NO); `edge = p_yes − q`. Trade only if `|edge| ≥ 0.03`. |
 | 5 | +6m | Decide | `risk-execution` applies the §6 gates in fixed order; clips sizing; rejects any trade that fails any gate. |
-| 6 | +7m | Decide | `risk-execution` places orders. Marketable-limit, immediate execution. **Paper mode:** order written to `paper_trades`. **Real mode:** EIP-712-signed order to Polymarket CLOB (`data_infrastructure.md §2`). Internal idempotency key on every order. |
+| 6 | +7m | Decide | `risk-execution` places orders. **Marketable-limit with TIF=FAK** (Fill-And-Kill / IOC: any unfilled portion is cancelled immediately — no resting orders). Partial fills allowed and persisted as a single row at the actual filled size. **Paper mode:** simulated against top-of-book depth, written to `paper_trades`. **Real mode:** EIP-712-signed order to Polymarket CLOB with `OrderType.FAK` (`data_infrastructure.md §2`). Internal idempotency key on every order. |
 | 7 | +11m | Persist | Lead persists in-flight artifacts (`predictions`, `decisions`, `trades`/`paper_trades`) to long-term tables (`data_infrastructure.md §1`); writes any `notes` updates from the agent; **writes a fresh `cycle_plan` row** synthesized from the cycle's outputs. |
 | 8 | +11m55s | Cleanup | Lead calls `clean up the team`; `Stop` hook asserts cleanup happened; process exits. Next cycle is a brand-new `claude` process at the next scheduler tick. |
 
@@ -120,6 +120,8 @@ The trading layer **consumes** the gates defined in `engineering.md §1`. Three 
 3. **Per-cycle spending cap** — total notional opened this cycle ≤ cycle cap.
 
 Limits are plain constants in `src/risk/`, never AI outputs. Direct CLOB calls bypassing `src/risk/` are forbidden by `import-linter` in CI (`engineering.md §3`).
+
+**No resting orders.** Every order is FAK (`data_infrastructure.md §2`). The risk-engine's clipped notional is the agent's stated *intent*; the actual filled notional may be smaller if top-of-book depth is insufficient. The PA-baseline rationale is to isolate prediction quality from execution sophistication — resting / limit / TWAP behavior is post-MVP (`optimization.md §5`).
 
 ---
 

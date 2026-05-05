@@ -186,16 +186,18 @@ class PredictionMarketAdapter(Protocol):
 
 **Composition (MVP).** The `risk-execution` member of the Trading Team (`trading.md §2`) instantiates exactly one `PredictionMarketAdapter` per cycle, selected at startup based on `TRADING_MODE`. Other members (`scanner-reviewer` for read-only universe/orderbook, `trading-agent` for analysis) only need read paths and use the same adapter instance via the Lead. The outcome-ingestion script (`trading_feedback.md §1`) instantiates its own read-only Polymarket Gamma client (no order endpoints). The lessons-summary script (`optimization.md §1`) holds **no adapter** — it has no live-trading capability by design. Post-MVP Trade-Evaluation-Team and Code-Evaluation-Team adapter rules are specified in `trading_feedback.md §6` and `optimization.md §5`.
 
-**Order types** (PA-aligned — orders execute immediately, no smart order routing in v1):
+**Order types** (PA-aligned — immediate-fill-only, no resting orders, no smart order routing in v1):
 
-| Type | Use |
-|---|---|
-| Marketable limit | Default for both entry and exit. Buy at current best ask, sell at current best bid. |
+| Field | Value | Notes |
+|---|---|---|
+| Pricing style | Marketable limit | Default for both entry and exit. Buy at current best ask, sell at current best bid. |
+| Time-in-force | **FAK** (Fill-And-Kill / IOC) | Hardcoded in `PolymarketAdapter`. The unfilled portion is cancelled immediately by Polymarket; partial fills are allowed and persisted to `trades` / `paper_trades` as a single row at the actual filled size. **No resting orders** in MVP — the design rationale (PA baseline) is to isolate prediction quality from execution sophistication. GTC / FOK / GTD are post-MVP (`optimization.md §5`). |
 
 **Idempotency & reconciliation:**
 - Internal idempotency key (tag) on every order.
 - On retry, broker queried before resubmit.
 - Reconciler every 30s: diffs internal vs broker. Diff > $10 → freeze new orders for that market + page.
+- Because every order is FAK, there are by construction no open resting orders to reconcile against the broker — the reconciler diffs only `positions` and `cash`.
 
 **Failure handling:**
 - Transient (network, 5xx): exponential backoff (1s, 2s, 4s, 8s; max 60s).

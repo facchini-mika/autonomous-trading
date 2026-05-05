@@ -116,14 +116,15 @@ def test_reads_delegate_to_live(adapter: PaperTradingAdapter) -> None:
     assert adapter.get_resolution("nonexistent") is None
 
 
-def test_place_order_returns_filled_at_requested_price(
+def test_place_order_returns_filled_at_best_ask(
     adapter: PaperTradingAdapter,
     fixed_now: datetime,
 ) -> None:
-    order = Order(market_id="0xa", side="yes", size=2.0, price=0.45, notional_usd=0.9, idempotency_key="k1")
+    # FAK-Sim: marketable at best_ask=0.5 with depth_ask_1pct=10 → full fill at top.
+    order = Order(market_id="0xa", side="yes", size=2.0, price=0.5, notional_usd=1.0, idempotency_key="k1")
     result = adapter.place_order(order)
     assert result.status == "filled"
-    assert result.fill_price == pytest.approx(0.45)
+    assert result.fill_price == pytest.approx(0.5)
     assert result.filled_size == pytest.approx(2.0)
 
 
@@ -138,7 +139,7 @@ def test_place_order_writes_paper_trades_insert(
     adapter: PaperTradingAdapter,
     session: MagicMock,
 ) -> None:
-    order = Order(market_id="0xa", side="yes", size=3, price=0.4, notional_usd=1.2, idempotency_key="k3")
+    order = Order(market_id="0xa", side="yes", size=3, price=0.5, notional_usd=1.5, idempotency_key="k3")
     adapter.place_order(order)
     assert session.execute.call_count == 1
     sql = str(session.execute.call_args.args[0])
@@ -297,3 +298,109 @@ def test_cancel_order_not_found(
     )
     res = adapter.cancel_order("paper-missing")
     assert res.status == "not_found"
+
+
+# --- FAK partial-fill simulation ----------------------------------------------
+
+
+def test_place_order_partial_when_size_exceeds_depth(
+    adapter: PaperTradingAdapter,
+    session: MagicMock,
+) -> None:
+    # depth_ask_1pct=10, order size=15 → only 10 fill, remainder cancelled.
+    order = Order(market_id="0xa", side="yes", size=15.0, price=0.5, notional_usd=7.5, idempotency_key="partial")
+    result = adapter.place_order(order)
+    assert result.status == "partial"
+    assert result.filled_size == pytest.approx(10.0)
+    assert result.fill_price == pytest.approx(0.5)
+    # The persisted row reflects the actual fill, not the original intent.
+    params = session.execute.call_args.args[1]
+    assert params["size"] == pytest.approx(10.0)
+    assert params["status"] == "partial"
+    assert params["notional_usd"] == pytest.approx(5.0)  # 10 * 0.5
+
+
+def test_place_order_rejected_when_price_not_marketable(
+    adapter: PaperTradingAdapter,
+    session: MagicMock,
+) -> None:
+    # best_ask=0.5; price=0.4 means we are not marketable on the ask side → reject.
+    order = Order(market_id="0xa", side="yes", size=1.0, price=0.4, notional_usd=0.4, idempotency_key="not-mkt")
+    result = adapter.place_order(order)
+    assert result.status == "rejected"
+    assert result.filled_size == 0.0
+    assert result.fill_price is None
+    assert result.broker_order_id is None
+    # No INSERT must hit the DB on a reject.
+    assert session.execute.call_count == 0
+
+
+def test_place_order_rejected_when_no_liquidity(
+    fake_live: FakeAdapter,
+    session: MagicMock,
+    session_factory,
+    decision_id: UUID,
+    fixed_now: datetime,
+) -> None:
+    fake_live.orderbooks["0xa"] = fake_live.orderbooks["0xa"].model_copy(update={"depth_ask_1pct": 0.0})
+    adapter = PaperTradingAdapter(
+        live_adapter=fake_live,
+        session_factory=session_factory,
+        decision_id_provider=lambda: decision_id,
+        clock=lambda: fixed_now,
+    )
+    order = Order(market_id="0xa", side="yes", size=1.0, price=0.5, notional_usd=0.5, idempotency_key="no-liq")
+    result = adapter.place_order(order)
+    assert result.status == "rejected"
+    assert session.execute.call_count == 0
+
+
+def test_place_order_sell_consumes_bid_side(
+    adapter: PaperTradingAdapter,
+    session: MagicMock,
+) -> None:
+    # best_bid=0.4, depth_bid_1pct=10. side="no" = SELL → marketable at price ≤ best_bid.
+    order = Order(market_id="0xa", side="no", size=2.0, price=0.4, notional_usd=0.8, idempotency_key="sell")
+    result = adapter.place_order(order)
+    assert result.status == "filled"
+    assert result.fill_price == pytest.approx(0.4)
+    assert result.filled_size == pytest.approx(2.0)
+    params = session.execute.call_args.args[1]
+    assert params["side"] == "no"
+    assert params["price"] == pytest.approx(0.4)
+
+
+def test_place_order_partial_fee_tracks_filled_notional(
+    fake_live: FakeAdapter,
+    decision_id: UUID,
+    fixed_now: datetime,
+) -> None:
+    # 200 bps on the *filled* notional only — unfilled remainder under FAK
+    # is cancelled and pays no fee.
+    seen: dict[str, object] = {}
+
+    @contextmanager
+    def capture_factory():
+        sess = MagicMock()
+
+        def remember(stmt, params=None):
+            if params:
+                seen.update(params)
+            return sess
+
+        sess.execute = remember
+        yield sess
+
+    adapter = PaperTradingAdapter(
+        live_adapter=fake_live,
+        session_factory=capture_factory,
+        decision_id_provider=lambda: decision_id,
+        clock=lambda: fixed_now,
+        fee_rate_bps=200,
+    )
+    order = Order(market_id="0xa", side="yes", size=15.0, price=0.5, notional_usd=7.5, idempotency_key="partial-fee")
+    result = adapter.place_order(order)
+    # filled_size=10, fill_price=0.5 → filled_notional=5.0, fees=5.0 * 0.02 = 0.10
+    assert result.status == "partial"
+    assert result.fees == pytest.approx(0.10)
+    assert seen["fees"] == pytest.approx(0.10)
