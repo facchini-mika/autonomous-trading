@@ -101,6 +101,60 @@ class CycleMetricsCollector:
         yield self._gross_exposure_usd(session)
         yield self._drawdown_pct(session)
         yield self._kill_switch_active(session)
+        yield from self._agent_performance_gauges(session)
+
+    def _agent_performance_gauges(self, session: Session) -> Iterator[Metric]:
+        """Emit four per-agent gauges from the latest ``agent_performance`` row.
+
+        Spec: ``trading_feedback.md §6`` and ``data_infrastructure.md §1``.
+        Tier-1 writes one row per agent per cycle; we read the latest row per
+        agent via ``DISTINCT ON``. NULL values for ``hit_rate_30d`` /
+        ``sharpe_30d`` are omitted (Prometheus does not have a NaN-safe gauge
+        idiom; absence is semantically correct).
+        """
+        rows = session.execute(
+            text(
+                """
+                SELECT DISTINCT ON (agent_id)
+                    agent_id, hit_rate_30d, sharpe_30d, pnl_30d, n_samples
+                FROM agent_performance
+                ORDER BY agent_id, time DESC
+                """,
+            ),
+        ).all()
+
+        hit_rate = GaugeMetricFamily(
+            "agent_hit_rate_30d",
+            "Fraction of resolved predictions where the agent's side bet matched outcome (rolling 30d).",
+            labels=["agent_id"],
+        )
+        sharpe = GaugeMetricFamily(
+            "agent_sharpe_30d",
+            "Window-relative sharpe ratio of agent's per-trade realized PnL (rolling 30d, no annualisation).",
+            labels=["agent_id"],
+        )
+        pnl = GaugeMetricFamily(
+            "agent_pnl_30d_usd",
+            "Sum of realized PnL on the agent's resolved predictions (rolling 30d).",
+            labels=["agent_id"],
+        )
+        samples = GaugeMetricFamily(
+            "agent_n_samples_30d",
+            "Number of resolved predictions feeding the rolling 30d window.",
+            labels=["agent_id"],
+        )
+        for r in rows:
+            label = [str(r.agent_id)]
+            if r.hit_rate_30d is not None:
+                hit_rate.add_metric(label, float(r.hit_rate_30d))
+            if r.sharpe_30d is not None:
+                sharpe.add_metric(label, float(r.sharpe_30d))
+            pnl.add_metric(label, float(r.pnl_30d))
+            samples.add_metric(label, float(r.n_samples))
+        yield hit_rate
+        yield sharpe
+        yield pnl
+        yield samples
 
     def _cycle_duration(self, session: Session) -> Metric:
         # Cumulative bucket counts via FILTER. Postgres returns them all in one

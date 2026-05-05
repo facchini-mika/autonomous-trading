@@ -81,3 +81,12 @@ def test_metrics_defaults_localhost_only() -> None:
 def test_metrics_disabled_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("METRICS_ENABLED", "false")
     assert Settings().METRICS_ENABLED is False
+
+
+def test_evaluation_defaults() -> None:
+    settings = Settings()
+    assert settings.EVALUATION_LOOKBACK_DAYS == 30
+    assert settings.EVALUATION_TIMEOUT_SEC == 300
+    assert settings.BUDGET_USD_OUTCOME_FETCHER == 0.50
+    assert settings.BUDGET_USD_PNL_AGGREGATOR == 0.50
+    assert settings.BUDGET_USD_AGENT_PERFORMANCE_UPDATER == 0.50

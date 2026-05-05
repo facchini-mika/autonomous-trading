@@ -14,7 +14,19 @@ from shared.models.agent_io import (
     Trade,
     Universe,
 )
+from shared.models.agent_performance import AgentPerformance
 from shared.models.equity_snapshot import EquitySnapshot
+from shared.models.eval_io import (
+    AgentPerformanceOutput,
+    AgentPerformanceRow,
+    AgentPerformanceTask,
+    OutcomeFetcherOutput,
+    OutcomeFetcherTask,
+    PerAgentPnL,
+    PnlAggregatorOutput,
+    PnlAggregatorTask,
+    ResolvedPrediction,
+)
 from shared.models.gate import GateName, GateResult
 from shared.models.market import (
     Market,
@@ -50,6 +62,10 @@ from shared.models.tasks import (
 )
 
 __all__ = [
+    "AgentPerformance",
+    "AgentPerformanceOutput",
+    "AgentPerformanceRow",
+    "AgentPerformanceTask",
     "CancelResult",
     "CancelStatus",
     "CashBalance",
@@ -71,12 +87,18 @@ __all__ = [
     "OrderStatus",
     "OrderType",
     "Orderbook",
+    "OutcomeFetcherOutput",
+    "OutcomeFetcherTask",
+    "PerAgentPnL",
+    "PnlAggregatorOutput",
+    "PnlAggregatorTask",
     "PortfolioState",
     "Position",
     "PositionSide",
     "PositionStatus",
     "Prediction",
     "Resolution",
+    "ResolvedPrediction",
     "RiskExecutionOutput",
     "RiskExecutionTask",
     "ScannerReviewerOutput",

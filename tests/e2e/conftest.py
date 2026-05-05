@@ -25,6 +25,7 @@ ALL_TABLES = (
     "lessons",
     "system_state",
     "equity_snapshots",
+    "agent_performance",
 )
 
 

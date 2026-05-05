@@ -20,6 +20,7 @@ SystemStateKey = Literal[
     "last_cycle_ts",
     "last_outcome_ingestion_at",
     "last_lessons_summary_at",
+    "last_evaluation_at",
 ]
 
 
@@ -145,3 +146,12 @@ class Settings(BaseSettings):
     METRICS_ENABLED: bool = True
     METRICS_HOST: str = "127.0.0.1"
     METRICS_PORT: int = 9100
+
+    # Tier-1 Trade Evaluation Team (P2.1 / P2.3). One evaluator subagent per
+    # role; the orchestrator caps each subagent's per-cycle Anthropic spend
+    # so a runaway agent cannot burn the daily budget on a single tick.
+    EVALUATION_LOOKBACK_DAYS: int = 30
+    EVALUATION_TIMEOUT_SEC: int = 300
+    BUDGET_USD_OUTCOME_FETCHER: float = 0.50
+    BUDGET_USD_PNL_AGGREGATOR: float = 0.50
+    BUDGET_USD_AGENT_PERFORMANCE_UPDATER: float = 0.50

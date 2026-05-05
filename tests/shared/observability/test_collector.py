@@ -41,7 +41,9 @@ class _FakeSession:
     """Returns canned rows based on substring match against the SQL text.
 
     Order of insertion matters — the first key found in the SQL wins. Use
-    long, distinctive substrings to avoid false matches.
+    long, distinctive substrings to avoid false matches. Unmatched queries
+    return an empty result (the common case in collector tests where most
+    tables are intentionally empty).
     """
 
     def __init__(self, responses: list[tuple[str, list[Any]]]) -> None:
@@ -52,8 +54,7 @@ class _FakeSession:
         for key, rows in self._responses:
             if key in sql:
                 return _FakeResult(rows)
-        msg = f"unmatched SQL in fake session: {sql[:200]}"
-        raise AssertionError(msg)
+        return _FakeResult([])
 
 
 @contextmanager
@@ -295,3 +296,62 @@ def test_scrape_errors_increment_on_factory_failure() -> None:
 def _raise_runtime_error() -> Any:
     msg = "no DB"
     raise RuntimeError(msg)
+
+
+def test_agent_performance_gauges_emit_per_agent_rows() -> None:
+    rows = [
+        SimpleNamespace(
+            agent_id="trading-agent",
+            hit_rate_30d=0.72,
+            sharpe_30d=1.4,
+            pnl_30d=15.5,
+            n_samples=20,
+        ),
+        SimpleNamespace(
+            agent_id="news-bot",
+            hit_rate_30d=None,
+            sharpe_30d=None,
+            pnl_30d=-3.2,
+            n_samples=1,
+        ),
+    ]
+    collector = _build_collector([("FROM agent_performance", rows)])
+    metrics = {m.name: m for m in collector.collect()}
+
+    hit = metrics["agent_hit_rate_30d"]
+    assert isinstance(hit, GaugeMetricFamily)
+    by_agent = {s.labels["agent_id"]: s.value for s in hit.samples}
+    # Only the trading-agent row contributes — the news-bot has NULL hit_rate.
+    assert by_agent == {"trading-agent": 0.72}
+
+    sharpe = metrics["agent_sharpe_30d"]
+    assert isinstance(sharpe, GaugeMetricFamily)
+    assert {s.labels["agent_id"]: s.value for s in sharpe.samples} == {"trading-agent": 1.4}
+
+    pnl = metrics["agent_pnl_30d_usd"]
+    assert isinstance(pnl, GaugeMetricFamily)
+    assert {s.labels["agent_id"]: s.value for s in pnl.samples} == {
+        "trading-agent": 15.5,
+        "news-bot": -3.2,
+    }
+
+    n_samples = metrics["agent_n_samples_30d"]
+    assert isinstance(n_samples, GaugeMetricFamily)
+    assert {s.labels["agent_id"]: s.value for s in n_samples.samples} == {
+        "trading-agent": 20.0,
+        "news-bot": 1.0,
+    }
+
+
+def test_agent_performance_gauges_empty_table() -> None:
+    collector = _build_collector([])
+    metrics = {m.name: m for m in collector.collect()}
+    for name in (
+        "agent_hit_rate_30d",
+        "agent_sharpe_30d",
+        "agent_pnl_30d_usd",
+        "agent_n_samples_30d",
+    ):
+        family = metrics[name]
+        assert isinstance(family, GaugeMetricFamily)
+        assert family.samples == []

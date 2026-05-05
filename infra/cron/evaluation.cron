@@ -1,0 +1,7 @@
+# Tier-1 Trade Evaluation Team — every 15 min on the :05 mark.
+#
+# Spec (`trading_feedback.md §6`) suggests 1-min cadence; we run at 15-min
+# because there is nothing faster than `outcome_ingestion`'s 5-10 min sweep
+# to publish, and 1-min would burn ~2900 LLM cycles/day. Operator can tune.
+
+5,20,35,50 * * * * cd /opt/autonomous_trading && bash infra/scripts/run_evaluation.sh >> /var/log/autonomous_trading/evaluation.log 2>&1
