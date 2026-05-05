@@ -83,6 +83,52 @@ For Phase 5 verification you have two options:
 The first option is the recommended Phase-5 path. Move to option 2 only
 when entering Phase 6.
 
+## Enabling cron locally (macOS)
+
+Once each cycle has been verified manually (sections above), the three core
+loops can be installed into the user crontab. The committed
+`infra/cron/*.cron` fragments are prod templates pinned to
+`/opt/autonomous_trading` + `/var/log/autonomous_trading/`; for local macOS
+use `infra/scripts/gen_local_crontab.sh`, which resolves the current repo
+root and writes logs to `./logs/`.
+
+Pre-flight gate (the generator enforces these — listed here so you know
+what to fix when it errors):
+
+- `gtimeout` on `PATH` (`brew install coreutils`)
+- `.env` exists at repo root with `TIMEOUT_BIN=gtimeout`
+- `.env` does **not** opt into `TRADING_MODE=real_capital` — that flip
+  belongs in a separate, audited PR
+
+Install:
+
+```
+$ crontab -l > /tmp/crontab.bak.$(date +%s)        # backup any existing entries
+$ bash infra/scripts/gen_local_crontab.sh          # dry-run, inspect output
+$ bash infra/scripts/gen_local_crontab.sh | crontab -
+$ crontab -l                                        # confirm three lines visible
+```
+
+Verify the loop is firing:
+
+```
+$ tail -f logs/outcome_ingestion.log    # next :00, hourly
+$ tail -f logs/trading_cycle.log        # next */12, every 12 minutes
+$ tail -f logs/lessons_summary.log      # next 04:30 UTC, daily
+```
+
+Uninstall: `crontab -e` and delete the three lines, or `crontab -r` to
+clear the whole user crontab.
+
+Caveat — OneDrive: if the repo lives under a cloud-synced path and sync
+is paused or the folder is offline, the cron `cd` step silently fails and
+the cycle never runs. Watching `logs/` is the canary; absence of new lines
+at the expected slot means the sync layer dropped the path.
+
+`infra/cron/evaluation.cron` (Tier-1 Trade Evaluation, every 15 min) is
+intentionally **not** emitted by the generator — install it separately if
+the evaluation team is enabled.
+
 ## What gets written where
 
 | Table | Written by | Per cycle |

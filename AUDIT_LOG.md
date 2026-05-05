@@ -701,3 +701,48 @@ Every PR that touches one of the following must have an entry here:
   Guard regression. 401 unit tests still green.
 - **Mitigation / rollback:** Revert PR. Each constant flips back to
   prior value independently — they are orthogonal.
+
+## 2026-05-05 — Cron generator for local paper-mode loop
+
+- **Category:** Operations tooling. No `src/risk/**` touch, no
+  `TRADING_MODE` flip, no `MAX_CAPITAL_EUR` change. Logged because
+  this is the first PR that ships a path the operator uses to
+  *enable scheduled execution* of the trading loop, even if only
+  in `paper`.
+- **PR:** _pending_
+- **Description:** Adds `infra/scripts/gen_local_crontab.sh`, a
+  pre-flight-gated generator that prints a path-resolved crontab
+  fragment for the three core cycles (`trading_cycle` every 12 min,
+  `outcome_ingestion` hourly, `lessons_summary` daily 04:30 UTC) to
+  stdout. Operator pipes the output to `crontab -` to install. The
+  committed `infra/cron/*.cron` prod templates are unchanged. Updates
+  `docs/operations/first_cycle.md` with a macOS install/uninstall
+  section. `infra/cron/evaluation.cron` (Tier-1) is intentionally
+  excluded — separate enable.
+- **Risk:**
+  - Generator emits a `cd $repo_root` line that fails silently if the
+    OneDrive-synced repo path becomes unavailable (sync paused, folder
+    offline). Cycles would stop firing without an obvious error;
+    detection relies on operator log-tailing.
+  - Misalignment risk: the prod `.cron` fragments still point at
+    `/opt/autonomous_trading` and `/var/log/autonomous_trading/`. A
+    future deployment to a real prod host must not pipe the local
+    generator's output — that's the prod templates' job.
+  - 12-minute scheduled trading cycles will accumulate Anthropic
+    spend and DB rows continuously without manual gating. Budget caps
+    in `Settings` (`BUDGET_USD_*`) still bound per-cycle spend.
+- **Why it's still safe:** `TRADING_MODE` stays `paper` (hardcoded
+  default in `Settings`). `MAX_CAPITAL_EUR=0` is hardcoded in
+  `src/risk/capital_gate.py`. The generator refuses to emit if
+  `.env` opts into `real_capital`. No code under `src/risk/**`,
+  `src/execution/**`, or `src/research/**` is modified — only ops
+  scripts and docs. Cycles 5/6/7 (manual paper) ran successfully on
+  2026-05-03/04, satisfying the ≥7d observation window the
+  2026-05-03 Phase-6a entry set as the gate for cron-cycle
+  enablement.
+- **Mitigation / rollback:** `crontab -r` clears the loop instantly;
+  `crontab -e` removes individual lines. No DB state to roll back —
+  cycles are idempotent (high-water-marks in `system_state`,
+  decisions audit in `decisions`, paper-only writes in
+  `paper_trades`). Reverting the PR removes the generator and doc
+  section; nothing in `main` depends on either at runtime.
