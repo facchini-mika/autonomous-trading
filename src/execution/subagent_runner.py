@@ -12,18 +12,31 @@ schema mismatch) all surface as ``SubagentError`` so the Lead can fail the
 cycle cleanly. API-side budget exhaustion (out-of-credits, rate-limit,
 insufficient quota) maps to the dedicated ``SubagentBudgetError`` subclass
 so the Lead can abort the cycle without persisting partial decisions.
+
+Each call also records a row in ``subagent_runs`` (Phase 6c). The persist
+is best-effort: if the audit DB hiccups, the subagent's parsed output is
+still returned to the Lead unchanged. The runner propagates ``CYCLE_ID``,
+``AGENT_NAME``, ``RUN_ID`` and ``CORRELATION_ID`` to the subprocess
+environment so the MCP web_search tool can emit linked rows in
+``web_search_calls``.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 import subprocess
 import time
+import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
 from pydantic import BaseModel, ValidationError
+from sqlalchemy import text as sql_text
 
+from shared.db import get_session
 from shared.logging import get_logger
 
 if TYPE_CHECKING:
@@ -38,6 +51,7 @@ ENVELOPE_API_ERROR_STATUS_KEY: Final = "api_error_status"
 ENVELOPE_COST_KEY: Final = "total_cost_usd"
 ENVELOPE_USAGE_KEY: Final = "usage"
 STDERR_TAIL_CHARS: Final = 500
+RAW_STDOUT_MAX_CHARS: Final = 256 * 1024  # 256 KiB cap on persisted stdout.
 
 # api_error_status values that mean "budget exhausted, do not retry blindly".
 # Anthropic surfaces these strings via the Claude Code CLI envelope.
@@ -66,6 +80,22 @@ _BUDGET_STDERR_PATTERNS: Final = (
     "429",
 )
 
+_INSERT_SUBAGENT_RUN: Final = sql_text(
+    """
+    INSERT INTO subagent_runs (
+        cycle_id, agent_name, run_id, correlation_id, prompt_sha,
+        started_at, finished_at, latency_ms, cost_usd, usage,
+        task_payload, raw_stdout, envelope, error, error_class
+    ) VALUES (
+        :cycle_id, :agent_name, :run_id, :correlation_id, :prompt_sha,
+        :started_at, :finished_at, :latency_ms, :cost_usd,
+        CAST(:usage AS jsonb),
+        CAST(:task_payload AS jsonb), :raw_stdout,
+        CAST(:envelope AS jsonb), :error, :error_class
+    )
+    """
+)
+
 
 class SubagentError(RuntimeError):
     """Raised when a subagent call fails (CLI missing, timeout, bad output)."""
@@ -85,6 +115,8 @@ def run_subagent[T: BaseModel](
     task: BaseModel,
     output_model: type[T],
     timeout_s: int,
+    cycle_id: str,
+    correlation_id: str | None = None,
     doctrine_path: Path | None = None,
     mcp_config_path: Path | None = None,
     allowed_mcp_tools: tuple[str, ...] = (),
@@ -106,6 +138,10 @@ def run_subagent[T: BaseModel](
     ``max_budget_usd`` (when set) is forwarded to ``claude --max-budget-usd``,
     which causes the CLI to abort the call once the in-flight cost would
     exceed the cap. Acts as a hard upper bound on per-agent spend.
+
+    ``cycle_id`` and ``correlation_id`` are recorded in ``subagent_runs``
+    and propagated to the subprocess environment so the MCP web_search tool
+    can join its rows back to this invocation via ``run_id``.
     """
     if not agent_md_path.exists():
         msg = f"agent skeleton not found: {agent_md_path}"
@@ -115,59 +151,208 @@ def run_subagent[T: BaseModel](
         msg = f"`{claude_bin}` not on PATH; install Claude Code CLI to run cron"
         raise SubagentError(msg)
 
-    cmd = _build_cmd(
-        binary=binary,
+    agent_name = agent_md_path.stem
+    run_id = str(uuid.uuid4())
+    system_prompt = _build_system_prompt(
         agent_md_path=agent_md_path,
         doctrine_path=doctrine_path,
         output_model=output_model,
-        task=task,
+    )
+    prompt_sha = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
+    task_payload_json = task.model_dump_json()
+
+    cmd = _build_cmd(
+        binary=binary,
+        system_prompt=system_prompt,
+        task_payload_json=task_payload_json,
         mcp_config_path=mcp_config_path,
         allowed_mcp_tools=allowed_mcp_tools,
         max_budget_usd=max_budget_usd,
     )
+    env = _build_subprocess_env(
+        cycle_id=cycle_id,
+        agent_name=agent_name,
+        run_id=run_id,
+        correlation_id=correlation_id,
+    )
 
-    agent_name = agent_md_path.stem
-    logger.info("subagent_invoking", agent=agent_name, timeout_s=timeout_s)
-    started = time.monotonic()
+    logger.info("subagent_invoking", agent=agent_name, run_id=run_id, timeout_s=timeout_s)
+    started_at = datetime.now(UTC)
+    started_monotonic = time.monotonic()
+
+    state: _RunState = _RunState()
     try:
-        proc = subprocess.run(  # noqa: S603 — argv is constructed locally, no shell.
+        validated = _invoke_and_parse(
+            cmd=cmd,
+            env=env,
+            timeout_s=timeout_s,
+            agent_name=agent_name,
+            run_id=run_id,
+            output_model=output_model,
+            state=state,
+        )
+        state.latency_ms = state.latency_ms or int((time.monotonic() - started_monotonic) * 1000)
+        logger.info(
+            "subagent_completed",
+            agent=agent_name,
+            run_id=run_id,
+            latency_ms=state.latency_ms,
+            cost_usd=state.cost_usd,
+            usage=state.usage,
+        )
+        return validated
+    finally:
+        if state.latency_ms is None:
+            state.latency_ms = int((time.monotonic() - started_monotonic) * 1000)
+        _persist_subagent_run(
+            cycle_id=cycle_id,
+            agent_name=agent_name,
+            run_id=run_id,
+            correlation_id=correlation_id,
+            prompt_sha=prompt_sha,
+            started_at=started_at,
+            finished_at=datetime.now(UTC),
+            latency_ms=state.latency_ms,
+            cost_usd=state.cost_usd,
+            usage=state.usage,
+            task_payload=task_payload_json,
+            raw_stdout=state.raw_stdout,
+            envelope=state.envelope,
+            error=state.error,
+            error_class=state.error_class,
+        )
+
+
+class _RunState:
+    """Mutable scratchpad collected during a subagent invocation.
+
+    Populated incrementally as we go through subprocess → returncode check
+    → JSON extraction → Pydantic validation, so the ``finally`` block in
+    :func:`run_subagent` can persist a single ``subagent_runs`` row no
+    matter where the call exits.
+    """
+
+    __slots__ = (
+        "cost_usd",
+        "envelope",
+        "error",
+        "error_class",
+        "latency_ms",
+        "raw_stdout",
+        "usage",
+    )
+
+    def __init__(self) -> None:
+        self.raw_stdout: str | None = None
+        self.envelope: dict[str, Any] | None = None
+        self.cost_usd: float | None = None
+        self.usage: dict[str, Any] | None = None
+        self.error: str | None = None
+        self.error_class: str | None = None
+        self.latency_ms: int | None = None
+
+
+def _invoke_and_parse[T: BaseModel](
+    *,
+    cmd: list[str],
+    env: dict[str, str],
+    timeout_s: int,
+    agent_name: str,
+    run_id: str,
+    output_model: type[T],
+    state: _RunState,
+) -> T:
+    """Run the subprocess and parse its output, mutating ``state`` along the way."""
+    started_monotonic = time.monotonic()
+    proc = _run_subprocess(
+        cmd=cmd,
+        env=env,
+        timeout_s=timeout_s,
+        agent_name=agent_name,
+        run_id=run_id,
+        state=state,
+        started_monotonic=started_monotonic,
+    )
+    state.latency_ms = int((time.monotonic() - started_monotonic) * 1000)
+    state.raw_stdout = _truncate(proc.stdout)
+
+    if proc.returncode != 0:
+        _raise_for_returncode(proc=proc, agent_name=agent_name, run_id=run_id, state=state)
+
+    payload, envelope = _extract_payload(stdout=proc.stdout, agent_name=agent_name)
+    state.envelope = envelope
+    state.cost_usd = envelope.get(ENVELOPE_COST_KEY)
+    state.usage = envelope.get(ENVELOPE_USAGE_KEY)
+
+    return _validate_payload(
+        payload=payload,
+        output_model=output_model,
+        agent_name=agent_name,
+        run_id=run_id,
+        state=state,
+    )
+
+
+def _run_subprocess(
+    *,
+    cmd: list[str],
+    env: dict[str, str],
+    timeout_s: int,
+    agent_name: str,
+    run_id: str,
+    state: _RunState,
+    started_monotonic: float,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(  # noqa: S603 — argv is constructed locally, no shell.
             cmd,
             check=False,
             capture_output=True,
             text=True,
             timeout=timeout_s,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
-        msg = f"subagent {agent_name} timed out after {timeout_s}s"
-        logger.warning("subagent_timeout", agent=agent_name, timeout_s=timeout_s)
-        raise SubagentError(msg) from exc
-    latency_ms = int((time.monotonic() - started) * 1000)
+        state.latency_ms = int((time.monotonic() - started_monotonic) * 1000)
+        state.error = f"subagent {agent_name} timed out after {timeout_s}s"
+        state.error_class = "SubagentError"
+        logger.warning("subagent_timeout", agent=agent_name, run_id=run_id, timeout_s=timeout_s)
+        raise SubagentError(state.error) from exc
 
-    if proc.returncode != 0:
-        tail = (proc.stderr or "")[-STDERR_TAIL_CHARS:]
-        msg = f"subagent {agent_name} exited {proc.returncode}: {tail}"
-        if _stderr_indicates_budget_exhaustion(tail):
-            logger.warning("subagent_budget_exhausted", agent=agent_name, code=proc.returncode)
-            raise SubagentBudgetError(msg)
-        logger.warning("subagent_nonzero_exit", agent=agent_name, code=proc.returncode)
-        raise SubagentError(msg)
 
-    payload, envelope = _extract_payload(stdout=proc.stdout, agent_name=agent_name)
+def _raise_for_returncode(
+    *,
+    proc: subprocess.CompletedProcess[str],
+    agent_name: str,
+    run_id: str,
+    state: _RunState,
+) -> None:
+    tail = (proc.stderr or "")[-STDERR_TAIL_CHARS:]
+    state.error = f"subagent {agent_name} exited {proc.returncode}: {tail}"
+    if _stderr_indicates_budget_exhaustion(tail):
+        state.error_class = "SubagentBudgetError"
+        logger.warning("subagent_budget_exhausted", agent=agent_name, run_id=run_id, code=proc.returncode)
+        raise SubagentBudgetError(state.error)
+    state.error_class = "SubagentError"
+    logger.warning("subagent_nonzero_exit", agent=agent_name, run_id=run_id, code=proc.returncode)
+    raise SubagentError(state.error)
+
+
+def _validate_payload[T: BaseModel](
+    *,
+    payload: str,
+    output_model: type[T],
+    agent_name: str,
+    run_id: str,
+    state: _RunState,
+) -> T:
     try:
-        validated = output_model.model_validate_json(payload)
+        return output_model.model_validate_json(payload)
     except ValidationError as exc:
-        logger.warning("subagent_schema_mismatch", agent=agent_name)
-        msg = f"subagent {agent_name} output failed validation: {exc}"
-        raise SubagentError(msg) from exc
-
-    logger.info(
-        "subagent_completed",
-        agent=agent_name,
-        latency_ms=latency_ms,
-        cost_usd=envelope.get(ENVELOPE_COST_KEY),
-        usage=envelope.get(ENVELOPE_USAGE_KEY),
-    )
-    return validated
+        logger.warning("subagent_schema_mismatch", agent=agent_name, run_id=run_id)
+        state.error = f"subagent {agent_name} output failed validation: {exc}"
+        state.error_class = "SubagentError"
+        raise SubagentError(state.error) from exc
 
 
 def _stderr_indicates_budget_exhaustion(stderr_tail: str) -> bool:
@@ -175,26 +360,41 @@ def _stderr_indicates_budget_exhaustion(stderr_tail: str) -> bool:
     return any(pat in lowered for pat in _BUDGET_STDERR_PATTERNS)
 
 
+def _build_subprocess_env(
+    *,
+    cycle_id: str,
+    agent_name: str,
+    run_id: str,
+    correlation_id: str | None,
+) -> dict[str, str]:
+    """Subprocess env with audit-trail keys for the MCP web_search tool.
+
+    The MCP server (research.skills.web_search) reads these to populate the
+    matching ``web_search_calls`` row, which joins back to ``subagent_runs``
+    via the loose ``run_id`` key.
+    """
+    return {
+        **os.environ,
+        "CYCLE_ID": cycle_id,
+        "AGENT_NAME": agent_name,
+        "RUN_ID": run_id,
+        "CORRELATION_ID": correlation_id or "",
+    }
+
+
 def _build_cmd(
     *,
     binary: str,
-    agent_md_path: Path,
-    doctrine_path: Path | None,
-    output_model: type[BaseModel],
-    task: BaseModel,
+    system_prompt: str,
+    task_payload_json: str,
     mcp_config_path: Path | None,
     allowed_mcp_tools: tuple[str, ...],
     max_budget_usd: float | None,
 ) -> list[str]:
-    system_prompt = _build_system_prompt(
-        agent_md_path=agent_md_path,
-        doctrine_path=doctrine_path,
-        output_model=output_model,
-    )
     cmd = [
         binary,
         "-p",
-        task.model_dump_json(),
+        task_payload_json,
         "--append-system-prompt",
         system_prompt,
         "--output-format",
@@ -229,13 +429,77 @@ def _build_system_prompt(
     )
 
 
-def _strip_yaml_frontmatter(text: str) -> str:
-    if not text.startswith("---"):
-        return text
-    parts = text.split("---", 2)
+def _strip_yaml_frontmatter(content: str) -> str:
+    if not content.startswith("---"):
+        return content
+    parts = content.split("---", 2)
     if len(parts) < 3:  # noqa: PLR2004 — three parts: empty, frontmatter, body.
-        return text
+        return content
     return parts[2].lstrip()
+
+
+def _truncate(content: str | None) -> str | None:
+    if content is None:
+        return None
+    if len(content) <= RAW_STDOUT_MAX_CHARS:
+        return content
+    truncated = content[:RAW_STDOUT_MAX_CHARS]
+    return f"{truncated}\n…[truncated at {RAW_STDOUT_MAX_CHARS} chars]"
+
+
+def _persist_subagent_run(
+    *,
+    cycle_id: str,
+    agent_name: str,
+    run_id: str,
+    correlation_id: str | None,
+    prompt_sha: str,
+    started_at: datetime,
+    finished_at: datetime,
+    latency_ms: int | None,
+    cost_usd: float | None,
+    usage: dict[str, Any] | None,
+    task_payload: str,
+    raw_stdout: str | None,
+    envelope: dict[str, Any] | None,
+    error: str | None,
+    error_class: str | None,
+) -> None:
+    """Best-effort INSERT into ``subagent_runs``.
+
+    Audit failures must never poison a healthy cycle. On any DB error we log
+    ``audit_persist_failed`` and return; the caller continues unchanged.
+    """
+    try:
+        with get_session("trading_cycle") as session:
+            session.execute(
+                _INSERT_SUBAGENT_RUN,
+                {
+                    "cycle_id": cycle_id,
+                    "agent_name": agent_name,
+                    "run_id": run_id,
+                    "correlation_id": correlation_id or None,
+                    "prompt_sha": prompt_sha,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "latency_ms": latency_ms,
+                    "cost_usd": cost_usd,
+                    "usage": json.dumps(usage) if usage is not None else None,
+                    "task_payload": task_payload,
+                    "raw_stdout": raw_stdout,
+                    "envelope": json.dumps(envelope) if envelope is not None else None,
+                    "error": error,
+                    "error_class": error_class,
+                },
+            )
+    except Exception:
+        logger.warning(
+            "audit_persist_failed",
+            agent=agent_name,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            exc_info=True,
+        )
 
 
 def _extract_payload(*, stdout: str, agent_name: str) -> tuple[str, dict[str, Any]]:
@@ -283,17 +547,17 @@ def _strip_markdown_fences(raw: str) -> str:
     Returns the original text unchanged if neither shape matches; the caller
     will then surface the Pydantic ``ValidationError`` with the raw input.
     """
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text
-        text = text.removesuffix("```")
-        text = text.strip()
-    start = text.find("{")
+    content = raw.strip()
+    if content.startswith("```"):
+        content = content.split("\n", 1)[1] if "\n" in content else content
+        content = content.removesuffix("```")
+        content = content.strip()
+    start = content.find("{")
     if start < 0:
-        return text
+        return content
     decoder = json.JSONDecoder()
     try:
-        _, end = decoder.raw_decode(text[start:])
+        _, end = decoder.raw_decode(content[start:])
     except json.JSONDecodeError:
-        return text
-    return text[start : start + end]
+        return content
+    return content[start : start + end]

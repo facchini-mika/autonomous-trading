@@ -9,20 +9,47 @@ under `content[j].annotations[k]` with `type == "url_citation"` and fields
 `url`, `title`, `start_index`, `end_index`. The deprecated `web_search_preview`
 shape (`web_search_call.results[*].{url,title,snippet}`) is no longer
 parsed — see PR #37 for the GA switch.
+
+Phase 6c: every call also writes a best-effort row to ``web_search_calls``
+that joins back to ``subagent_runs`` via the ``RUN_ID`` env var the
+subagent_runner propagates into the subprocess. Audit-write failures are
+logged and swallowed so a hiccupped DB never poisons a healthy search.
 """
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import text as sql_text
+
+from shared.db import get_session
 
 if TYPE_CHECKING:
     from openai import OpenAI
 
     from shared.config.settings import Settings
+
+_logger = logging.getLogger(__name__)
+
+_INSERT_WEB_SEARCH_CALL = sql_text(
+    """
+    INSERT INTO web_search_calls (
+        run_id, cycle_id, agent_name, query, summary, hits,
+        model_used, elapsed_sec, started_at, finished_at, error, error_type
+    ) VALUES (
+        :run_id, :cycle_id, :agent_name, :query, :summary,
+        CAST(:hits AS jsonb),
+        :model_used, :elapsed_sec, :started_at, :finished_at, :error, :error_type
+    )
+    """
+)
 
 
 class WebSearchError(RuntimeError):
@@ -68,31 +95,103 @@ def web_search(
 
     real_client = client or _default_client(settings)
 
+    started_at = datetime.now(UTC)
     start = time.monotonic()
-    try:
-        response = real_client.responses.create(
-            model=settings.OPENAI_MODEL,
-            input=query,
-            tools=[{"type": "web_search"}],
-            timeout=float(settings.WEB_SEARCH_TIMEOUT_SEC),
-        )
-    except Exception as exc:
-        if _is_quota_failure(exc):
-            msg = f"OpenAI web_search quota/rate-limit refusal: {exc}"
-            raise WebSearchQuotaError(msg) from exc
-        msg = f"OpenAI web_search failed: {exc}"
-        raise WebSearchError(msg) from exc
-    elapsed = time.monotonic() - start
+    summary = ""
+    hits: list[WebSearchHit] = []
+    error_msg: str | None = None
+    error_type: str | None = None
 
-    summary = _extract_summary(response)
-    hits = _extract_hits(response, settings.WEB_SEARCH_BLOCKED_DOMAINS)
-    return WebSearchResult(
-        query=query,
-        summary=summary,
-        hits=hits,
-        elapsed_sec=elapsed,
-        model_used=settings.OPENAI_MODEL,
-    )
+    try:
+        try:
+            response = real_client.responses.create(
+                model=settings.OPENAI_MODEL,
+                input=query,
+                tools=[{"type": "web_search"}],
+                timeout=float(settings.WEB_SEARCH_TIMEOUT_SEC),
+            )
+        except Exception as exc:
+            if _is_quota_failure(exc):
+                error_msg = f"OpenAI web_search quota/rate-limit refusal: {exc}"
+                error_type = "quota_exhausted"
+                raise WebSearchQuotaError(error_msg) from exc
+            error_msg = f"OpenAI web_search failed: {exc}"
+            error_type = "transient"
+            raise WebSearchError(error_msg) from exc
+
+        summary = _extract_summary(response)
+        hits = _extract_hits(response, settings.WEB_SEARCH_BLOCKED_DOMAINS)
+        elapsed = time.monotonic() - start
+        return WebSearchResult(
+            query=query,
+            summary=summary,
+            hits=hits,
+            elapsed_sec=elapsed,
+            model_used=settings.OPENAI_MODEL,
+        )
+    finally:
+        _persist_web_search_call(
+            query=query,
+            summary=summary,
+            hits=hits,
+            model_used=settings.OPENAI_MODEL,
+            elapsed_sec=time.monotonic() - start,
+            started_at=started_at,
+            finished_at=datetime.now(UTC),
+            error=error_msg,
+            error_type=error_type,
+        )
+
+
+def _persist_web_search_call(
+    *,
+    query: str,
+    summary: str,
+    hits: list[WebSearchHit],
+    model_used: str,
+    elapsed_sec: float,
+    started_at: datetime,
+    finished_at: datetime,
+    error: str | None,
+    error_type: str | None,
+) -> None:
+    """Best-effort INSERT into ``web_search_calls``.
+
+    Reads ``RUN_ID`` / ``CYCLE_ID`` / ``AGENT_NAME`` from the environment —
+    the subagent_runner propagates them when it spawns the trading-agent
+    subprocess so each search joins back to its parent ``subagent_runs``
+    row. If the env var is missing (e.g. the search is invoked outside a
+    cycle) the row is still written with NULL keys.
+    """
+    run_id = os.environ.get("RUN_ID") or None
+    cycle_id = os.environ.get("CYCLE_ID") or None
+    agent_name = os.environ.get("AGENT_NAME") or None
+    try:
+        with get_session("trading_cycle") as session:
+            session.execute(
+                _INSERT_WEB_SEARCH_CALL,
+                {
+                    "run_id": run_id,
+                    "cycle_id": cycle_id,
+                    "agent_name": agent_name,
+                    "query": query,
+                    "summary": summary or None,
+                    "hits": json.dumps([h.model_dump() for h in hits]) if hits else None,
+                    "model_used": model_used,
+                    "elapsed_sec": elapsed_sec,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "error": error,
+                    "error_type": error_type,
+                },
+            )
+    except Exception:
+        _logger.warning(
+            "audit_persist_failed: web_search_call run_id=%s cycle_id=%s",
+            run_id,
+            cycle_id,
+            exc_info=True,
+        )
 
 
 def _default_client(settings: Settings) -> OpenAI:

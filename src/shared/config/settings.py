@@ -56,7 +56,11 @@ class Settings(BaseSettings):
     MIN_DEPTH_1PCT_USD: float = 100.0
     MAX_SPREAD: float = 0.10
     MIN_TIME_TO_RESOLUTION_HOURS: int = 6
-    MAX_TIME_TO_RESOLUTION_DAYS: int = 30
+    # Aligned with the trading-agent web_search skip threshold in
+    # research/prompts/trading_agent.md. Markets resolving > 14 days out are
+    # guaranteed to skip web_search (no fresh research) and therefore cannot
+    # produce actionable predictions; admitting them wastes scanner budget.
+    MAX_TIME_TO_RESOLUTION_DAYS: int = 14
     SOON_RESOLVE_THRESHOLD_DAYS: int = 7
     SOON_RESOLVE_BOOST_MULTIPLIER: float = 1.5
 

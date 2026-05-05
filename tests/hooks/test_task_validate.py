@@ -81,6 +81,7 @@ def test_valid_scanner_reviewer_task_passes() -> None:
         "subagent_type": "scanner-reviewer",
         "payload": {
             "top_k": 50,
+            "cycle_id": "cycle-test",
             "cycle_clock": "2026-05-02T12:00:00Z",
             "raw_markets": [],
             "raw_orderbooks": {},

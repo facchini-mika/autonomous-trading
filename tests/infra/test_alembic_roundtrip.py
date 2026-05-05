@@ -45,8 +45,8 @@ def test_upgrade_downgrade_upgrade_is_clean() -> None:
         cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
         result = cur.fetchone()
         assert result is not None
-        # 11 domain tables + alembic_version.
-        assert result[0] >= 12
+        # 11 domain tables + 2 audit tables (Phase 6c) + alembic_version.
+        assert result[0] >= 14
 
     _alembic("downgrade", "base")
     with psycopg.connect(owner_url) as conn, conn.cursor() as cur:
@@ -59,6 +59,69 @@ def test_upgrade_downgrade_upgrade_is_clean() -> None:
         assert result[0] == 0
 
     _alembic("upgrade", "head")
+
+
+def test_audit_tables_have_expected_columns() -> None:
+    _alembic("upgrade", "head")
+    owner_url = _strip_sqlalchemy_dialect(os.environ["DATABASE_URL"])
+    with psycopg.connect(owner_url) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name='subagent_runs'"
+        )
+        subagent_cols = {r[0] for r in cur.fetchall()}
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name='web_search_calls'"
+        )
+        web_search_cols = {r[0] for r in cur.fetchall()}
+    assert {
+        "id",
+        "cycle_id",
+        "agent_name",
+        "run_id",
+        "correlation_id",
+        "prompt_sha",
+        "started_at",
+        "finished_at",
+        "latency_ms",
+        "cost_usd",
+        "usage",
+        "task_payload",
+        "raw_stdout",
+        "envelope",
+        "error",
+        "error_class",
+        "created_at",
+    } <= subagent_cols
+    assert {
+        "id",
+        "run_id",
+        "cycle_id",
+        "agent_name",
+        "query",
+        "summary",
+        "hits",
+        "model_used",
+        "elapsed_sec",
+        "started_at",
+        "finished_at",
+        "error",
+        "error_type",
+        "created_at",
+    } <= web_search_cols
+
+
+def test_trading_cycle_can_insert_audit_rows() -> None:
+    _alembic("upgrade", "head")
+    url = _role_url("trading_cycle")
+    with psycopg.connect(url) as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO subagent_runs "
+            "(cycle_id, agent_name, run_id, prompt_sha, started_at, task_payload) "
+            "VALUES ('cycle-test', 'scanner-reviewer', gen_random_uuid(), 'sha', NOW(), '{}'::jsonb)"
+        )
+        cur.execute("INSERT INTO web_search_calls (query, started_at) VALUES ('test', NOW())")
 
 
 def _strip_sqlalchemy_dialect(url: str) -> str:

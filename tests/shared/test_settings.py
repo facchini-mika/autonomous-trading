@@ -25,7 +25,7 @@ def test_universe_selection_threshold_defaults() -> None:
     assert settings.MIN_DEPTH_1PCT_USD == 100.0
     assert settings.MAX_SPREAD == 0.10
     assert settings.MIN_TIME_TO_RESOLUTION_HOURS == 6
-    assert settings.MAX_TIME_TO_RESOLUTION_DAYS == 30
+    assert settings.MAX_TIME_TO_RESOLUTION_DAYS == 14
     assert settings.SOON_RESOLVE_THRESHOLD_DAYS == 7
     assert settings.SOON_RESOLVE_BOOST_MULTIPLIER == 1.5
 

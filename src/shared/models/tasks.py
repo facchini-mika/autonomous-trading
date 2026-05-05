@@ -53,6 +53,7 @@ class ScannerReviewerTask(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     top_k: int
+    cycle_id: str
     cycle_clock: str
     raw_markets: list[Market]
     raw_orderbooks: dict[str, Orderbook]

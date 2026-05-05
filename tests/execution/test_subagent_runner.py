@@ -63,6 +63,7 @@ def test_success_returns_validated_output(agent_md: Path, mocker: MockerFixture)
         task=_Task(market_id="0xa"),
         output_model=_Output,
         timeout_s=30,
+        cycle_id="cycle-test",
     )
     assert result.p_yes == 0.7
     assert result.reasoning == "context"
@@ -76,6 +77,7 @@ def test_strips_markdown_fences(agent_md: Path, mocker: MockerFixture) -> None:
         task=_Task(market_id="0xa"),
         output_model=_Output,
         timeout_s=30,
+        cycle_id="cycle-test",
     )
     assert result.p_yes == 0.5
 
@@ -93,6 +95,7 @@ def test_extracts_json_when_agent_prefixes_prose(agent_md: Path, mocker: MockerF
         task=_Task(market_id="0xa"),
         output_model=_Output,
         timeout_s=30,
+        cycle_id="cycle-test",
     )
     assert result.p_yes == 0.42
     assert result.reasoning == "passed all gates"
@@ -106,6 +109,7 @@ def test_extracts_json_with_trailing_prose(agent_md: Path, mocker: MockerFixture
         task=_Task(market_id="0xa"),
         output_model=_Output,
         timeout_s=30,
+        cycle_id="cycle-test",
     )
     assert result.p_yes == 0.6
 
@@ -117,6 +121,7 @@ def test_missing_agent_skeleton_raises(tmp_path: Path) -> None:
             task=_Task(market_id="x"),
             output_model=_Output,
             timeout_s=30,
+            cycle_id="cycle-test",
         )
 
 
@@ -128,6 +133,7 @@ def test_missing_claude_binary_raises(agent_md: Path, mocker: MockerFixture) -> 
             task=_Task(market_id="x"),
             output_model=_Output,
             timeout_s=30,
+            cycle_id="cycle-test",
         )
 
 
@@ -143,6 +149,7 @@ def test_timeout_raises(agent_md: Path, mocker: MockerFixture) -> None:
             task=_Task(market_id="x"),
             output_model=_Output,
             timeout_s=30,
+            cycle_id="cycle-test",
         )
 
 
@@ -154,6 +161,7 @@ def test_nonzero_exit_raises(agent_md: Path, mocker: MockerFixture) -> None:
             task=_Task(market_id="x"),
             output_model=_Output,
             timeout_s=30,
+            cycle_id="cycle-test",
         )
     assert not isinstance(excinfo.value, SubagentBudgetError)
 
@@ -166,6 +174,7 @@ def test_nonzero_exit_with_credit_stderr_maps_to_budget_error(agent_md: Path, mo
             task=_Task(market_id="x"),
             output_model=_Output,
             timeout_s=30,
+            cycle_id="cycle-test",
         )
 
 
@@ -184,6 +193,7 @@ def test_envelope_is_error_quota_maps_to_budget_error(agent_md: Path, mocker: Mo
             task=_Task(market_id="x"),
             output_model=_Output,
             timeout_s=30,
+            cycle_id="cycle-test",
         )
 
 
@@ -202,6 +212,7 @@ def test_envelope_is_error_unknown_status_falls_back_to_subagent_error(agent_md:
             task=_Task(market_id="x"),
             output_model=_Output,
             timeout_s=30,
+            cycle_id="cycle-test",
         )
     assert not isinstance(excinfo.value, SubagentBudgetError)
 
@@ -226,6 +237,7 @@ def test_max_budget_usd_added_to_cmd(agent_md: Path, mocker: MockerFixture) -> N
         task=_Task(market_id="x"),
         output_model=_Output,
         timeout_s=30,
+        cycle_id="cycle-test",
         max_budget_usd=2.5,
     )
     cmd = captured["cmd"]
@@ -254,6 +266,7 @@ def test_cost_usd_logged_from_envelope(agent_md: Path, mocker: MockerFixture) ->
         task=_Task(market_id="x"),
         output_model=_Output,
         timeout_s=30,
+        cycle_id="cycle-test",
     )
     completed = next(kw for ev, kw in log_calls if ev == "subagent_completed")
     assert completed["cost_usd"] == 0.42
@@ -268,6 +281,7 @@ def test_malformed_envelope_raises(agent_md: Path, mocker: MockerFixture) -> Non
             task=_Task(market_id="x"),
             output_model=_Output,
             timeout_s=30,
+            cycle_id="cycle-test",
         )
 
 
@@ -279,6 +293,7 @@ def test_envelope_missing_result_raises(agent_md: Path, mocker: MockerFixture) -
             task=_Task(market_id="x"),
             output_model=_Output,
             timeout_s=30,
+            cycle_id="cycle-test",
         )
 
 
@@ -290,6 +305,7 @@ def test_schema_mismatch_raises(agent_md: Path, mocker: MockerFixture) -> None:
             task=_Task(market_id="x"),
             output_model=_Output,
             timeout_s=30,
+            cycle_id="cycle-test",
         )
 
 
@@ -315,6 +331,7 @@ def test_mcp_config_appended_when_provided(agent_md: Path, tmp_path: Path, mocke
         task=_Task(market_id="x"),
         output_model=_Output,
         timeout_s=30,
+        cycle_id="cycle-test",
         mcp_config_path=mcp,
         allowed_mcp_tools=("mcp__research__web_search",),
     )
@@ -333,6 +350,7 @@ def test_mcp_config_missing_raises(agent_md: Path, tmp_path: Path, mocker: Mocke
             task=_Task(market_id="x"),
             output_model=_Output,
             timeout_s=30,
+            cycle_id="cycle-test",
             mcp_config_path=tmp_path / "missing.json",
         )
 
@@ -360,6 +378,7 @@ def test_doctrine_concatenated(agent_md: Path, tmp_path: Path, mocker: MockerFix
         task=_Task(market_id="x"),
         output_model=_Output,
         timeout_s=30,
+        cycle_id="cycle-test",
     )
     sys_prompt_idx = captured["cmd"].index("--append-system-prompt") + 1
     sys_prompt = captured["cmd"][sys_prompt_idx]

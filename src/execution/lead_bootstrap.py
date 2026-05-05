@@ -116,6 +116,7 @@ def bootstrap_team(
         scanner_out = scanner(
             ScannerReviewerTask(
                 top_k=settings.TOP_K_MARKETS,
+                cycle_id=cycle_id,
                 cycle_clock=now.isoformat(),
                 raw_markets=universe_inputs["raw_markets"],
                 raw_orderbooks=universe_inputs["raw_orderbooks"],

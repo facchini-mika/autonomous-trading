@@ -65,7 +65,11 @@ For every market in `raw_markets`:
    `dispute_history` or `market.ambiguity_score` is set and `> 0.6`.
 5. **Time-to-resolution.** Drop if `end_date - cycle_clock <
    thresholds.min_ttr_hours` (manual review territory) or `>
-   thresholds.max_ttr_days` (low signal).
+   thresholds.max_ttr_days` (low signal). The ceiling
+   `max_ttr_days` is set to match the trading-agent web_search
+   skip-threshold in `prompts/trading_agent.md`; markets beyond it
+   are guaranteed to skip web_search and therefore cannot produce
+   actionable predictions.
 6. **Status.** Drop if `market.status != "open"`.
 
 After filtering: if a market survived, keep it; otherwise drop. Then

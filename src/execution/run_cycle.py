@@ -52,6 +52,8 @@ def main() -> int:
             task=task,
             output_model=ScannerReviewerOutput,
             timeout_s=settings.AGENT_TIMEOUT_SEC,
+            cycle_id=task.cycle_id,
+            correlation_id=correlation_id,
             max_budget_usd=settings.BUDGET_USD_SCANNER,
         )
 
@@ -62,6 +64,8 @@ def main() -> int:
             task=task,
             output_model=TradingAgentOutput,
             timeout_s=settings.AGENT_TIMEOUT_SEC,
+            cycle_id=task.cycle_id,
+            correlation_id=correlation_id,
             mcp_config_path=MCP_CONFIG_PATH if MCP_CONFIG_PATH.exists() else None,
             allowed_mcp_tools=TRADING_AGENT_MCP_TOOLS,
             max_budget_usd=settings.BUDGET_USD_TRADING,
@@ -74,6 +78,8 @@ def main() -> int:
             task=task,
             output_model=RiskExecutionOutput,
             timeout_s=settings.AGENT_TIMEOUT_SEC,
+            cycle_id=task.cycle_id,
+            correlation_id=correlation_id,
             max_budget_usd=settings.BUDGET_USD_RISK,
         )
 

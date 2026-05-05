@@ -154,6 +154,42 @@ def test_subagent_callables_dispatch_to_runner(
     assert run_cycle_mod.run_subagent.call_count >= 3  # type: ignore[attr-defined]
 
 
+def test_closures_forward_cycle_id_and_correlation_id(
+    fake_subagent_outputs: dict[str, Any],
+    mocker: MockerFixture,
+) -> None:
+    """All three closures must forward task.cycle_id + the cycle's correlation_id."""
+    mocker.patch("execution.run_cycle.make_adapter", return_value=MagicMock())
+    captured_callables: dict[str, Any] = {}
+
+    def _capture(*, scanner: Any, trading: Any, risk: Any, **_: object) -> Any:
+        captured_callables["scanner"] = scanner
+        captured_callables["trading"] = trading
+        captured_callables["risk"] = risk
+        return MagicMock(cycle_id="x", predictions=[], decisions=[], trades=[])
+
+    mocker.patch("execution.run_cycle.bootstrap_team", side_effect=_capture)
+    run_cycle_mod.main()
+
+    for closure_name, cycle_id_value in (
+        ("scanner", "cycle-scan-id"),
+        ("trading", "cycle-trade-id"),
+        ("risk", "cycle-risk-id"),
+    ):
+        task = MagicMock(cycle_id=cycle_id_value)
+        captured_callables[closure_name](task)
+
+    calls = run_cycle_mod.run_subagent.call_args_list  # type: ignore[attr-defined]
+    cycle_ids_passed = [c.kwargs["cycle_id"] for c in calls]
+    assert "cycle-scan-id" in cycle_ids_passed
+    assert "cycle-trade-id" in cycle_ids_passed
+    assert "cycle-risk-id" in cycle_ids_passed
+    # correlation_id is the same across all three (minted once per main()).
+    correlation_ids = {c.kwargs.get("correlation_id") for c in calls}
+    assert len(correlation_ids - {None}) == 1
+    assert next(iter(correlation_ids - {None}))  # non-empty hex.
+
+
 def test_logs_correlation_id(
     fake_subagent_outputs: dict[str, Any],
     mocker: MockerFixture,
