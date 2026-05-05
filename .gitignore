@@ -28,6 +28,7 @@ secrets/
 CLAUDE.local.md
 .claude/settings.local.json
 .claude/teams/runtime/
+logs/
 .claude/scheduled_tasks.lock
 
 # Local data
