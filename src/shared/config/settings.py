@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     EDGE_THRESHOLD: float = 0.05
     CYCLE_PERIOD_MIN: int = 12
     TOP_K_MARKETS: int = 50
-    UNIVERSE_FETCH_LIMIT: int = 200
+    UNIVERSE_FETCH_LIMIT: int = 100
 
     # Universe-selection thresholds (scanner-reviewer doctrine inputs)
     MIN_DEPTH_1PCT_USD: float = 100.0
@@ -85,11 +85,14 @@ class Settings(BaseSettings):
     # Timeouts
     WEB_SEARCH_TIMEOUT_SEC: int = 120
     # Trading-agent in particular accumulates 2-3 web_searches at 120s each
-    # plus inference time, so 300s was too tight (first cycle hit the wall
-    # mid-trading-agent). The wrapper script (`infra/scripts/run_cycle.sh`)
-    # bounds the whole cycle at 600s anyway; this raises the per-agent cap
-    # so a single agent can use most of that budget when necessary.
-    AGENT_TIMEOUT_SEC: int = 600
+    # plus inference time. Scanner-reviewer was observed at 600s exactly
+    # (cycle-1777990078, 2026-05-05) when UNIVERSE_FETCH_LIMIT was 200;
+    # +50% margin keeps Anthropic-latency jitter from kicking the cycle
+    # over the cliff. The wrapper script (`infra/scripts/run_cycle.sh`)
+    # bounds the whole cycle at 1800s — keep the per-agent cap below the
+    # wrapper, well below 3x per-agent so worst-case stage-stacking
+    # still hits the safety net.
+    AGENT_TIMEOUT_SEC: int = 900
 
     # Per-subagent USD budget caps passed to ``claude --max-budget-usd``.
     # The CLI aborts the call once the in-flight cost would exceed the cap,

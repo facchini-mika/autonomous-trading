@@ -655,3 +655,49 @@ Every PR that touches one of the following must have an entry here:
   prior outcome_ingestion semantics (NULL on resolved). No data loss
   — the aggregator only writes where `realized_pnl IS NULL`, never
   overwrites.
+
+## 2026-05-05 — Scanner-reviewer timeout hardening
+
+- **Category:** Tunable nudge (`AGENT_TIMEOUT_SEC`, `UNIVERSE_FETCH_LIMIT`,
+  wrapper timeout). No `src/risk/**` touch, no TRADING_MODE flip, no
+  `MAX_CAPITAL_EUR` change. Logged because operator-facing latency
+  envelope changes and the wrapper bound moves.
+- **PR:** _pending_
+- **Description:** Cycle `cycle-1777990078` timed out at the
+  scanner-reviewer subagent at exactly 600 s with `cost_usd=NULL` and
+  `raw_stdout=NULL`. Root cause from the `subagent_runs` audit trail:
+  `task_payload` had grown from 43 KB (Cycle-7, `UNIVERSE_FETCH_LIMIT=20`)
+  to 440 KB (default 200) — the previous successful run hit 296 s
+  with the same payload size, so any Anthropic-latency jitter was
+  enough to flip the result. Three coordinated tweaks:
+  - `AGENT_TIMEOUT_SEC: 600 → 900` (`src/shared/config/settings.py:92`).
+  - `UNIVERSE_FETCH_LIMIT: 200 → 100` (`src/shared/config/settings.py:54`)
+    — halves scanner-reviewer prompt size; `TOP_K_MARKETS=50` unchanged,
+    selection quality preserved (adapter sorts volume-first).
+  - Wrapper `gtimeout 600 → 1800` (`infra/scripts/run_cycle.sh:32`)
+    — was racing the per-agent timeout exactly; now 2× the per-agent
+    cap so a single timed-out subagent surfaces as `SubagentError`
+    rather than a silent wrapper kill.
+  - Doctrine string `"up to 200 markets" → "up to 100 markets
+    (Settings.UNIVERSE_FETCH_LIMIT)"` in
+    `src/research/prompts/scanner_reviewer.md:16` to keep
+    doctrine-vs-settings drift at zero (per PR #37 audit guidance).
+- **Risk:**
+  - Higher `AGENT_TIMEOUT_SEC` lets a runaway agent burn budget for
+    50 % longer before being killed; `BUDGET_USD_*` caps in
+    `Settings` still bound dollar exposure per agent, so the drift
+    is in wall-time not in spend.
+  - Lower `UNIVERSE_FETCH_LIMIT` shows the scanner fewer raw markets;
+    if the volume-first sort is wrong, edge candidates beyond rank 100
+    are invisible. Acceptable for MVP — `TOP_K_MARKETS=50` was always
+    the bottleneck.
+  - Larger wrapper bound delays cron's safety net by 20 min in the
+    pathological case. Cron retries on next interval; no compounding
+    state corruption since the cycle-write order is FK-safe.
+- **Why it's still safe:** `paper`-mode default unchanged.
+  `MAX_CAPITAL_EUR` still 0. No `src/risk/**` touch. Risk-Layer drift-
+  guard test (`tests/risk/test_limits_match_settings.py`) doesn't
+  cover these tunables — they aren't risk-layer values, so no Drift-
+  Guard regression. 401 unit tests still green.
+- **Mitigation / rollback:** Revert PR. Each constant flips back to
+  prior value independently — they are orthogonal.

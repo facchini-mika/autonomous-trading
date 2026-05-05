@@ -13,8 +13,9 @@ The Lead passes a `ScannerReviewerTask` with:
 - `top_k: int` — universe size budget (`Settings.TOP_K_MARKETS`, default
   50). Hand back at most this many markets.
 - `cycle_clock: ISO 8601` — the cycle's wall-clock timestamp.
-- `raw_markets: list[Market]` — up to 200 markets the Lead pulled via
-  `adapter.get_markets`. Most will be dropped by your filters.
+- `raw_markets: list[Market]` — up to 100 markets the Lead pulled via
+  `adapter.get_markets` (`Settings.UNIVERSE_FETCH_LIMIT`). Most will be
+  dropped by your filters.
 - `raw_orderbooks: dict[market_id -> Orderbook]` — current best bid/ask
   + ±1 % depth per market.
 - `raw_metadata: dict[market_id -> MarketMetadata]` — resolution

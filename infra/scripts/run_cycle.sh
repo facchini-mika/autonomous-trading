@@ -29,7 +29,7 @@ TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
 
 case "$cycle" in
   trading_cycle)
-    "$TIMEOUT_BIN" 600 uv run python -m execution.run_cycle
+    "$TIMEOUT_BIN" 1800 uv run python -m execution.run_cycle
     ;;
   outcome_ingestion)
     "$TIMEOUT_BIN" 1800 uv run python -m execution.outcome_ingestion
