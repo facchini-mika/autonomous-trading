@@ -14,6 +14,7 @@ from shared.models.agent_io import (
     Trade,
     Universe,
 )
+from shared.models.equity_snapshot import EquitySnapshot
 from shared.models.gate import GateName, GateResult
 from shared.models.market import (
     Market,
@@ -55,6 +56,7 @@ __all__ = [
     "CyclePlan",
     "Decision",
     "DecisionAction",
+    "EquitySnapshot",
     "GateName",
     "GateResult",
     "Lesson",

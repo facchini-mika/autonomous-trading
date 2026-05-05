@@ -69,3 +69,15 @@ def test_web_search_blocked_domains_json_env_override(
 ) -> None:
     monkeypatch.setenv("WEB_SEARCH_BLOCKED_DOMAINS", '["x.com","y.com"]')
     assert Settings().WEB_SEARCH_BLOCKED_DOMAINS == ["x.com", "y.com"]
+
+
+def test_metrics_defaults_localhost_only() -> None:
+    settings = Settings()
+    assert settings.METRICS_ENABLED is True
+    assert settings.METRICS_HOST == "127.0.0.1"
+    assert settings.METRICS_PORT == 9100
+
+
+def test_metrics_disabled_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("METRICS_ENABLED", "false")
+    assert Settings().METRICS_ENABLED is False

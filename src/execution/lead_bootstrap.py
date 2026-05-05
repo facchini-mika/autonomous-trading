@@ -218,6 +218,13 @@ def bootstrap_team(
     )
 
     _persist_cycle_plan(factory=factory, cycle_id=cycle_id, cycle_plan=cycle_plan, prev_plan=prev_plan)
+    _persist_equity_snapshot(
+        factory=factory,
+        cycle_id=cycle_id,
+        portfolio=portfolio,
+        started_at=now,
+        finished_at=_utcnow(),
+    )
 
     _team_cleanup(cycle_id=cycle_id)
     unbind("cycle_id")
@@ -357,6 +364,56 @@ def _log_budget_abort(*, cycle_id: str, stage: str, exc: SubagentBudgetError) ->
 
 def _default_factory() -> AbstractContextManager[Session]:
     return get_session("trading_cycle")
+
+
+def _persist_equity_snapshot(
+    *,
+    factory: Callable[[], AbstractContextManager[Session]],
+    cycle_id: str,
+    portfolio: PortfolioState,
+    started_at: datetime,
+    finished_at: datetime,
+) -> None:
+    """Append one row to ``equity_snapshots`` at cycle close.
+
+    The peak is computed in-SQL via ``GREATEST(prev_max, :equity)`` so we
+    keep this single insert atomic and avoid a read-then-write race with
+    a concurrent cycle (which cannot exist today — single-operator, single
+    cron — but the SQL is the same length and is cheap insurance).
+
+    ``portfolio.equity`` is the snapshot taken by the scanner at cycle
+    *start*. Re-fetching after order placement would give a fresher number
+    in paper mode (paper trades fill instantly) but the cycle cadence is
+    12 minutes — the lag is bounded and the numbers stay self-consistent
+    series-wide. Documented for the operator who reads the gauge.
+    """
+    duration_seconds = max((finished_at - started_at).total_seconds(), 0.0)
+    with factory() as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO equity_snapshots (
+                    time, cycle_id, equity_usd, peak_equity_usd,
+                    gross_exposure_usd, duration_seconds
+                )
+                VALUES (
+                    :time, :cycle_id, :equity,
+                    GREATEST(
+                        COALESCE((SELECT MAX(peak_equity_usd) FROM equity_snapshots), :equity),
+                        :equity
+                    ),
+                    :gross_exposure, :duration
+                )
+                """,
+            ),
+            {
+                "time": finished_at,
+                "cycle_id": cycle_id,
+                "equity": portfolio.equity,
+                "gross_exposure": portfolio.gross_exposure_usd,
+                "duration": duration_seconds,
+            },
+        )
 
 
 def _decision_to_order(decision: Decision, *, cycle_id: str) -> Order | None:

@@ -24,6 +24,7 @@ ALL_TABLES = (
     "cycle_plan",
     "lessons",
     "system_state",
+    "equity_snapshots",
 )
 
 

@@ -5,6 +5,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/risk", "src/shared", "src/execution", "src/research"]
 
+# Prometheus metrics exporter is shipped under src/shared/observability and
+# registered as a console script so deployments can run it via systemd/launchd
+# without remembering the dotted module path.
+[project.scripts]
+metrics-exporter = "shared.observability.exporter:main"
+
 [project]
 name = "polymarket-autonomous-trading"
 version = "0.0.0"
@@ -26,6 +32,7 @@ dependencies = [
   "structlog>=24",
   "curl-cffi>=0.15.0",
   "mcp>=1.2",
+  "prometheus-client>=0.20",
 ]
 
 [dependency-groups]

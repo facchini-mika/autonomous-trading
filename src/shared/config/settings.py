@@ -138,3 +138,10 @@ class Settings(BaseSettings):
     ORDER_PRICE_MAX: float = 0.995
     ORDER_RATE_LIMIT_PER_HOUR: int = 100
     MAX_OPEN_POSITIONS: int = 50
+
+    # Prometheus exporter (P1.1). Pull model: long-running daemon binds
+    # METRICS_HOST:METRICS_PORT/metrics, Prometheus scrapes. Always 127.0.0.1
+    # by default — exposing the dashboard externally would leak live strategy.
+    METRICS_ENABLED: bool = True
+    METRICS_HOST: str = "127.0.0.1"
+    METRICS_PORT: int = 9100
