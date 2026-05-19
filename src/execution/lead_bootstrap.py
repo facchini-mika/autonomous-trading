@@ -93,11 +93,11 @@ class CycleAbortedError(RuntimeError):
         super().__init__(f"cycle {cycle_id} aborted at {stage}: {reason}")
 
 
-def bootstrap_team(  # noqa: PLR0915 — single-function cycle orchestrator by design
+def bootstrap_team(
     *,
     settings: Settings,
     adapter: PredictionMarketAdapter,
-    scanner: Callable[[ScannerReviewerTask], ScannerReviewerOutput],
+    scanner: Callable[[ScannerReviewerTask], ScannerReviewerOutput],  # noqa: ARG001 — removed in feature/scanner-llm-removal; kept here for the stacked-PR diff.
     trading: Callable[[TradingAgentTask], TradingAgentOutput],
     risk: Callable[[RiskExecutionTask], RiskExecutionOutput],
     session_factory: Callable[[], AbstractContextManager[Session]] | None = None,
@@ -137,27 +137,19 @@ def bootstrap_team(  # noqa: PLR0915 — single-function cycle orchestrator by d
         orders_in_last_hour=universe_inputs["orders_in_last_hour"],
         thresholds=thresholds,
     )
-    if settings.UNIVERSE_FETCH_LIMIT <= settings.TOP_K_MARKETS:
-        # Identity / sub-identity filter — Lead's Python implementation mirrors
-        # the scanner doctrine 1:1 and skips the LLM call. ~$0.71/cycle saved
-        # plus eliminates the 13-24k output-token wall-time tail.
-        bypass_started_at = _utcnow()
-        scanner_out = _python_scanner(scanner_task, clock=now)
-        _persist_scanner_bypass_audit(
-            factory=factory,
-            cycle_id=cycle_id,
-            task=scanner_task,
-            output=scanner_out,
-            started_at=bypass_started_at,
-            finished_at=_utcnow(),
-        )
-    else:
-        try:
-            scanner_out = scanner(scanner_task)
-        except SubagentBudgetError as exc:
-            _log_budget_abort(cycle_id=cycle_id, stage="scanner-reviewer", exc=exc)
-            unbind("cycle_id")
-            raise CycleAbortedError(reason=str(exc), cycle_id=cycle_id, stage="scanner-reviewer") from exc
+    # Scanner is always the deterministic Python implementation. The LLM-scanner
+    # branch is being removed in feature/scanner-llm-removal; the ``scanner``
+    # callable param is kept here for one more PR so the diff stays reviewable.
+    bypass_started_at = _utcnow()
+    scanner_out = _python_scanner(scanner_task, clock=now)
+    _persist_scanner_bypass_audit(
+        factory=factory,
+        cycle_id=cycle_id,
+        task=scanner_task,
+        output=scanner_out,
+        started_at=bypass_started_at,
+        finished_at=_utcnow(),
+    )
     portfolio = scanner_out.portfolio_state
 
     # Defensive post-filter. The scanner is an LLM and was observed in cycle-7
@@ -862,15 +854,46 @@ def _collect_universe_inputs(
 ) -> dict[str, object]:
     """Pre-fetch raw market data + portfolio state for the scanner-reviewer.
 
-    Pulls up to ``settings.UNIVERSE_FETCH_LIMIT`` markets via the adapter,
-    walks each one for orderbook + metadata, and reads the DB-side state
-    (positions, cash, kill_switch, recent-orders count) the scanner needs to
-    synthesise its filtered ``Universe`` + ``PortfolioState``.
+    Pulls up to ``settings.UNIVERSE_RAW_FETCH_LIMIT`` markets via the adapter
+    (Polymarket's `sampling-markets` returns ~1000 per page), drops markets
+    outside the TTR window or non-``open`` before fetching their orderbooks —
+    that pre-filter saves up to ~1000 HTTP round-trips per cycle on the
+    irrelevant tail. Held markets are always retained for portfolio mark.
+    Then walks each surviving market for orderbook + metadata, and reads the
+    DB-side state (positions, cash, kill_switch, recent-orders count) the
+    scanner needs to synthesise its filtered ``Universe`` + ``PortfolioState``.
     """
-    raw_markets = adapter.get_markets(limit=settings.UNIVERSE_FETCH_LIMIT)
+    raw_markets = adapter.get_markets(limit=settings.UNIVERSE_RAW_FETCH_LIMIT)
+
+    positions = _load_open_positions(factory)
+    held_market_ids = sorted({p.market_id for p in positions})
+    held_set = set(held_market_ids)
+
+    min_ttr = timedelta(hours=settings.MIN_TIME_TO_RESOLUTION_HOURS)
+    max_ttr = timedelta(days=settings.MAX_TIME_TO_RESOLUTION_DAYS)
+    filtered: list[Market] = []
+    for market in raw_markets:
+        if market.market_id in held_set:
+            filtered.append(market)
+            continue
+        if market.status != "open":
+            continue
+        ttr = market.end_date - now
+        if ttr < min_ttr or ttr > max_ttr:
+            continue
+        filtered.append(market)
+    filtered = filtered[: settings.UNIVERSE_FETCH_LIMIT]
+
+    logger.info(
+        "universe_pre_ttr_filter",
+        raw_count=len(raw_markets),
+        post_filter_count=len(filtered),
+        held_count=sum(1 for m in filtered if m.market_id in held_set),
+    )
+
     raw_orderbooks: dict[str, Orderbook] = {}
     raw_metadata: dict[str, MarketMetadata] = {}
-    for market in raw_markets:
+    for market in filtered:
         try:
             raw_orderbooks[market.market_id] = adapter.get_orderbook(market.market_id)
         except Exception:
@@ -881,14 +904,12 @@ def _collect_universe_inputs(
         except Exception:
             logger.warning("metadata_fetch_failed", market_id=market.market_id)
 
-    positions = _load_open_positions(factory)
     cash = _load_cash_balance(factory=factory, settings=settings, now=now)
     kill_switch = _load_kill_switch(factory)
     orders_count = _count_orders_in_last_hour(factory=factory, now=now)
 
-    held_market_ids = sorted({p.market_id for p in positions})
     return {
-        "raw_markets": raw_markets,
+        "raw_markets": filtered,
         "raw_orderbooks": raw_orderbooks,
         "raw_metadata": raw_metadata,
         "current_positions": positions,

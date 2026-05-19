@@ -268,8 +268,11 @@ def test_bootstrap_places_order_only_for_trade_decisions() -> None:
     assert fake.placed_orders[0].market_id == "0xa"
 
 
-def test_bootstrap_skips_scanner_callable_when_limit_eq_topk() -> None:
-    """Default settings (LIMIT=TOP_K=50) → Lead never invokes the scanner LLM."""
+def test_bootstrap_always_uses_python_scanner() -> None:
+    """The LLM-scanner callable is never invoked — Lead always uses the
+    deterministic Python scanner. (The LLM path is fully removed in
+    feature/scanner-llm-removal; this test pins the always-bypass behaviour.)
+    """
     scanner_calls: list[Any] = []
 
     def _scanner_must_not_run(task: Any) -> ScannerReviewerOutput:
@@ -278,7 +281,7 @@ def test_bootstrap_skips_scanner_callable_when_limit_eq_topk() -> None:
 
     captures: list[MagicMock] = []
     artifacts = bootstrap_team(
-        settings=Settings(),  # default: UNIVERSE_FETCH_LIMIT=50, TOP_K_MARKETS=50
+        settings=Settings(),
         adapter=FakeAdapter(),
         scanner=_scanner_must_not_run,
         trading=_trading,
@@ -286,7 +289,7 @@ def test_bootstrap_skips_scanner_callable_when_limit_eq_topk() -> None:
         session_factory=lambda: _capturing_factory(captures),
         clock=_now,
     )
-    assert scanner_calls == [], "scanner LLM callable invoked despite LIMIT<=TOP_K bypass"
+    assert scanner_calls == [], "Python-scanner is the only path; LLM callable must never run"
     # Bypass should still produce a valid Universe + PortfolioState,
     # and write a subagent_runs audit row with cost_usd=0.
     assert artifacts.cycle_id.startswith("cycle-")
@@ -382,22 +385,28 @@ def test_bootstrap_returns_cycle_plan() -> None:
     assert artifacts.cycle_id.startswith("cycle-")
 
 
-def test_bootstrap_injects_scanner_thresholds_from_settings() -> None:
-    """Lead must hand the scanner-reviewer the threshold knobs from Settings."""
+def test_bootstrap_injects_scanner_thresholds_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lead must hand the deterministic scanner the threshold knobs from Settings.
+
+    We capture by patching ``_python_scanner`` (the always-active path) rather
+    than the LLM callable; the latter is no longer invoked.
+    """
+    from execution import lead_bootstrap as _lb
+
     captured: list[Any] = []
+    original = _lb._python_scanner
 
-    def _capturing_scanner(task: Any) -> ScannerReviewerOutput:
+    def _capturing_python_scanner(task: Any, *, clock: Any) -> ScannerReviewerOutput:
         captured.append(task)
-        return _scanner(task)
+        return original(task, clock=clock)
 
-    # Force the LLM scanner path by widening the fetch limit beyond top-K;
-    # at default settings (LIMIT==TOP_K==50) Lead routes through
-    # ``_python_scanner`` and the LLM callable is never invoked.
-    settings = Settings(UNIVERSE_FETCH_LIMIT=100)
+    monkeypatch.setattr(_lb, "_python_scanner", _capturing_python_scanner)
+
+    settings = Settings()
     bootstrap_team(
         settings=settings,
         adapter=FakeAdapter(),
-        scanner=_capturing_scanner,
+        scanner=_scanner,
         trading=_trading,
         risk=_risk_factory("trade"),
         session_factory=lambda: _capturing_factory([]),
@@ -466,27 +475,10 @@ def _budget_raiser(_task: Any) -> Any:
     raise SubagentBudgetError(msg)
 
 
-def test_bootstrap_aborts_when_scanner_runs_out_of_credits() -> None:
-    captures: list[MagicMock] = []
-    fake = FakeAdapter()
-
-    # Budget abort is an LLM-path-only signal — force the LLM scanner path.
-    with pytest.raises(CycleAbortedError) as excinfo:
-        bootstrap_team(
-            settings=Settings(UNIVERSE_FETCH_LIMIT=100),
-            adapter=fake,
-            scanner=_budget_raiser,
-            trading=_trading,
-            risk=_risk_factory("trade"),
-            session_factory=lambda: _capturing_factory(captures),
-            clock=_now,
-        )
-    assert excinfo.value.stage == "scanner-reviewer"
-    # No orders placed, no predictions/decisions written.
-    assert fake.placed_orders == []
-    sql = [str(c.args[0]) for sess in captures for c in sess.execute.call_args_list]
-    assert not any("INSERT INTO predictions" in s for s in sql)
-    assert not any("INSERT INTO decisions" in s for s in sql)
+# NB: ``test_bootstrap_aborts_when_scanner_runs_out_of_credits`` removed —
+# the scanner is now always the deterministic Python implementation, so the
+# SubagentBudgetError path no longer exists for this stage. Budget aborts are
+# still exercised for trading-agent and risk-execution in the tests below.
 
 
 def test_bootstrap_aborts_when_trading_runs_out_of_credits() -> None:

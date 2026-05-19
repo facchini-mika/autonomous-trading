@@ -139,6 +139,88 @@ def test_collect_universe_inputs_pulls_per_market_data() -> None:
     assert inputs["held_market_ids"] == []
 
 
+def test_collect_universe_inputs_drops_markets_outside_ttr_window() -> None:
+    """Pre-fetch must skip markets resolving sooner than MIN_TTR or later than
+    MAX_TTR so we don't waste orderbook/metadata HTTP calls on them. Cycle-
+    1779210369 found that Polymarket's sampling page returns ~1000 markets
+    where only ~3% fit the TTR window — naive fetching == ~2000 round-trips
+    per cycle for nothing.
+    """
+    fake = FakeAdapter()
+    # In-window: ttr = 10 days; passes (default MAX_TTR_DAYS=14, MIN_TTR_HOURS=6).
+    fake.markets["0xin"] = _market("0xin")
+    fake.orderbooks["0xin"] = _book("0xin")
+    fake.metadata["0xin"] = _meta("0xin")
+    # Too far out: ttr = 200 days; dropped by MAX_TTR.
+    too_long = _market("0xlong").model_copy(update={"end_date": _now() + timedelta(days=200)})
+    fake.markets["0xlong"] = too_long
+    fake.orderbooks["0xlong"] = _book("0xlong")
+    fake.metadata["0xlong"] = _meta("0xlong")
+    # Already resolved (in the past): dropped by MIN_TTR.
+    expired = _market("0xpast").model_copy(update={"end_date": _now() - timedelta(days=1)})
+    fake.markets["0xpast"] = expired
+    fake.orderbooks["0xpast"] = _book("0xpast")
+    fake.metadata["0xpast"] = _meta("0xpast")
+    # status != open: dropped regardless of TTR.
+    closed = _market("0xclosed").model_copy(update={"status": "closed"})
+    fake.markets["0xclosed"] = closed
+    fake.orderbooks["0xclosed"] = _book("0xclosed")
+    fake.metadata["0xclosed"] = _meta("0xclosed")
+    settings = Settings()
+
+    @contextmanager
+    def factory() -> Iterator[MagicMock]:
+        with _fake_factory({}) as sess:
+            yield sess
+
+    inputs = _collect_universe_inputs(adapter=fake, factory=factory, settings=settings, now=_now())
+
+    raw_markets = inputs["raw_markets"]
+    assert isinstance(raw_markets, list)
+    assert [m.market_id for m in raw_markets] == ["0xin"]
+    raw_orderbooks = inputs["raw_orderbooks"]
+    assert isinstance(raw_orderbooks, dict)
+    assert set(raw_orderbooks.keys()) == {"0xin"}  # No HTTP for filtered-out markets.
+
+
+def test_collect_universe_inputs_always_keeps_held_markets() -> None:
+    """Operator visibility on open positions trumps the TTR filter. Without
+    the held-market bypass we'd lose the orderbook for unrealized-PnL marking
+    on any position whose end_date drifted outside the window.
+    """
+    fake = FakeAdapter()
+    # Long-TTR market that we already hold.
+    held = _market("0xheld").model_copy(update={"end_date": _now() + timedelta(days=365)})
+    fake.markets["0xheld"] = held
+    fake.orderbooks["0xheld"] = _book("0xheld")
+    fake.metadata["0xheld"] = _meta("0xheld")
+    settings = Settings()
+
+    held_row = MagicMock(
+        market_id="0xheld",
+        side="yes",
+        size=10.0,
+        avg_price=0.5,
+        unrealized_pnl=0.0,
+        realized_pnl=0.0,
+        opened_at=_now(),
+        last_updated=_now(),
+        status="open",
+    )
+
+    @contextmanager
+    def factory() -> Iterator[MagicMock]:
+        with _fake_factory({"from positions": [held_row]}) as sess:
+            yield sess
+
+    inputs = _collect_universe_inputs(adapter=fake, factory=factory, settings=settings, now=_now())
+
+    raw_markets = inputs["raw_markets"]
+    assert isinstance(raw_markets, list)
+    assert [m.market_id for m in raw_markets] == ["0xheld"]
+    assert inputs["held_market_ids"] == ["0xheld"]
+
+
 def test_collect_universe_inputs_survives_orderbook_failure() -> None:
     fake = _adapter_with_two_markets()
     fake.orderbooks.pop("0xb")  # FakeAdapter raises KeyError on missing book

@@ -51,12 +51,16 @@ class Settings(BaseSettings):
     # Strategy
     EDGE_THRESHOLD: float = 0.05
     CYCLE_PERIOD_MIN: int = 12
-    TOP_K_MARKETS: int = 50
-    # When ``UNIVERSE_FETCH_LIMIT <= TOP_K_MARKETS`` the scanner-reviewer LLM
-    # has nothing real to filter, so the Lead routes through a deterministic
-    # Python implementation (``_python_scanner``). Raise above TOP_K_MARKETS
-    # only if a future strategy genuinely needs the LLM to rank a wider pool.
-    UNIVERSE_FETCH_LIMIT: int = 50
+    TOP_K_MARKETS: int = 20
+    # Polymarket's `sampling-markets` returns ~1000 markets per page, sorted by
+    # internal reward incentive (not TTR or liquidity). Live measurement on
+    # 2026-05-19 showed only 27/1000 markets in the TTR=14d window, scattered
+    # across positions 7-992 (only 4 in the top-200). The Lead pre-filters by
+    # TTR window before fetching orderbooks, so we pull the full page and let
+    # the filter cut it down. ``UNIVERSE_FETCH_LIMIT`` caps the post-TTR pool
+    # that gets orderbook + metadata fetches (the per-cycle HTTP-call budget).
+    UNIVERSE_RAW_FETCH_LIMIT: int = 1000
+    UNIVERSE_FETCH_LIMIT: int = 200
 
     # Universe-selection thresholds (scanner-reviewer doctrine inputs)
     MIN_DEPTH_1PCT_USD: float = 100.0
