@@ -993,3 +993,47 @@ Every PR that touches one of the following must have an entry here:
   partial-fill simulator is self-contained in
   `paper_trading.py:_simulate_fak_fill`. No schema or migration
   change — purely code + spec.
+
+---
+
+## 2026-05-19 — Repo working copy moved out of OneDrive
+
+- **Category:** Infrastructure / operator environment.
+- **PR:** _pending_
+- **Description:** Working copy and all four worktrees relocated from
+  `~/OneDrive/.../autonomous_trading`
+  to `~/GitHub/autonomous_trading`. Move was performed via a
+  fresh `git clone https://github.com/facchini-mika/autonomous_trading.git`
+  at the new path (origin URL unchanged), local-only branches
+  (`worktree-pr1-idempotency-store`, `worktree-fix-notional-clipped-usd-alias`,
+  `feature/scanner-pagination`) recreated off `main`, `feature/scanner-bypass`
+  checked out from `origin/feature/scanner-bypass`, four worktrees
+  reattached (`.claude/worktrees/{pr1-idempotency-store,fix-notional-clipped-usd-alias}`
+  and siblings `autonomous_trading_scanner-{bypass,fixed-filter}`),
+  uncommitted diffs from the two `worktree-*` branches re-applied from
+  saved patches (byte-exact match verified post-apply), gitignored
+  files copied across (`.env`, `CLAUDE.local.md`, `logs/`,
+  `.claude/{settings.local.json,scheduled_tasks.lock}`), `.venv`
+  rebuilt with `uv sync`, Claude-Code project-memory directory renamed
+  to the new path-derived slug. Initial `mv`-based attempt stalled in
+  `rename(2)` against OneDrive's FileProvider; a later `rsync` run
+  bogged down materialising thousands of loose `.git/objects/`, so the
+  clone-and-restore path was chosen.
+- **Risk:** None to the live system — `TRADING_MODE` stays `paper`,
+  `MAX_CAPITAL_EUR=0`, no source / config / schema modified. The
+  origin remote on GitHub is identical, and CI is unaffected. Local
+  hazards: any uncommitted work that was *not* in the two saved
+  patches would have been lost (verified pre-move that no other
+  worktree had uncommitted state and no local branch had commits not
+  present on origin). `.venv` rebuild is deterministic from `uv.lock`.
+- **Mitigation / rollback:** The original OneDrive directory is still
+  in place at the source path — readable, intact, can be deleted
+  manually after the new copy has been validated in practice.
+  `~/.claude/jobs/<this-session>/{pr1-idempotency-store.patch,fix-notional.patch}`
+  preserve the uncommitted-work snapshots for an additional safety
+  margin until the operator confirms the new copy is healthy.
+- **Why we did it:** OneDrive's Files-On-Demand layer was making
+  `pre-commit`, `uv sync`, and Polymarket on-demand cycles unusably
+  slow (minute-long hangs inside `.venv` site-packages reads). After
+  the move, `pre-commit run --all-files` completes in ~1.5 s and
+  `pytest tests/risk` in ~0.7 s.
