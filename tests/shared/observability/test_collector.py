@@ -49,7 +49,8 @@ class _FakeSession:
     def __init__(self, responses: list[tuple[str, list[Any]]]) -> None:
         self._responses = responses
 
-    def execute(self, query: object) -> _FakeResult:
+    def execute(self, query: object, params: object | None = None) -> _FakeResult:
+        del params  # ignored; substring routing is enough for the fake.
         sql = str(query)
         for key, rows in self._responses:
             if key in sql:

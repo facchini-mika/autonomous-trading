@@ -74,27 +74,70 @@ class PolymarketRateLimitError(PolymarketTransientError):
     """Specifically a 429 response — retry after backoff."""
 
 
+class IdempotencyConflictError(PolymarketAdapterError):
+    """A prior attempt for the same ``idempotency_key`` is still in-flight.
+
+    Raised by ``place_order`` when the persistent store already holds a
+    row for the key without a terminal status — i.e. a previous process
+    crashed between ``POST /order`` and the response write. The order is
+    deliberately not re-submitted; operator inspects the orphan via the
+    cycle-start log + ``orphan_order_attempts_total`` metric.
+    """
+
+
 class IdempotencyStore(Protocol):
-    """Backing store for `idempotency_key -> OrderResult` cache."""
+    """Backing store for `idempotency_key -> OrderResult` cache.
+
+    ``reserve`` is the dedup gate: implementations must guarantee that
+    only the first caller for a given key returns ``True``. Stores that
+    cannot survive a process crash (e.g. the in-memory default) should
+    document the limitation; production wires the Postgres-backed
+    ``DbIdempotencyStore``.
+    """
 
     def get(self, key: str) -> OrderResult | None: ...
-    def put(self, key: str, value: OrderResult) -> None: ...
+    def reserve(self, key: str, *, cycle_id: str, decision_id: str) -> bool: ...
+    def put(
+        self,
+        key: str,
+        value: OrderResult,
+        *,
+        error_class: str | None = None,
+        error_message: str | None = None,
+    ) -> None: ...
 
 
 class InMemoryIdempotencyStore:
-    """Simple dict-backed store, lifetime = process lifetime.
+    """Dict-backed store, lifetime = process lifetime.
 
-    Phase 4 trading cycles are single-process; Phase 5 may swap in a Postgres
-    implementation when cron splits cycles across pods.
+    Only safe for tests and paper-mode where a crash cannot cause a
+    duplicate broker-side submission. Real-capital trading wires
+    ``DbIdempotencyStore`` instead — see ``shared.adapters.factory``.
     """
 
     def __init__(self) -> None:
         self._cache: dict[str, OrderResult] = {}
+        self._reserved: set[str] = set()
 
     def get(self, key: str) -> OrderResult | None:
         return self._cache.get(key)
 
-    def put(self, key: str, value: OrderResult) -> None:
+    def reserve(self, key: str, *, cycle_id: str, decision_id: str) -> bool:
+        del cycle_id, decision_id  # unused in the in-memory variant
+        if key in self._reserved:
+            return False
+        self._reserved.add(key)
+        return True
+
+    def put(
+        self,
+        key: str,
+        value: OrderResult,
+        *,
+        error_class: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        del error_class, error_message  # unused in the in-memory variant
         self._cache[key] = value
 
 
@@ -206,15 +249,25 @@ class PolymarketAdapter:
     # --- Writes --------------------------------------------------------------
 
     def place_order(self, order: Order) -> OrderResult:
-        # Idempotency cache reflects the single FAK submission outcome.
-        # Partial fills are terminal (Polymarket cancels the unfilled remainder
-        # immediately); the cached result is the right answer to return on
-        # adapter-internal retries. It does *not* protect against a
-        # process-crash mid-submit — that would need broker-side dedup.
+        # Three-step dedup against the (now durable) idempotency store:
+        # 1. cache-hit  → terminal result is already known, return it.
+        # 2. reserve()  → first writer wins; a False return means a row
+        #                 exists without `finished_at`, i.e. an earlier
+        #                 process crashed mid-submit. We refuse to re-fire.
+        # 3. put()      → finalise the row with the terminal status.
         cached = self._idempotency.get(order.idempotency_key)
         if cached is not None:
             logger.debug("Idempotency hit for key=%s; returning cached result", order.idempotency_key)
             return cached
+
+        cycle_id, decision_id = _split_idempotency_key(order.idempotency_key)
+        if not self._idempotency.reserve(order.idempotency_key, cycle_id=cycle_id, decision_id=decision_id):
+            msg = (
+                f"order_attempt {order.idempotency_key!r} is already in-flight "
+                "or crashed mid-submit; refusing to re-fire"
+            )
+            logger.warning("idempotency_conflict key=%s", order.idempotency_key)
+            raise IdempotencyConflictError(msg)
 
         self._ensure_api_creds()
 
@@ -223,8 +276,27 @@ class PolymarketAdapter:
         except PolymarketPermanentError as exc:
             result = OrderResult(status="rejected", broker_order_id=None, fill_price=None, filled_size=0.0)
             logger.warning("Permanent error placing order %s: %s", order.idempotency_key, exc)
-            self._idempotency.put(order.idempotency_key, result)
+            self._idempotency.put(
+                order.idempotency_key,
+                result,
+                error_class=type(exc).__name__,
+                error_message=str(exc),
+            )
             return result
+        except PolymarketTransientError as exc:
+            result = OrderResult(status="rejected", broker_order_id=None, fill_price=None, filled_size=0.0)
+            logger.warning(
+                "Transient error placing order %s after retries: %s",
+                order.idempotency_key,
+                exc,
+            )
+            self._idempotency.put(
+                order.idempotency_key,
+                result,
+                error_class=type(exc).__name__,
+                error_message=str(exc),
+            )
+            raise
 
         result = _parse_order_result(raw, order=order)
         self._idempotency.put(order.idempotency_key, result)
@@ -307,6 +379,22 @@ class PolymarketAdapter:
             msg = "Retry loop exited without result; this is a bug"
             raise PolymarketAdapterError(msg)
         raise last_exc
+
+
+def _split_idempotency_key(key: str) -> tuple[str, str]:
+    """Split ``"<cycle_id>:<decision_id>"`` into its components.
+
+    ``lead_bootstrap._decision_to_order`` constructs the key as
+    ``f"{cycle_id}:{decision.id}"``. Decision ids are UUIDs (no colons);
+    cycle ids are ``cycle-<unix-ts>`` (no colons either). A single split
+    on the rightmost ``:`` is therefore lossless. We fall back to the
+    full key on both sides if the format is unexpected (probe orders,
+    test fixtures) so the store can still record the attempt.
+    """
+    if ":" not in key:
+        return key, key
+    cycle_id, decision_id = key.rsplit(":", 1)
+    return cycle_id, decision_id
 
 
 def _backoff_for(attempt: int) -> float:

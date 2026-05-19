@@ -9,12 +9,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from shared.adapters.polymarket import (
+    IdempotencyConflictError,
     InMemoryIdempotencyStore,
     PolymarketAdapter,
     PolymarketPermanentError,
     PolymarketRateLimitError,
     PolymarketTransientError,
     _backoff_for,
+    _split_idempotency_key,
     _to_clob_order_args,
 )
 from shared.adapters.prediction_market import PredictionMarketAdapter
@@ -255,6 +257,42 @@ def test_idempotency_store_get_put() -> None:
     res = OrderResult(status="filled", broker_order_id="x", fill_price=0.5, filled_size=1.0)
     store.put("k", res)
     assert store.get("k") == res
+
+
+def test_in_memory_store_reserve_blocks_duplicate() -> None:
+    store = InMemoryIdempotencyStore()
+    assert store.reserve("k", cycle_id="c1", decision_id="d1") is True
+    assert store.reserve("k", cycle_id="c2", decision_id="d1") is False
+
+
+def test_split_idempotency_key_standard_form() -> None:
+    cycle_id, decision_id = _split_idempotency_key("cycle-123:abc-def")
+    assert cycle_id == "cycle-123"
+    assert decision_id == "abc-def"
+
+
+def test_split_idempotency_key_no_colon_falls_back() -> None:
+    cycle_id, decision_id = _split_idempotency_key("legacy-key")
+    assert cycle_id == "legacy-key"
+    assert decision_id == "legacy-key"
+
+
+def test_place_order_raises_on_idempotency_conflict(
+    adapter: PolymarketAdapter,
+    fake_clob: MagicMock,
+) -> None:
+    """A pending row blocks re-submission. Adapter must not even reach post_order."""
+    store_with_conflict = InMemoryIdempotencyStore()
+    store_with_conflict.reserve("k-conflict", cycle_id="prev-cycle", decision_id="d1")
+    adapter._idempotency = store_with_conflict
+
+    fake_clob.create_or_derive_api_key.return_value = MagicMock()
+    fake_clob.create_order.return_value = {}
+
+    with pytest.raises(IdempotencyConflictError):
+        adapter.place_order(_make_order("k-conflict"))
+
+    fake_clob.post_order.assert_not_called()
 
 
 def test_backoff_increases_with_attempt() -> None:

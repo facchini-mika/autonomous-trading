@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, cast
 
+from shared.adapters.db_idempotency_store import DbIdempotencyStore
 from shared.adapters.key_provider_localfile import KeyProviderLocalFile
 from shared.adapters.paper_trading import PaperTradingAdapter
 from shared.adapters.polymarket import PolymarketAdapter
@@ -54,10 +55,18 @@ def make_adapter(
     that raises until Stream D wires a ContextVar.
     """
     key = make_key_provider(settings)
+    factory = session_factory or _default_session_factory
+    # Real-capital trading wires the durable idempotency store so a crash
+    # between POST /order and the local "this attempt is done" write
+    # cannot let the next cycle re-fire the same order — see
+    # ``shared.adapters.db_idempotency_store`` and migration
+    # ``0009_order_attempts``. Paper mode does not need it (its writes
+    # are deterministic local-only).
     live = PolymarketAdapter(
         key_provider=key,
         host=settings.POLYMARKET_HOST,
         chain_id=settings.POLYGON_CHAIN_ID,
+        idempotency_store=DbIdempotencyStore(factory),
         default_fee_rate_bps=settings.FEE_RATE_BPS,
     )
 
@@ -67,7 +76,7 @@ def make_adapter(
     if mode == "paper":
         return PaperTradingAdapter(
             live_adapter=live,
-            session_factory=session_factory or _default_session_factory,
+            session_factory=factory,
             decision_id_provider=decision_id_provider or _missing_decision_id,
             fee_rate_bps=settings.FEE_RATE_BPS,
         )

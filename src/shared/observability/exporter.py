@@ -37,7 +37,7 @@ def main(settings: Settings | None = None) -> int:
         logger.info("metrics_disabled_skipping_exporter")
         return 0
 
-    REGISTRY.register(CycleMetricsCollector())
+    REGISTRY.register(CycleMetricsCollector(orphan_max_age_minutes=cfg.ORPHAN_ATTEMPT_WARN_AFTER_MIN))
     try:
         server, _http_thread = start_http_server(addr=cfg.METRICS_HOST, port=cfg.METRICS_PORT)
     except OSError:

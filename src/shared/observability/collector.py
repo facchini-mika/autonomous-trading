@@ -69,11 +69,14 @@ class CycleMetricsCollector:
     def __init__(
         self,
         session_factory: Callable[[], AbstractContextManager[Session]] | None = None,
+        *,
+        orphan_max_age_minutes: int = 30,
     ) -> None:
         self._factory: Callable[[], AbstractContextManager[Session]] = (
             session_factory if session_factory is not None else _default_factory
         )
         self._scrape_errors: int = 0
+        self._orphan_max_age_minutes = orphan_max_age_minutes
 
     def collect(self) -> Iterator[Metric]:
         try:
@@ -101,6 +104,7 @@ class CycleMetricsCollector:
         yield self._gross_exposure_usd(session)
         yield self._drawdown_pct(session)
         yield self._kill_switch_active(session)
+        yield self._orphan_order_attempts(session)
         yield from self._agent_performance_gauges(session)
 
     def _agent_performance_gauges(self, session: Session) -> Iterator[Metric]:
@@ -296,6 +300,36 @@ class CycleMetricsCollector:
         family = GaugeMetricFamily(
             "drawdown_pct",
             "Current drawdown as fraction of peak equity (0..1).",
+            labels=["agent_id"],
+        )
+        family.add_metric([DEFAULT_AGENT_ID], value)
+        return family
+
+    def _orphan_order_attempts(self, session: Session) -> Metric:
+        """Gauge of currently-stuck ``order_attempts`` rows.
+
+        An orphan is a row in ``status='pending'`` older than
+        ``orphan_max_age_minutes`` — a prior process crashed between
+        ``POST /order`` and the local write that finalises the row.
+        We export this as a Gauge (not Counter) because operator
+        reconciliation removes the row from the count; a Counter would
+        misrepresent the resolved state.
+        """
+        row = session.execute(
+            text(
+                """
+                SELECT COUNT(*) AS n
+                FROM order_attempts
+                WHERE status = 'pending'
+                  AND created_at < now() - make_interval(mins => :max_age_minutes)
+                """,
+            ),
+            {"max_age_minutes": self._orphan_max_age_minutes},
+        ).first()
+        value = float(row.n) if row is not None else 0.0
+        family = GaugeMetricFamily(
+            "orphan_order_attempts",
+            "Number of order_attempts rows stuck in pending past the orphan threshold.",
             labels=["agent_id"],
         )
         family.add_metric([DEFAULT_AGENT_ID], value)

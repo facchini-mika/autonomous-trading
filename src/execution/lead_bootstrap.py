@@ -93,7 +93,7 @@ class CycleAbortedError(RuntimeError):
         super().__init__(f"cycle {cycle_id} aborted at {stage}: {reason}")
 
 
-def bootstrap_team(
+def bootstrap_team(  # noqa: PLR0915 — single-function cycle orchestrator by design
     *,
     settings: Settings,
     adapter: PredictionMarketAdapter,
@@ -109,6 +109,8 @@ def bootstrap_team(
     cycle_id = f"cycle-{int(now.timestamp())}"
     bind(cycle_id=cycle_id)
     logger.info("cycle_starting", adapter=type(adapter).__name__, mode=settings.TRADING_MODE)
+
+    _log_orphan_attempts(factory=factory, max_age_minutes=settings.ORPHAN_ATTEMPT_WARN_AFTER_MIN)
 
     prev_plan = _load_prev_plan(factory)
 
@@ -624,6 +626,49 @@ def _decision_notional(decision: Decision) -> float:
             gate_results_keys=sorted(decision.gate_results.keys()),
         )
     return 0.0
+
+
+def _log_orphan_attempts(
+    *,
+    factory: Callable[[], AbstractContextManager[Session]],
+    max_age_minutes: int,
+) -> None:
+    """Surface ``order_attempts`` rows stuck in ``status='pending'``.
+
+    A pending row older than ``max_age_minutes`` means a prior process
+    crashed between ``POST /order`` and the local write that finalises
+    the row. Resolving them requires reading the broker side, which is
+    deliberately out of scope here (Plan: "Nur loggen, nicht agieren").
+    We log a warning per orphan so the operator can reconcile manually
+    via Polymarket's UI; ``orphan_order_attempts_total`` exposes the
+    same signal to Prometheus.
+    """
+    try:
+        with factory() as session:
+            rows = session.execute(
+                text(
+                    """
+                    SELECT idempotency_key, cycle_id, decision_id, created_at
+                    FROM order_attempts
+                    WHERE status = 'pending'
+                      AND created_at < now() - make_interval(mins => :max_age_minutes)
+                    ORDER BY created_at ASC
+                    """,
+                ),
+                {"max_age_minutes": max_age_minutes},
+            ).all()
+    except Exception as exc:
+        logger.warning("orphan_attempts_query_failed", error=str(exc))
+        return
+    for row in rows:
+        logger.warning(
+            "orphan_order_attempt",
+            idempotency_key=row.idempotency_key,
+            cycle_id=row.cycle_id,
+            decision_id=row.decision_id,
+            created_at=row.created_at.isoformat() if row.created_at else None,
+            max_age_minutes=max_age_minutes,
+        )
 
 
 def _load_prev_plan(

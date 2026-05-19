@@ -23,6 +23,71 @@ Every PR that touches one of the following must have an entry here:
 
 ---
 
+## 2026-05-19 — Persistent idempotency store for place_order
+
+- **Category:** Pre-live safety (`src/shared/adapters/**`; `src/risk/`
+  untouched). Mitigates one of the two Cycle-Resilience risks identified
+  in the run_cycle network-failure analysis on 2026-05-19.
+- **PR:** _pending_
+- **Description:** Replaces `InMemoryIdempotencyStore` with a
+  Postgres-backed `DbIdempotencyStore` for `real_capital` trading. New
+  migration `0009_order_attempts` adds an `order_attempts` table
+  (`idempotency_key PK`, `cycle_id`, `decision_id`, `status`,
+  `broker_order_id`, `fill_price`, `filled_size`, `fees`, `error_class`,
+  `error_message`, `created_at`, `finished_at`).
+  `PolymarketAdapter.place_order` now follows a three-step protocol:
+  (1) `get(key)` short-circuits on a finalised cache hit; (2)
+  `reserve(key, cycle_id, decision_id)` does an
+  `INSERT ... ON CONFLICT DO NOTHING` and raises
+  `IdempotencyConflictError` on a False return — i.e. a prior process
+  crashed between `POST /order` and the local finalisation write, so
+  the order is *not* re-fired; (3) `put(key, result, error_class,
+  error_message)` writes the terminal status and `finished_at = now()`.
+  Adds best-effort orphan-logging at cycle start
+  (`_log_orphan_attempts`) and a Gauge `orphan_order_attempts` to the
+  Prometheus collector, both gated on the new setting
+  `ORPHAN_ATTEMPT_WARN_AFTER_MIN: int = 30`. `InMemoryIdempotencyStore`
+  gets a matching `reserve` for paper-mode and tests.
+- **Risk:**
+  - A Postgres outage at cycle start could make `reserve` raise, which
+    propagates into `place_order` and skips the order. Acceptable:
+    skipping is strictly safer than firing without a dedup gate.
+  - The dedup gate is per-`idempotency_key`. The key today is
+    `f"{cycle_id}:{decision.id}"` (`lead_bootstrap._decision_to_order`)
+    — same cycle + same decision uuid = same key. A logically-different
+    second order with the *same* `(cycle_id, decision_id)` cannot exist
+    today and would be a Lead-side bug, not an adapter false-positive.
+  - `IdempotencyConflictError` is *not* caught in
+    `_place_orders_and_collect_trades` today — `lead_bootstrap.py:1080`
+    catches `Exception`, so the order is skipped with a warning. No
+    cycle abort, no doubled-up retry behaviour.
+- **Why it's still safe:**
+  - `src/risk/**` untouched — concentration / solvency / cycle-cap /
+    capital / kill-switch all run pre-submit and are unaffected.
+  - Paper mode behaviour identical (paper adapter has its own
+    deterministic write path; the new store is wired through the
+    `PolymarketAdapter` instance, which paper-mode wraps but does not
+    submit orders against).
+  - Migration is additive (new table, no FKs into existing tables).
+    Downgrade drops the table cleanly.
+- **Test coverage:**
+  - `tests/adapters/test_polymarket.py` +4 tests: in-memory
+    `reserve` dedup, `_split_idempotency_key`, and a conflict path
+    that asserts `post_order` is never called.
+  - `tests/adapters/test_db_idempotency_store.py` (new, DB-gated on
+    `DATABASE_URL_TRADING_CYCLE`): reserve/get/put roundtrip,
+    pending-vs-finalised semantics, error-metadata recording.
+  - `tests/shared/observability/test_collector.py` fake-session
+    signature extended to accept bound params.
+  - 450 passed, 17 skipped (DB-gated) locally.
+- **Mitigation / rollback:** `git revert` of this PR restores the
+  in-memory store. The migration is reversible; ``alembic downgrade
+  0008_web_search_call_cost`` drops the table without touching other
+  schema. No `Settings` change other than the additive
+  `ORPHAN_ATTEMPT_WARN_AFTER_MIN`.
+
+---
+
 ## 2026-05-02 — Phase 3c: Risk Layer
 
 - **Category:** Phase milestone + risk/.

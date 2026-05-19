@@ -165,6 +165,14 @@ class Settings(BaseSettings):
     # Reconciliation
     RECONCILIATION_DIFF_USD: float = 0.50
 
+    # Idempotency / dedup
+    # Pending rows in ``order_attempts`` older than this threshold are
+    # surfaced at cycle start as orphan warnings (operator reconciles
+    # manually) and exported via ``orphan_order_attempts_total``. Twice
+    # the cycle period gives the in-flight request all of its retries
+    # plus one full follow-on cycle before raising the alarm.
+    ORPHAN_ATTEMPT_WARN_AFTER_MIN: int = 30
+
     # Sanity gates
     ORDER_SANITY_MAX_PCT_EQUITY: float = 0.50
     ORDER_PRICE_MIN: float = 0.005
