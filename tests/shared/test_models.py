@@ -112,33 +112,6 @@ def _make_prediction(**overrides: object) -> Prediction:
     return Prediction(**base)
 
 
-def test_prediction_infers_web_search_called_true_from_sources() -> None:
-    p = _make_prediction(inference_log={"sources": ["http://x"]})
-    assert p.inference_log["web_search_called"] is True
-
-
-def test_prediction_infers_web_search_called_false_from_empty_sources() -> None:
-    p = _make_prediction(inference_log={"sources": []})
-    assert p.inference_log["web_search_called"] is False
-
-
-def test_prediction_infers_web_search_called_false_when_no_sources_key() -> None:
-    p = _make_prediction(inference_log={"thesis": "x"})
-    assert p.inference_log["web_search_called"] is False
-
-
-def test_prediction_preserves_explicit_web_search_called_true() -> None:
-    p = _make_prediction(inference_log={"web_search_called": True, "sources": []})
-    assert p.inference_log["web_search_called"] is True
-
-
-def test_prediction_preserves_explicit_web_search_called_false() -> None:
-    p = _make_prediction(
-        inference_log={"web_search_called": False, "sources": ["http://x"]},
-    )
-    assert p.inference_log["web_search_called"] is False
-
-
 def test_decision_round_trip() -> None:
     d = Decision(
         cycle_id="cycle-2026-05-02-12-00",

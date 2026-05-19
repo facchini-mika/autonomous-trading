@@ -267,8 +267,9 @@ Predictions table — one row per market the agent priced. Columns:
 - Side intended (`YES`/`NO` pill)
 - Thesis (one-sentence summary from `inference_log.thesis`, truncated;
   expand to show full `reasoning`)
-- Web search icon (if `inference_log.web_search_called`) — click to show
-  the `web_search_calls` rows for this cycle/market
+- Web search icon (joined from `web_search_calls` via
+  `subagent_runs.run_id`) — click to show the `web_search_calls` rows
+  for this cycle/market
 - Sources count — popover lists URLs from `inference_log.sources`
 
 **3. Risk-Execution card.**

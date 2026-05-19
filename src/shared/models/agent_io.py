@@ -47,10 +47,7 @@ class Universe(BaseModel):
 class Prediction(BaseModel):
     """Trading-agent output: probability estimate + reasoning + provenance."""
 
-    # ``validate_default=True`` ensures the ``inference_log`` validator runs on
-    # the empty-dict default too, so an explicit constructor and a round-trip
-    # through ``model_validate_json`` produce equal instances.
-    model_config = ConfigDict(frozen=True, validate_default=True)
+    model_config = ConfigDict(frozen=True)
 
     id: UUID = Field(default_factory=uuid4)
     market_id: str
@@ -64,24 +61,6 @@ class Prediction(BaseModel):
     outcome: bool | None = None
     realized_pnl: float | None = None
     created_at: datetime
-
-    @field_validator("inference_log", mode="before")
-    @classmethod
-    def _ensure_web_search_called(cls, v: object) -> object:
-        # trading-agent prompt mandates `web_search_called: bool`, but cycle-8
-        # (2026-05-04) had all seven predictions persist without it — auditing
-        # whether the agent skipped research becomes impossible if we don't
-        # normalize on ingest. Infer from `sources` length when absent so the
-        # field is always present and downstream queries (e.g. lessons/audit)
-        # can rely on it. Explicit values from the agent always win.
-        if not isinstance(v, dict):
-            return v
-        if "web_search_called" in v:
-            return v
-        new = dict(v)
-        sources = new.get("sources")
-        new["web_search_called"] = bool(sources) if isinstance(sources, list) else False
-        return new
 
 
 class Decision(BaseModel):

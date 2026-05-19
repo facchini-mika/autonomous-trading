@@ -150,9 +150,7 @@ prediction:
 - `edge` — `p_yes - q_market` (signed, where `q_market` is the side
   you'd take).
 - `inference_log` — JSON object. The following keys are **required**;
-  emit them on every prediction (the Lead infers `web_search_called`
-  from `sources` if you forget it, but treat that as a safety net,
-  not a license to omit the field):
+  emit them on every prediction:
   - `thesis` — one-sentence summary of the trade idea.
   - `q_market` — the value you used (so risk-execution doesn't have
     to re-derive it).
@@ -160,8 +158,6 @@ prediction:
   - `sources` — list of URLs you cited (web_search hits). Empty list
     is fine, but the key must be present.
   - `context_used` — list of lesson/note IDs that informed the call.
-  - `web_search_called` — `true` or `false`. Audit-critical: set this
-    explicitly even when `sources = []`.
   - `notes_to_save` — optional list of `{body, tags}` (see above).
 - `latency_ms` — your wall-clock processing time, integer ms. If you
   can't measure precisely, estimate.
