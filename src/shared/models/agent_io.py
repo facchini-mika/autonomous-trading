@@ -89,14 +89,23 @@ class Decision(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    # Risk-execution-LLM was observed in cycle-7 emitting non-canonical sizing
-    # keys (``final_notional_usd`` / ``clipped_notional_usd``) instead of the
+    # Risk-execution-LLM was observed emitting non-canonical sizing keys
+    # (``final_notional_usd`` / ``clipped_notional_usd`` in cycle-7,
+    # ``notional_clipped_usd`` in cycle-1779210369) instead of the canonical
     # ``clipped_notional`` / ``notional_usd`` the Lead's ``_decision_notional``
     # reads. Doctrine alone (PR #46) did not stop the drift. This map lists
     # known aliases per canonical key, in lookup priority order.
     _NOTIONAL_ALIASES: ClassVar[dict[str, tuple[str, ...]]] = {
-        "clipped_notional": ("clipped_notional_usd", "final_notional_usd"),
-        "notional_usd": ("final_notional_usd", "clipped_notional_usd"),
+        "clipped_notional": (
+            "clipped_notional_usd",
+            "notional_clipped_usd",
+            "final_notional_usd",
+        ),
+        "notional_usd": (
+            "final_notional_usd",
+            "clipped_notional_usd",
+            "notional_clipped_usd",
+        ),
     }
 
     id: UUID = Field(default_factory=uuid4)

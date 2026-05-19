@@ -44,6 +44,13 @@ def test_normalises_clipped_notional_usd_to_canonical() -> None:
     assert d.gate_results["notional_usd"] == 100.0
 
 
+def test_normalises_notional_clipped_usd_to_canonical() -> None:
+    """Observed in cycle-1779210369: word-order permutation ``notional_clipped_usd``."""
+    d = _decision({"notional_clipped_usd": 490.0})
+    assert d.gate_results["clipped_notional"] == 490.0
+    assert d.gate_results["notional_usd"] == 490.0
+
+
 def test_canonical_takes_precedence_over_alias() -> None:
     d = _decision(
         {
