@@ -29,13 +29,13 @@ Deploy capital on Polymarket binary prediction markets to generate risk-adjusted
 
 ## 2. Agent Team (MVP topology)
 
-The Trading Team = one fresh Claude Code Agent Team per cycle (~12 min cadence; full team-mechanics in `orchestration.md`). Lead + 3 members; clean separation of responsibilities so each member's context window stays focused.
+The Trading Team = one fresh Claude Code Agent Team per cycle (~12 min cadence; full team-mechanics in `orchestration.md`). Lead + 2 LLM members; the universe filter is deterministic Python (no LLM). Clean separation of responsibilities so each member's context window stays focused.
 
-**Members (3):**
+**Members (2 LLM agents + 1 deterministic Lead filter):**
 
 | Member | Role | Key inputs | Output artifact |
 |---|---|---|---|
-| `scanner-reviewer` | Pulls top-K liquid Polymarket markets and snapshots portfolio state. Combined to keep the team small. | Polymarket CLOB + Gamma; current Postgres positions/cash | `Universe` + `PortfolioState` |
+| `_python_scanner` *(Lead-internal, deterministic)* | Pulls top-K liquid Polymarket markets and snapshots portfolio state — pure Python filter + ranker, no LLM. Replaces the historic `scanner-reviewer` agent (removed 2026-05-19 — see AUDIT_LOG). | Polymarket CLOB + Gamma; current Postgres positions/cash | `Universe` + `PortfolioState` |
 | `trading-agent` | Mispricing analysis with `web_search`. Forms `p_agent` per market, returns `Prediction(p_yes, reasoning, edge)`. | `Universe`, `PortfolioState`, `notes`, top-K `lessons`, prev-cycle `cycle_plan`, `web_search` tool | `Prediction[]` |
 | `risk-execution` | Applies risk gates from `src/risk/`, clips sizing, places order (paper OR real per `TRADING_MODE`). Combined because both deterministic. | `Prediction[]`, `PortfolioState`, `src/risk/` constants | `Decision[]` + `Trade[]` |
 
@@ -77,7 +77,7 @@ Sizing is the model's call within the hard limits in `src/risk/`. No Kelly formu
 What the `trading-agent` consumes per cycle (full source/schema details in `data_infrastructure.md §1`):
 
 - **Universe snapshot** — top-K most-liquid Polymarket binary markets (orderbook, bid/ask, settlement rules). Filtered, not the full universe (cf. PA's "no filter" pattern, deferred).
-- **Portfolio snapshot** — `PortfolioState` artifact built by `scanner-reviewer`.
+- **Portfolio snapshot** — `PortfolioState` artifact built by the Lead's deterministic `_python_scanner`.
 - **Memory** — `notes` (LRU), previous cycle's `cycle_plan`, top-K recent `lessons` (from `optimization.md §1`).
 - **Research tool** — `web_search` only (`src/research/skills/web_search.py`). The agent decides per market whether to invoke.
 
@@ -92,8 +92,8 @@ Decision cycle (T = scheduler fire time). Four-stage spine (Prediction-Arena pat
 | Step | T | Phase | Action |
 |---|---|---|---|
 | 0 | 0–15s | Boot | Scheduler starts a fresh `claude` process (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, `--dangerously-skip-permissions`). `SessionStart` hook sweeps stale `~/.claude/teams/` directories. Lead loads the team-spec, spawns the 3 members, reads previous `cycle_plan` from Postgres. |
-| 1 | +15s | Receive | `scanner-reviewer` fetches top-K liquid Polymarket markets → `Universe`. |
-| 2 | +25s | Review | `scanner-reviewer` builds `PortfolioState`: cash, positions, unrealized + realized PnL. Mark-to-market vs current best bid (PA convention; `trading_feedback.md §5`). |
+| 1 | +15s | Receive | Lead's `_python_scanner` filters top-K liquid Polymarket markets → `Universe` (deterministic, no LLM). |
+| 2 | +25s | Review | Lead's `_python_scanner` builds `PortfolioState`: cash, positions, unrealized + realized PnL. Mark-to-market vs current best bid (PA convention; `trading_feedback.md §5`). |
 | 3 | +45s – +5m | Analyze | `trading-agent` runs inference per market (parallelism inside the agent's own session; `web_search` calls inline as needed). Output: `Prediction(p_yes, reasoning_blob, edge)` per scored market. Per-market timeout 60s. |
 | 4 | +5m | Analyze | Edge computation per `Prediction`: `q = best_ask` (buying YES) / `1 − best_bid` (buying NO); `edge = p_yes − q`. Trade only if `|edge| ≥ 0.03`. |
 | 5 | +6m | Decide | `risk-execution` applies the §6 gates in fixed order; clips sizing; rejects any trade that fails any gate. |

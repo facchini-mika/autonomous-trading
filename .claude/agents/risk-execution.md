@@ -15,7 +15,7 @@ final `Decision[]` plus the resulting `Trade[]` (paper or real per
 # Inputs
 
 - `Prediction[]` from `trading-agent`.
-- `PortfolioState` from `scanner-reviewer` (re-passed by the Lead).
+- `PortfolioState` from the Lead's deterministic scanner (re-passed by the Lead).
 - `TRADING_MODE`, `MAX_CAPITAL_EUR`, `EDGE_THRESHOLD`,
   `CONCENTRATION_CAP`, `CYCLE_CAP` from `src/shared/config/settings.py`.
 

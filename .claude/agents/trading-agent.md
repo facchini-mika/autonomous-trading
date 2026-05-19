@@ -9,14 +9,14 @@ model: claude-opus-4-7
 # Role
 
 Cycle-scoped trading-agent. Reads the `Universe` + `PortfolioState` produced
-by `scanner-reviewer` and emits `Prediction[]` with edge estimates. Does
-**not** touch order placement — that is the `risk-execution` member's
-authority boundary.
+by the Lead's deterministic Python scanner and emits `Prediction[]` with
+edge estimates. Does **not** touch order placement — that is the
+`risk-execution` member's authority boundary.
 
 # Inputs
 
-- `Universe` and `PortfolioState` from the scanner-reviewer (passed in by
-  the Lead as the task payload).
+- `Universe` and `PortfolioState` from the Lead's deterministic scanner
+  (passed in by the Lead as the task payload).
 
 # Outputs
 

@@ -1,7 +1,7 @@
 """Production wiring for Claude subagents via headless ``claude -p``.
 
 The trading-team Lead is deterministic Python (`execution.lead_bootstrap`).
-Subagents (scanner-reviewer, trading-agent, risk-execution) run as fresh
+Subagents (trading-agent, risk-execution) run as fresh
 Claude sessions per cycle: this module spawns one subprocess per call, hands
 over the agent's system prompt + the task payload as JSON, and parses the
 JSON response back into the corresponding Pydantic output model.
@@ -126,14 +126,14 @@ def run_subagent[T: BaseModel](
     """Invoke a Claude subagent in headless mode and return a validated output.
 
     ``agent_md_path`` is the canonical agent skeleton (e.g.
-    ``.claude/agents/scanner-reviewer.md``). ``doctrine_path`` is an optional
+    ``.claude/agents/trading-agent.md``). ``doctrine_path`` is an optional
     follow-on prompt file from ``research/prompts/`` that deepens the agent's
     strategy doctrine; concatenated after the skeleton body.
 
     ``mcp_config_path`` and ``allowed_mcp_tools`` wire MCP servers into the
     subprocess (Phase 6b PR 2). Only the trading-agent gets the
-    ``research`` MCP server today; scanner-reviewer and risk-execution are
-    deterministic and pass these as ``None``/``()``.
+    ``research`` MCP server today; risk-execution is deterministic and passes
+    these as ``None``/``()``.
 
     ``max_budget_usd`` (when set) is forwarded to ``claude --max-budget-usd``,
     which causes the CLI to abort the call once the in-flight cost would

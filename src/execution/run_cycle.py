@@ -20,8 +20,6 @@ from shared.logging import bind, configure, get_logger
 from shared.models import (
     RiskExecutionOutput,
     RiskExecutionTask,
-    ScannerReviewerOutput,
-    ScannerReviewerTask,
     TradingAgentOutput,
     TradingAgentTask,
 )
@@ -44,18 +42,6 @@ def main() -> int:
     logger.info("run_cycle_start", mode=settings.TRADING_MODE)
 
     adapter = make_adapter(settings, decision_id_provider=require_decision_id)
-
-    def scanner(task: ScannerReviewerTask) -> ScannerReviewerOutput:
-        return run_subagent(
-            agent_md_path=AGENTS_DIR / "scanner-reviewer.md",
-            doctrine_path=_doctrine("scanner_reviewer.md"),
-            task=task,
-            output_model=ScannerReviewerOutput,
-            timeout_s=settings.AGENT_TIMEOUT_SEC,
-            cycle_id=task.cycle_id,
-            correlation_id=correlation_id,
-            max_budget_usd=settings.BUDGET_USD_SCANNER,
-        )
 
     def trading(task: TradingAgentTask) -> TradingAgentOutput:
         return run_subagent(
@@ -87,7 +73,6 @@ def main() -> int:
         artifacts = bootstrap_team(
             settings=settings,
             adapter=adapter,
-            scanner=scanner,
             trading=trading,
             risk=risk,
         )

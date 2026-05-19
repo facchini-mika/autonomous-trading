@@ -9,7 +9,7 @@ place orders.
 ## Inputs
 
 The Lead passes a `TradingAgentTask`:
-- `universe: Universe` — top-K markets the scanner-reviewer filtered.
+- `universe: Universe` — top-K markets the Lead's deterministic scanner filtered.
   Each entry has a `Market` and an `Orderbook` snapshot keyed by
   `market_id`.
 - `portfolio_state: PortfolioState` — your current cash, positions,

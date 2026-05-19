@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     UNIVERSE_RAW_FETCH_LIMIT: int = 1000
     UNIVERSE_FETCH_LIMIT: int = 200
 
-    # Universe-selection thresholds (scanner-reviewer doctrine inputs)
+    # Universe-selection thresholds (Lead's deterministic Python scanner inputs)
     MIN_DEPTH_1PCT_USD: float = 100.0
     MAX_SPREAD: float = 0.10
     MIN_TIME_TO_RESOLUTION_HOURS: int = 6
@@ -106,7 +106,6 @@ class Settings(BaseSettings):
     # Per-subagent USD budget caps passed to ``claude --max-budget-usd``.
     # The CLI aborts the call once the in-flight cost would exceed the cap,
     # so a runaway agent can never burn more than these amounts in one cycle.
-    BUDGET_USD_SCANNER: float = 3.0
     BUDGET_USD_TRADING: float = 5.0
     BUDGET_USD_RISK: float = 1.0
 

@@ -8,8 +8,11 @@ Phase 6b (PR 1) extends the task payloads so the Lead can pre-fetch the
 full set of inputs each subagent needs:
 
 - `ScannerReviewerTask` carries the raw market/portfolio data the Lead
-  pulled from the adapter and DB; the scanner-reviewer filters and
-  synthesises the final `Universe` + `PortfolioState`.
+  pulled from the adapter and DB; the deterministic Python scanner
+  (`execution.lead_bootstrap._python_scanner`) filters and synthesises
+  the final `Universe` + `PortfolioState` from it. The model name keeps
+  the original `ScannerReviewer` prefix for schema-stability after the
+  LLM scanner-reviewer subagent was removed.
 - `TradingAgentTask` adds cross-cycle memory (`lessons`, `recent_notes`,
   `prev_cycle_plan`) plus the cycle id and edge threshold so the agent
   can run without re-reading settings.
@@ -48,7 +51,8 @@ class ScannerThresholds(BaseModel):
 
 
 class ScannerReviewerTask(BaseModel):
-    """Lead → scanner-reviewer task payload."""
+    """Lead-internal payload for ``_python_scanner``: raw markets, orderbooks,
+    metadata, portfolio + cash state, plus the filter/ranking thresholds."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -92,7 +96,7 @@ class RiskExecutionTask(BaseModel):
 
 
 class ScannerReviewerOutput(BaseModel):
-    """scanner-reviewer → Lead output."""
+    """``_python_scanner`` output: filtered/ranked ``Universe`` + ``PortfolioState``."""
 
     model_config = ConfigDict(frozen=True)
 

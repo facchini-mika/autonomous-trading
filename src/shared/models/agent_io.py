@@ -35,7 +35,7 @@ class SizingProposal(BaseModel):
 
 
 class Universe(BaseModel):
-    """Top-K liquid markets snapshot handed from scanner-reviewer to trading-agent."""
+    """Top-K liquid markets snapshot handed from the Lead's deterministic scanner to the trading-agent."""
 
     model_config = ConfigDict(frozen=True)
 

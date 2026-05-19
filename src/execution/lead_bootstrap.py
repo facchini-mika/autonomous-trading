@@ -1,9 +1,9 @@
 """Lead orchestration for one trading cycle.
 
-The Lead is a deterministic coordinator (no LLM). It loads the previous
-CyclePlan, dispatches three sub-tasks (scanner-reviewer → trading-agent →
-risk-execution), persists the resulting Pydantic artifacts, writes the new
-CyclePlan, and supersedes the prior one.
+The Lead is a deterministic coordinator (no LLM). It runs the deterministic
+universe filter (``_python_scanner``), dispatches two sub-tasks
+(trading-agent → risk-execution), persists the resulting Pydantic artifacts,
+writes the new CyclePlan, and supersedes the prior one.
 
 Sub-agent execution is injected as callables so tests can pass synchronous
 fakes; production wires them to real Claude Code subagent invocations
@@ -97,7 +97,6 @@ def bootstrap_team(
     *,
     settings: Settings,
     adapter: PredictionMarketAdapter,
-    scanner: Callable[[ScannerReviewerTask], ScannerReviewerOutput],  # noqa: ARG001 — removed in feature/scanner-llm-removal; kept here for the stacked-PR diff.
     trading: Callable[[TradingAgentTask], TradingAgentOutput],
     risk: Callable[[RiskExecutionTask], RiskExecutionOutput],
     session_factory: Callable[[], AbstractContextManager[Session]] | None = None,
@@ -137,33 +136,18 @@ def bootstrap_team(
         orders_in_last_hour=universe_inputs["orders_in_last_hour"],
         thresholds=thresholds,
     )
-    # Scanner is always the deterministic Python implementation. The LLM-scanner
-    # branch is being removed in feature/scanner-llm-removal; the ``scanner``
-    # callable param is kept here for one more PR so the diff stays reviewable.
-    bypass_started_at = _utcnow()
+    scanner_started_at = _utcnow()
     scanner_out = _python_scanner(scanner_task, clock=now)
     _persist_scanner_bypass_audit(
         factory=factory,
         cycle_id=cycle_id,
         task=scanner_task,
         output=scanner_out,
-        started_at=bypass_started_at,
+        started_at=scanner_started_at,
         finished_at=_utcnow(),
     )
     portfolio = scanner_out.portfolio_state
-
-    # Defensive post-filter. The scanner is an LLM and was observed in cycle-7
-    # to violate its threshold contract under universe-pressure (picked
-    # markets with TTR=239d despite max_ttr_days=14). The trading-agent
-    # would skip web_search for any such pick, so we filter them here.
-    held_market_ids = universe_inputs["held_market_ids"]
-    assert isinstance(held_market_ids, list)  # noqa: S101 — _collect_universe_inputs always sets this.
-    universe = _enforce_universe_invariants(
-        universe=scanner_out.universe,
-        thresholds=thresholds,
-        held_market_ids=set(held_market_ids),
-        clock=now,
-    )
+    universe = scanner_out.universe
 
     # Upsert markets + record per-cycle snapshots before any FK-dependent insert.
     _persist_universe(factory=factory, universe=universe, clock=now)
@@ -252,74 +236,6 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def _enforce_universe_invariants(
-    *,
-    universe: Universe,
-    thresholds: ScannerThresholds,
-    held_market_ids: set[str],
-    clock: datetime,
-) -> Universe:
-    """Drop scanner-picked markets that violate the deterministic filter contract.
-
-    The scanner is an LLM and was observed in cycle-7 to break its
-    `max_ttr_days` constraint under universe-pressure (picked markets at
-    TTR=239d despite max_ttr_days=14). We enforce the deterministic side
-    of the filter policy here so the trading-agent never sees a
-    non-compliant market. Held markets are always preserved regardless
-    of any threshold — operators must keep visibility on positions under
-    management.
-
-    Mirrors the doctrine in ``research/prompts/scanner_reviewer.md``
-    sections "Filtering policy" steps 1-6 (held bypass, status, TTR
-    window, liquidity floor, spread ceiling, ambiguity). Ranking,
-    soft-boost, and top_k truncation remain the scanner's job.
-
-    Per-drop ``scanner_violation`` warnings give forensics; one summary
-    ``scanner_post_filter_done`` info log carries the kept/dropped split.
-    """
-    min_ttr = timedelta(hours=thresholds.min_ttr_hours)
-    max_ttr = timedelta(days=thresholds.max_ttr_days)
-    kept_markets: list[Market] = []
-    dropped_reasons: dict[str, int] = {}
-
-    for market in universe.markets:
-        if market.market_id in held_market_ids:
-            kept_markets.append(market)
-            continue
-        reason = _universe_drop_reason(
-            market=market,
-            orderbook=universe.orderbooks.get(market.market_id),
-            min_ttr=min_ttr,
-            max_ttr=max_ttr,
-            min_depth_1pct_usd=thresholds.min_depth_1pct_usd,
-            max_spread=thresholds.max_spread,
-            clock=clock,
-        )
-        if reason is None:
-            kept_markets.append(market)
-            continue
-        dropped_reasons[reason] = dropped_reasons.get(reason, 0) + 1
-        logger.warning(
-            "scanner_violation",
-            market_id=market.market_id,
-            reason=reason,
-        )
-
-    kept_market_ids = {m.market_id for m in kept_markets}
-    kept_orderbooks = {mid: ob for mid, ob in universe.orderbooks.items() if mid in kept_market_ids}
-    logger.info(
-        "scanner_post_filter_done",
-        kept_count=len(kept_markets),
-        dropped_count=len(universe.markets) - len(kept_markets),
-        dropped_reasons=dropped_reasons,
-    )
-    return Universe(
-        markets=kept_markets,
-        orderbooks=kept_orderbooks,
-        timestamp=universe.timestamp,
-    )
-
-
 _AMBIGUITY_CEILING: float = 0.6
 
 
@@ -362,14 +278,12 @@ def _universe_drop_reason(
 
 
 def _python_scanner(task: ScannerReviewerTask, *, clock: datetime) -> ScannerReviewerOutput:
-    """Deterministic Python equivalent of the scanner-reviewer subagent.
-
-    Mirrors ``research/prompts/scanner_reviewer.md §54-124`` 1:1 — filter,
-    rank by Soft-Boost score, truncate to ``top_k``, then assemble
-    ``PortfolioState``. Used when ``UNIVERSE_FETCH_LIMIT <= TOP_K_MARKETS``;
-    the LLM scanner has no real filtering job in that configuration and the
-    bypass eliminates ~$0.71/cycle plus the 13-24k output-token wall-time
-    tail observed on Opus 4.7.
+    """Deterministic universe filter: drop markets that violate the threshold
+    contract (TTR window, liquidity floor, spread ceiling, ambiguity, dispute
+    history, status); held positions always pass; rank survivors by
+    Soft-Boost score (liquidity * soon-resolve boost) and truncate to
+    ``top_k``; then assemble ``PortfolioState``. Pure function of its task
+    payload — same input → byte-identical output.
     """
     held_ids = set(task.held_market_ids)
     min_ttr = timedelta(hours=task.thresholds.min_ttr_hours)

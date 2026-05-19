@@ -27,9 +27,7 @@ from shared.models import (
     PortfolioState,
     Prediction,
     RiskExecutionOutput,
-    ScannerReviewerOutput,
     TradingAgentOutput,
-    Universe,
 )
 from tests.adapters.fake_adapter import FakeAdapter
 from tests.adapters.fake_gamma import FakeGamma
@@ -83,13 +81,6 @@ def _portfolio() -> PortfolioState:
         realized_pnl=0.0,
         equity=10000.0,
         timestamp=CYCLE_CLOCK,
-    )
-
-
-def _scanner(_task: Any) -> ScannerReviewerOutput:
-    return ScannerReviewerOutput(
-        universe=Universe(markets=[_market()], orderbooks={MARKET_ID: _orderbook()}, timestamp=CYCLE_CLOCK),
-        portfolio_state=_portfolio(),
     )
 
 
@@ -154,7 +145,6 @@ def test_paper_cycle_full_pipeline(clean_db: None, owner_conn: psycopg.Connectio
     artifacts = bootstrap_team(
         settings=settings,
         adapter=paper,
-        scanner=_scanner,
         trading=_trading,
         risk=_risk,
         session_factory=lambda: get_session("trading_cycle"),

@@ -76,43 +76,13 @@ def test_missing_subagent_type_is_noop_created() -> None:
     assert result.returncode == 0
 
 
-def test_valid_scanner_reviewer_task_passes() -> None:
-    envelope = {
-        "subagent_type": "scanner-reviewer",
-        "payload": {
-            "top_k": 50,
-            "cycle_id": "cycle-test",
-            "cycle_clock": "2026-05-02T12:00:00Z",
-            "raw_markets": [],
-            "raw_orderbooks": {},
-            "raw_metadata": {},
-            "current_positions": [],
-            "current_cash": _cash_payload(),
-            "kill_switch_active": False,
-            "held_market_ids": [],
-            "orders_in_last_hour": 0,
-            "thresholds": {
-                "min_depth_1pct_usd": 100.0,
-                "max_spread": 0.10,
-                "min_ttr_hours": 6,
-                "max_ttr_days": 30,
-                "soon_resolve_threshold_days": 7,
-                "soon_resolve_boost_multiplier": 1.5,
-            },
-        },
-    }
+def test_unknown_subagent_type_is_noop() -> None:
+    """The hooks ignore unknown subagent_types so legacy/3rd-party payloads
+    don't fail the cycle. (Used to be the `scanner-reviewer` happy/sad path —
+    that LLM agent was removed 2026-05-19.)"""
+    envelope = {"subagent_type": "scanner-reviewer", "payload": {"top_k": 50}}
     result = _run(TASK_CREATED, envelope)
     assert result.returncode == 0
-
-
-def test_invalid_scanner_reviewer_task_fails() -> None:
-    envelope = {
-        "subagent_type": "scanner-reviewer",
-        "payload": {"top_k": "not-an-int"},
-    }
-    result = _run(TASK_CREATED, envelope)
-    assert result.returncode == 2
-    assert "scanner-reviewer" in result.stderr
 
 
 def test_valid_risk_execution_task_passes() -> None:

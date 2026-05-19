@@ -11,16 +11,10 @@ import pytest
 from execution import run_cycle as run_cycle_mod
 from shared.config.settings import Settings
 from shared.models import (
-    CashBalance,
     Decision,
-    Market,
-    Orderbook,
-    PortfolioState,
     Prediction,
     RiskExecutionOutput,
-    ScannerReviewerOutput,
     TradingAgentOutput,
-    Universe,
 )
 
 if TYPE_CHECKING:
@@ -33,36 +27,11 @@ def _now() -> datetime:
 
 @pytest.fixture
 def fake_subagent_outputs(mocker: MockerFixture) -> dict[str, Any]:
-    """Stub run_subagent so each call returns a canned Pydantic output."""
-    market = Market(
-        market_id="0xa",
-        condition_id="0xa",
-        slug="m",
-        title="M",
-        category="x",
-        end_date=_now(),
-        status="open",
-        created_at=_now(),
-        last_seen=_now(),
-    )
-    orderbook = Orderbook(
-        market_id="0xa",
-        best_bid=0.4,
-        best_ask=0.5,
-        mid=0.45,
-        depth_bid_1pct=200,
-        depth_ask_1pct=200,
-        timestamp=_now(),
-    )
-    portfolio = PortfolioState(
-        cash=CashBalance(total_usd=10000.0, available=10000.0, reserved_for_orders=0.0, timestamp=_now()),
-        positions=[],
-        gross_exposure_usd=0.0,
-        unrealized_pnl=0.0,
-        realized_pnl=0.0,
-        equity=10000.0,
-        timestamp=_now(),
-    )
+    """Stub run_subagent so each call returns a canned Pydantic output.
+
+    Scanner is now deterministic Python inside the Lead — only trading-agent
+    and risk-execution go through ``run_subagent``.
+    """
     prediction = Prediction(
         market_id="0xa",
         agent_id="trading-agent",
@@ -85,16 +54,12 @@ def fake_subagent_outputs(mocker: MockerFixture) -> dict[str, Any]:
     )
 
     outputs = {
-        "scanner": ScannerReviewerOutput(
-            universe=Universe(markets=[market], orderbooks={"0xa": orderbook}, timestamp=_now()),
-            portfolio_state=portfolio,
-        ),
         "trading": TradingAgentOutput(predictions=[prediction]),
         "risk": RiskExecutionOutput(decisions=[decision]),
     }
 
     counter = {"n": 0}
-    sequence = [outputs["scanner"], outputs["trading"], outputs["risk"]]
+    sequence = [outputs["trading"], outputs["risk"]]
 
     def _stub(*, output_model: type, **_: object) -> Any:
         result = sequence[counter["n"]]
@@ -126,9 +91,11 @@ def test_main_wires_factory_subagents_and_lead(
     kwargs = mock_bootstrap.call_args.kwargs
     assert kwargs["adapter"] is fake_adapter
     assert isinstance(kwargs["settings"], Settings)
-    # The three subagent callables are present and callable.
-    for name in ("scanner", "trading", "risk"):
+    # The two LLM subagent callables are present and callable; the scanner
+    # is Lead-internal Python and isn't passed in.
+    for name in ("trading", "risk"):
         assert callable(kwargs[name])
+    assert "scanner" not in kwargs
 
 
 def test_subagent_callables_dispatch_to_runner(
@@ -138,8 +105,7 @@ def test_subagent_callables_dispatch_to_runner(
     mocker.patch("execution.run_cycle.make_adapter", return_value=MagicMock())
     captured_callables: dict[str, Any] = {}
 
-    def _capture(*, scanner: Any, trading: Any, risk: Any, **_: object) -> Any:
-        captured_callables["scanner"] = scanner
+    def _capture(*, trading: Any, risk: Any, **_: object) -> Any:
         captured_callables["trading"] = trading
         captured_callables["risk"] = risk
         return MagicMock(cycle_id="x", predictions=[], decisions=[], trades=[])
@@ -148,22 +114,20 @@ def test_subagent_callables_dispatch_to_runner(
     run_cycle_mod.main()
 
     # Each callable should invoke run_subagent under the hood.
-    captured_callables["scanner"](MagicMock())
     captured_callables["trading"](MagicMock())
     captured_callables["risk"](MagicMock())
-    assert run_cycle_mod.run_subagent.call_count >= 3  # type: ignore[attr-defined]
+    assert run_cycle_mod.run_subagent.call_count >= 2  # type: ignore[attr-defined]
 
 
 def test_closures_forward_cycle_id_and_correlation_id(
     fake_subagent_outputs: dict[str, Any],
     mocker: MockerFixture,
 ) -> None:
-    """All three closures must forward task.cycle_id + the cycle's correlation_id."""
+    """Both LLM closures must forward task.cycle_id + the cycle's correlation_id."""
     mocker.patch("execution.run_cycle.make_adapter", return_value=MagicMock())
     captured_callables: dict[str, Any] = {}
 
-    def _capture(*, scanner: Any, trading: Any, risk: Any, **_: object) -> Any:
-        captured_callables["scanner"] = scanner
+    def _capture(*, trading: Any, risk: Any, **_: object) -> Any:
         captured_callables["trading"] = trading
         captured_callables["risk"] = risk
         return MagicMock(cycle_id="x", predictions=[], decisions=[], trades=[])
@@ -172,7 +136,6 @@ def test_closures_forward_cycle_id_and_correlation_id(
     run_cycle_mod.main()
 
     for closure_name, cycle_id_value in (
-        ("scanner", "cycle-scan-id"),
         ("trading", "cycle-trade-id"),
         ("risk", "cycle-risk-id"),
     ):
@@ -181,10 +144,9 @@ def test_closures_forward_cycle_id_and_correlation_id(
 
     calls = run_cycle_mod.run_subagent.call_args_list  # type: ignore[attr-defined]
     cycle_ids_passed = [c.kwargs["cycle_id"] for c in calls]
-    assert "cycle-scan-id" in cycle_ids_passed
     assert "cycle-trade-id" in cycle_ids_passed
     assert "cycle-risk-id" in cycle_ids_passed
-    # correlation_id is the same across all three (minted once per main()).
+    # correlation_id is the same across both (minted once per main()).
     correlation_ids = {c.kwargs.get("correlation_id") for c in calls}
     assert len(correlation_ids - {None}) == 1
     assert next(iter(correlation_ids - {None}))  # non-empty hex.

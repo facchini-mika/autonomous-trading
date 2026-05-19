@@ -9,7 +9,7 @@ Autonomes Trading auf Polymarket mit AI-Agenten. **Beide Modi ab Tag 1**: `paper
 ```mermaid
 flowchart LR
     %% MVP-aktuelle Komponenten (solid)
-    TradingCycle["Trading Cycle<br/>(Agent Team, ~12 min)<br/>Lead + scanner-reviewer<br/>+ trading-agent + risk-execution"]
+    TradingCycle["Trading Cycle<br/>(Agent Team, ~12 min)<br/>Lead (incl. deterministic scanner)<br/>+ trading-agent + risk-execution"]
     Polymarket[Polymarket]
     OutcomeScript["outcome_ingestion.py<br/>(cron 5–10 min, no LLM)"]
     LessonsScript["lessons_summary.py<br/>(cron daily, no LLM)"]

@@ -276,7 +276,7 @@ Everything below is deferred until the MVP prototype runs paper-mode and shows s
 - GitHub Actions with `claude -p` (headless): AI-code lint, regression detection.
 
 **Subagents (`.claude/agents/`)** — partially MVP, partially post-MVP:
-- **MVP:** the 3 trading-team members defined in `trading.md §2` (`scanner-reviewer`, `trading-agent`, `risk-execution`) live here as agent definitions. The team-spec at `.claude/teams/trading-team.spec.json` references them.
+- **MVP:** the 2 LLM trading-team members defined in `trading.md §2` (`trading-agent`, `risk-execution`) live here as agent definitions. The team-spec at `.claude/teams/trading-team.spec.json` references them. The universe filter is Lead-internal Python (`_python_scanner`), not an LLM agent.
 - **Post-MVP review subagents:** `strategy-researcher`, `risk-reviewer`, `security-reviewer`. Each with a tightly-scoped tool allow-list. These are PR-review subagents, not trading-cycle members.
 
 **Skills (`.claude/skills/`)** — post-MVP, on-demand:

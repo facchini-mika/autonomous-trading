@@ -130,7 +130,6 @@ def test_bootstrap_writes_predictions_and_decisions() -> None:
     artifacts = bootstrap_team(
         settings=Settings(),
         adapter=FakeAdapter(),
-        scanner=_scanner,
         trading=_trading,
         risk=_risk_factory("trade"),
         session_factory=lambda: _capturing_factory(captures),
@@ -168,7 +167,6 @@ def test_cycle_plan_jsonb_fields_are_serialised_strings() -> None:
     bootstrap_team(
         settings=Settings(),
         adapter=FakeAdapter(),
-        scanner=_scanner,
         trading=_trading,
         risk=_risk_factory("trade"),
         session_factory=lambda: _capturing_factory(captures),
@@ -258,7 +256,6 @@ def test_bootstrap_places_order_only_for_trade_decisions() -> None:
     bootstrap_team(
         settings=Settings(),
         adapter=fake,
-        scanner=_scanner,
         trading=_trading,
         risk=_risk_factory("trade"),
         session_factory=lambda: _capturing_factory([]),
@@ -268,30 +265,20 @@ def test_bootstrap_places_order_only_for_trade_decisions() -> None:
     assert fake.placed_orders[0].market_id == "0xa"
 
 
-def test_bootstrap_always_uses_python_scanner() -> None:
-    """The LLM-scanner callable is never invoked — Lead always uses the
-    deterministic Python scanner. (The LLM path is fully removed in
-    feature/scanner-llm-removal; this test pins the always-bypass behaviour.)
+def test_bootstrap_writes_python_scanner_audit_row() -> None:
+    """The deterministic Python scanner writes a `subagent_runs` audit row
+    with cost_usd=0 and prompt_sha="python-bypass" every cycle, so operators
+    have a uniform per-stage timeline whether or not LLM agents ran.
     """
-    scanner_calls: list[Any] = []
-
-    def _scanner_must_not_run(task: Any) -> ScannerReviewerOutput:
-        scanner_calls.append(task)
-        return _scanner(task)
-
     captures: list[MagicMock] = []
     artifacts = bootstrap_team(
         settings=Settings(),
         adapter=FakeAdapter(),
-        scanner=_scanner_must_not_run,
         trading=_trading,
         risk=_risk_factory("skip"),
         session_factory=lambda: _capturing_factory(captures),
         clock=_now,
     )
-    assert scanner_calls == [], "Python-scanner is the only path; LLM callable must never run"
-    # Bypass should still produce a valid Universe + PortfolioState,
-    # and write a subagent_runs audit row with cost_usd=0.
     assert artifacts.cycle_id.startswith("cycle-")
     sql_calls = [
         (str(c.args[0]), c.args[1] if len(c.args) > 1 else None)
@@ -332,7 +319,6 @@ def test_bootstrap_places_order_when_risk_emits_alias_keys() -> None:
     bootstrap_team(
         settings=Settings(),
         adapter=fake,
-        scanner=_scanner,
         trading=_trading,
         risk=_risk_with_aliases,
         session_factory=lambda: _capturing_factory([]),
@@ -348,7 +334,6 @@ def test_bootstrap_skips_order_for_skip_decision() -> None:
     bootstrap_team(
         settings=Settings(),
         adapter=fake,
-        scanner=_scanner,
         trading=_trading,
         risk=_risk_factory("skip"),
         session_factory=lambda: _capturing_factory([]),
@@ -362,7 +347,6 @@ def test_bootstrap_skips_order_for_hold_decision() -> None:
     bootstrap_team(
         settings=Settings(),
         adapter=fake,
-        scanner=_scanner,
         trading=_trading,
         risk=_risk_factory("hold"),
         session_factory=lambda: _capturing_factory([]),
@@ -375,7 +359,6 @@ def test_bootstrap_returns_cycle_plan() -> None:
     artifacts = bootstrap_team(
         settings=Settings(),
         adapter=FakeAdapter(),
-        scanner=_scanner,
         trading=_trading,
         risk=_risk_factory("trade"),
         session_factory=lambda: _capturing_factory([]),
@@ -406,7 +389,6 @@ def test_bootstrap_injects_scanner_thresholds_from_settings(monkeypatch: pytest.
     bootstrap_team(
         settings=settings,
         adapter=FakeAdapter(),
-        scanner=_scanner,
         trading=_trading,
         risk=_risk_factory("trade"),
         session_factory=lambda: _capturing_factory([]),
@@ -461,7 +443,6 @@ def test_default_trading_mode_is_paper_e2e() -> None:
     bootstrap_team(
         settings=settings,
         adapter=_Adapter(),
-        scanner=_scanner,
         trading=_trading,
         risk=_risk_factory("trade"),
         session_factory=lambda: _capturing_factory([]),
@@ -489,7 +470,6 @@ def test_bootstrap_aborts_when_trading_runs_out_of_credits() -> None:
         bootstrap_team(
             settings=Settings(),
             adapter=fake,
-            scanner=_scanner,
             trading=_budget_raiser,
             risk=_risk_factory("trade"),
             session_factory=lambda: _capturing_factory(captures),
@@ -510,7 +490,6 @@ def test_bootstrap_aborts_when_risk_runs_out_of_credits() -> None:
         bootstrap_team(
             settings=Settings(),
             adapter=fake,
-            scanner=_scanner,
             trading=_trading,
             risk=_budget_raiser,
             session_factory=lambda: _capturing_factory(captures),

@@ -42,8 +42,8 @@ def lesson_body(
 def hypothesis_for(category: str) -> str | None:
     """Pre-canned hypothesis stub keyed off the surprise category."""
     table = {
-        "missed_yes": "Signal under-weighted; check whether scanner-reviewer filtered the relevant catalyst.",
-        "missed_no": "Signal under-weighted; check whether scanner-reviewer filtered the relevant catalyst.",
+        "missed_yes": "Signal under-weighted; check whether the deterministic scanner filtered the relevant catalyst.",
+        "missed_no": "Signal under-weighted; check whether the deterministic scanner filtered the relevant catalyst.",
         "overconfident_yes": "Inference put too much mass on YES; review the rationale for that prior.",
         "overconfident_no": "Inference put too much mass on NO; review the rationale for that prior.",
         "expected": None,

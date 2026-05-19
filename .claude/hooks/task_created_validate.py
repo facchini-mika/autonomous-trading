@@ -21,12 +21,10 @@ from pydantic import BaseModel, ValidationError
 
 from shared.models.tasks import (
     RiskExecutionTask,
-    ScannerReviewerTask,
     TradingAgentTask,
 )
 
 ROUTING: dict[str, type[BaseModel]] = {
-    "scanner-reviewer": ScannerReviewerTask,
     "trading-agent": TradingAgentTask,
     "risk-execution": RiskExecutionTask,
 }

@@ -1037,3 +1037,38 @@ Every PR that touches one of the following must have an entry here:
   slow (minute-long hangs inside `.venv` site-packages reads). After
   the move, `pre-commit run --all-files` completes in ~1.5 s and
   `pytest tests/risk` in ~0.7 s.
+
+---
+
+## 2026-05-19 — Architecture — Remove LLM scanner-reviewer subagent
+
+- **PR:** feature/scanner-llm-removal (PR2 of the scanner-fixed-filter stack;
+  PR1 = `feature/scanner-pagination`, PR3 = `feature/scanner-drop-logging`).
+- **Description:** Deletes the LLM `scanner-reviewer` subagent in full —
+  `.claude/agents/scanner-reviewer.md`, `src/research/prompts/scanner_reviewer.md`,
+  `tests/research/test_scanner_reviewer_doctrine.py`, the LLM-branch in
+  `bootstrap_team`, the `scanner` callable from `run_subagent`, the
+  defensive `_enforce_universe_invariants` post-filter (made obsolete by
+  the always-deterministic scanner). The universe filter is now exclusively
+  `execution.lead_bootstrap._python_scanner` — a pure-Python rewrite that
+  has shipped under PR #60 and run in production since 2026-05-03.
+  Specs (`specs/specs.md`, `trading.md §2`, `orchestration.md`,
+  `data_infrastructure.md`, `engineering.md`) updated to the 2-LLM-agent
+  topology (trading-agent, risk-execution) + deterministic Lead-internal
+  scanner. `ScannerReviewerTask` and `ScannerReviewerOutput` Pydantic
+  models retained as the Lead's internal payload shape — schema-stable.
+  Settings: `BUDGET_USD_SCANNER` removed (no LLM scanner left to budget).
+- **Risk:** (1) The removed `_enforce_universe_invariants` was the
+  defensive net for cycle-7's LLM-scanner threshold violation. With the
+  LLM gone, the safety net is no longer needed — but a future regression
+  in `_python_scanner` would now ship straight to the trading-agent.
+  (2) Spec drift: any external consumer who still grep's for the old
+  `scanner-reviewer` member name will get zero hits. (3) Forensic gap on
+  per-drop reasons — the Python scanner only logs the aggregate; PR3
+  closes that gap.
+- **Mitigation / rollback:** Hard test coverage for `_python_scanner`
+  (`tests/execution/test_python_scanner.py`, 35+ assertions) pins the
+  filter contract identically to the deleted doctrine; the deletion is
+  reversible via `git revert` on a single PR. No data-model change, no
+  migration, no risk-module change. Risk gates in `src/risk/**` are
+  untouched.

@@ -46,12 +46,11 @@ A failed run on any process is a non-event — no orders placed, no state mutate
 The Trading Cycle = **one fresh Claude Code Agent Team per cycle**. Every cron tick starts a new `claude` process; the Lead boots the team, runs one cycle (per `trading.md §5`), calls `clean up the team`, and exits. The next scheduled tick starts a brand-new process with no shared in-process state.
 
 **Topology** (full member detail in `trading.md §2`):
-- **Lead** — drives cycle clock, spawns members, persists artifacts, writes `cycle_plan`, calls `clean up the team`. Never executes orders.
-- **`scanner-reviewer`** — fetches top-K liquid Polymarket markets + builds `PortfolioState`.
+- **Lead** — drives cycle clock, runs the deterministic `_python_scanner` (fetches top-K liquid Polymarket markets + builds `PortfolioState`), spawns the two LLM members, persists artifacts, writes `cycle_plan`, calls `clean up the team`. Never executes orders.
 - **`trading-agent`** — mispricing analysis with `web_search`; outputs `Prediction[]`.
 - **`risk-execution`** — applies `src/risk/` gates, sizes, places paper or signed CLOB order.
 
-Member definitions live in `.claude/agents/{scanner-reviewer,trading-agent,risk-execution}.md`. Team spec source-of-truth: `.claude/teams/trading-team.spec.json`.
+LLM member definitions live in `.claude/agents/{trading-agent,risk-execution}.md`. Team spec source-of-truth: `.claude/teams/trading-team.spec.json`. The historic `scanner-reviewer` LLM agent was removed 2026-05-19 (see AUDIT_LOG); its responsibilities now live in Lead-internal Python (`execution.lead_bootstrap._python_scanner`).
 
 **Why fresh-team-per-cycle.** The design rule *"memory is the only coupling between cycles"* is enforced by construction — a bad cycle cannot poison the next, memory leaks are physically impossible, Claude Code version upgrades pick up at the next cycle naturally. Cloud-doc constraints (no session resumption, fixed Lead, one team per session) all become non-issues because every cycle starts a fresh session anyway. Cost: ~5–30s boot per cycle, < 5% of the 12-min period and entirely before edge-time-sensitive work.
 
@@ -152,7 +151,7 @@ Three processes, three Postgres roles, no shared in-process state. The Polymarke
 
 - **Claude Code version pinned** in `infra/` (e.g. `infra/.claude-code-version` or pinned in a Docker base image). No floating `latest` tags.
 - **Team-spec source-of-truth:** `.claude/teams/trading-team.spec.json` (committed). Never edit `~/.claude/teams/{team-name}/config.json` directly — that's runtime state, regenerated each cycle.
-- **Member definitions:** `.claude/agents/{scanner-reviewer,trading-agent,risk-execution}.md`. Per-member system prompt + tool allow-list.
+- **Member definitions:** `.claude/agents/{trading-agent,risk-execution}.md`. Per-member system prompt + tool allow-list.
 - **Spec changes** = PRs against the above three locations; `engineering.md §8` branch protection applies. If a change touches `src/risk/` or `MAX_CAPITAL_EUR`, the ≥ 2-human rule kicks in.
 
 ---
