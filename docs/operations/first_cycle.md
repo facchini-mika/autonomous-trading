@@ -129,6 +129,27 @@ at the expected slot means the sync layer dropped the path.
 intentionally **not** emitted by the generator — install it separately if
 the evaluation team is enabled.
 
+### Inline feedback phase
+
+Each `trading_cycle` invocation runs an inline feedback phase before the
+trading-agent fires (see `execution.feedback_phase`). It calls
+`outcome_ingestion.run_once()` and `lessons_summary.run_once()` in sequence
+so the trading-agent reads the freshest possible lessons. The standalone
+`outcome_ingestion.cron` and `lessons_summary.cron` remain installed as an
+idempotent safety net — if the trading cycle stalls, the standalone jobs
+still backfill outcomes and regenerate lessons.
+
+The inline phase requires `DATABASE_URL_OUTCOME_INGESTION` and
+`DATABASE_URL_LESSONS_SUMMARY` to be present in `.env` (they were already
+required for the standalone crons). The wrapper script picks them up via
+`set -a; source .env; set +a` — no per-role forwarding needed.
+
+Toggle the phase off via `INLINE_FEEDBACK_ENABLED=false` (rollback). Each
+sub-step has its own flag (`INLINE_OUTCOME_INGESTION_ENABLED`,
+`INLINE_LESSONS_SUMMARY_ENABLED`) for surgical disabling, e.g. when Gamma
+is down. The optional Tier-1 LLM evaluator (`INLINE_TIER1_EVAL_ENABLED`,
+default off) is frequency-gated by `INLINE_TIER1_EVAL_INTERVAL_MIN`.
+
 ## What gets written where
 
 | Table | Written by | Per cycle |

@@ -560,3 +560,58 @@ def test_bootstrap_aborts_when_risk_runs_out_of_credits() -> None:
     assert fake.placed_orders == []
     sql = [str(c.args[0]) for sess in captures for c in sess.execute.call_args_list]
     assert not any("INSERT INTO decisions" in s for s in sql)
+
+
+def test_feedback_phase_runs_before_trading(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Order proof: feedback_phase must fire before the trading-agent.
+
+    The whole point of the inline phase is to land freshly-resolved outcomes
+    + new lessons into the DB *before* ``_collect_trading_context`` reads
+    them. If the order is wrong, the closed loop opens by a full cycle.
+    """
+    call_order: list[str] = []
+
+    def fake_feedback(**_kw: object) -> object:
+        from execution.feedback_phase import FeedbackPhaseResult
+
+        call_order.append("feedback")
+        return FeedbackPhaseResult(cycle_id="cycle-test")
+
+    def tracked_trading(task: Any) -> TradingAgentOutput:
+        call_order.append("trading")
+        return _trading(task)
+
+    monkeypatch.setattr("execution.lead_bootstrap.run_feedback_phase", fake_feedback)
+
+    bootstrap_team(
+        settings=Settings(),
+        adapter=FakeAdapter(),
+        trading=tracked_trading,
+        risk=_risk_factory("trade"),
+        session_factory=lambda: _capturing_factory([]),
+        clock=_now,
+    )
+    assert call_order == ["feedback", "trading"]
+
+
+def test_feedback_phase_receives_current_cycle_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cycle_id passed to feedback_phase must match the bootstrap cycle."""
+    captured: dict[str, str] = {}
+
+    def fake_feedback(**kw: object) -> object:
+        from execution.feedback_phase import FeedbackPhaseResult
+
+        captured["cycle_id"] = str(kw["cycle_id"])
+        return FeedbackPhaseResult(cycle_id=str(kw["cycle_id"]))
+
+    monkeypatch.setattr("execution.lead_bootstrap.run_feedback_phase", fake_feedback)
+
+    artifacts = bootstrap_team(
+        settings=Settings(),
+        adapter=FakeAdapter(),
+        trading=_trading,
+        risk=_risk_factory("trade"),
+        session_factory=lambda: _capturing_factory([]),
+        clock=_now,
+    )
+    assert captured["cycle_id"] == artifacts.cycle_id

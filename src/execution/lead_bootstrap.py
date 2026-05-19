@@ -23,6 +23,7 @@ from sqlalchemy import text
 
 from execution.cycle_plan import synthesize_cycle_plan
 from execution.decision_context import with_decision
+from execution.feedback_phase import run_feedback_phase
 from execution.notes_tool import manage_notes
 from execution.subagent_runner import _INSERT_SUBAGENT_RUN, SubagentBudgetError
 from risk.sizing import propose_notional
@@ -105,12 +106,7 @@ def bootstrap_team(
     """Run one trading cycle end-to-end against the given adapter."""
     factory = session_factory or _default_factory
     now = (clock or _utcnow)()
-    cycle_id = f"cycle-{int(now.timestamp())}"
-    bind(cycle_id=cycle_id)
-    logger.info("cycle_starting", adapter=type(adapter).__name__, mode=settings.TRADING_MODE)
-
-    _log_orphan_attempts(factory=factory, max_age_minutes=settings.ORPHAN_ATTEMPT_WARN_AFTER_MIN)
-
+    cycle_id = _initialize_cycle(now=now, settings=settings, adapter=adapter, factory=factory)
     prev_plan = _load_prev_plan(factory)
 
     universe_inputs = _collect_universe_inputs(adapter=adapter, factory=factory, settings=settings, now=now)
@@ -235,6 +231,31 @@ def bootstrap_team(
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _initialize_cycle(
+    *,
+    now: datetime,
+    settings: Settings,
+    adapter: PredictionMarketAdapter,
+    factory: Callable[[], AbstractContextManager[Session]],
+) -> str:
+    """Bind log context, log cycle start, surface orphan order_attempts, and run feedback.
+
+    Returns the cycle_id. Extracted from ``bootstrap_team`` so the cycle-init
+    wiring (inline feedback phase + orphan-attempt warnings) stays out of
+    the main pipeline body and keeps the bootstrap statement count below
+    the per-function ruff limit.
+    """
+    cycle_id = f"cycle-{int(now.timestamp())}"
+    bind(cycle_id=cycle_id)
+    logger.info("cycle_starting", adapter=type(adapter).__name__, mode=settings.TRADING_MODE)
+    _log_orphan_attempts(factory=factory, max_age_minutes=settings.ORPHAN_ATTEMPT_WARN_AFTER_MIN)
+    # Ingests freshly-resolved outcomes and regenerates lessons before the
+    # trading-agent loads its context; closes the loop inside one cycle
+    # instead of relying on out-of-band daily crons. Fail-isolated.
+    run_feedback_phase(settings=settings, cycle_id=cycle_id, now=now)
+    return cycle_id
 
 
 _AMBIGUITY_CEILING: float = 0.6

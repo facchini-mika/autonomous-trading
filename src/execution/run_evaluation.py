@@ -13,7 +13,11 @@ import sys
 import uuid
 from pathlib import Path
 
-from execution.evaluation_bootstrap import EvaluationAbortedError, bootstrap_evaluation_team
+from execution.evaluation_bootstrap import (
+    EvaluationAbortedError,
+    EvaluationArtifacts,
+    bootstrap_evaluation_team,
+)
 from execution.subagent_runner import run_subagent
 from shared.config.settings import Settings
 from shared.logging import bind, configure, get_logger
@@ -33,13 +37,21 @@ PROMPTS_DIR = REPO_ROOT / "src" / "research" / "prompts"
 logger = get_logger(__name__)
 
 
-def main() -> int:
-    configure(service="trade_evaluation")
-    correlation_id = uuid.uuid4().hex
-    bind(correlation_id=correlation_id)
+def run_inline(
+    *,
+    settings: Settings | None = None,
+    correlation_id: str | None = None,
+) -> EvaluationArtifacts:
+    """Run one Tier-1 evaluation pass as a library call.
 
-    settings = Settings()
-    logger.info("run_evaluation_start", lookback_days=settings.EVALUATION_LOOKBACK_DAYS)
+    Used by ``execution.feedback_phase`` when ``INLINE_TIER1_EVAL_ENABLED``
+    is on. Mirrors ``main`` but raises on ``EvaluationAbortedError`` instead
+    of converting to an exit code, so the caller can decide how to react.
+    """
+    cfg = settings or Settings()
+    cid = correlation_id or uuid.uuid4().hex
+    bind(correlation_id=cid)
+    logger.info("run_evaluation_start", lookback_days=cfg.EVALUATION_LOOKBACK_DAYS)
 
     def outcome_fetcher(task: OutcomeFetcherTask) -> OutcomeFetcherOutput:
         return run_subagent(
@@ -47,10 +59,10 @@ def main() -> int:
             doctrine_path=_doctrine("outcome_fetcher.md"),
             task=task,
             output_model=OutcomeFetcherOutput,
-            timeout_s=settings.EVALUATION_TIMEOUT_SEC,
+            timeout_s=cfg.EVALUATION_TIMEOUT_SEC,
             cycle_id=task.cycle_id,
-            correlation_id=correlation_id,
-            max_budget_usd=settings.BUDGET_USD_OUTCOME_FETCHER,
+            correlation_id=cid,
+            max_budget_usd=cfg.BUDGET_USD_OUTCOME_FETCHER,
         )
 
     def pnl_aggregator(task: PnlAggregatorTask) -> PnlAggregatorOutput:
@@ -59,10 +71,10 @@ def main() -> int:
             doctrine_path=_doctrine("pnl_aggregator.md"),
             task=task,
             output_model=PnlAggregatorOutput,
-            timeout_s=settings.EVALUATION_TIMEOUT_SEC,
+            timeout_s=cfg.EVALUATION_TIMEOUT_SEC,
             cycle_id=task.cycle_id,
-            correlation_id=correlation_id,
-            max_budget_usd=settings.BUDGET_USD_PNL_AGGREGATOR,
+            correlation_id=cid,
+            max_budget_usd=cfg.BUDGET_USD_PNL_AGGREGATOR,
         )
 
     def perf_updater(task: AgentPerformanceTask) -> AgentPerformanceOutput:
@@ -71,19 +83,32 @@ def main() -> int:
             doctrine_path=_doctrine("agent_performance_updater.md"),
             task=task,
             output_model=AgentPerformanceOutput,
-            timeout_s=settings.EVALUATION_TIMEOUT_SEC,
+            timeout_s=cfg.EVALUATION_TIMEOUT_SEC,
             cycle_id=task.cycle_id,
-            correlation_id=correlation_id,
-            max_budget_usd=settings.BUDGET_USD_AGENT_PERFORMANCE_UPDATER,
+            correlation_id=cid,
+            max_budget_usd=cfg.BUDGET_USD_AGENT_PERFORMANCE_UPDATER,
         )
 
+    artifacts = bootstrap_evaluation_team(
+        settings=cfg,
+        outcome_fetcher=outcome_fetcher,
+        pnl_aggregator=pnl_aggregator,
+        perf_updater=perf_updater,
+    )
+    logger.info(
+        "run_evaluation_done",
+        cycle_id=artifacts.cycle_id,
+        n_candidates=artifacts.n_candidates,
+        n_resolved=artifacts.n_resolved,
+        n_rows=len(artifacts.rows),
+    )
+    return artifacts
+
+
+def main() -> int:
+    configure(service="trade_evaluation")
     try:
-        artifacts = bootstrap_evaluation_team(
-            settings=settings,
-            outcome_fetcher=outcome_fetcher,
-            pnl_aggregator=pnl_aggregator,
-            perf_updater=perf_updater,
-        )
+        run_inline()
     except EvaluationAbortedError as exc:
         logger.warning(
             "run_evaluation_aborted",
@@ -92,14 +117,6 @@ def main() -> int:
             reason=exc.reason,
         )
         return 2
-
-    logger.info(
-        "run_evaluation_done",
-        cycle_id=artifacts.cycle_id,
-        n_candidates=artifacts.n_candidates,
-        n_resolved=artifacts.n_resolved,
-        n_rows=len(artifacts.rows),
-    )
     return 0
 
 

@@ -91,6 +91,27 @@ class Settings(BaseSettings):
     LESSONS_LOOKBACK_DAYS: int = 30
     SURPRISE_THRESHOLD: float = 0.3
 
+    # Inline feedback phase — closes the trade -> outcome -> lesson -> decision
+    # loop inside a single trading_cycle run. Before the trading-agent fires,
+    # the lead ingests freshly-resolved outcomes and regenerates lessons so the
+    # agent prompt sees the newest evidence. The standalone outcome_ingestion
+    # and lessons_summary crons remain as a fallback safety net (idempotent).
+    INLINE_FEEDBACK_ENABLED: bool = True
+    INLINE_OUTCOME_INGESTION_ENABLED: bool = True
+    INLINE_LESSONS_SUMMARY_ENABLED: bool = True
+    # Tier-1 LLM eval is expensive (3 subagents) and writes agent_performance
+    # rows which are NOT read by the trading-agent — no closed-loop benefit,
+    # so default OFF. Enable + gate via the interval if you want it co-located.
+    INLINE_TIER1_EVAL_ENABLED: bool = False
+    INLINE_TIER1_EVAL_INTERVAL_MIN: int = 60
+    # Per-sub-step hard cap. ThreadPoolExecutor.future.result(timeout=…) is
+    # used because outcome_ingestion is synchronous httpx; SIGALRM is unsafe
+    # in a worker thread / on subprocess hosts.
+    INLINE_FEEDBACK_TIMEOUT_SEC: int = 90
+    # Inline lookback is short because the high-water-mark is the primary
+    # window cursor; this is only the bootstrap floor on first run.
+    INLINE_OUTCOME_LOOKBACK_DAYS: int = 1
+
     # Timeouts
     WEB_SEARCH_TIMEOUT_SEC: int = 120
     # Trading-agent in particular accumulates 2-3 web_searches at 120s each
