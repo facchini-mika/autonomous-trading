@@ -91,10 +91,12 @@ class Decision(BaseModel):
 
     # Risk-execution-LLM was observed emitting non-canonical sizing keys
     # (``final_notional_usd`` / ``clipped_notional_usd`` in cycle-7,
-    # ``notional_clipped_usd`` in cycle-1779210369) instead of the canonical
-    # ``clipped_notional`` / ``notional_usd`` the Lead's ``_decision_notional``
-    # reads. Doctrine alone (PR #46) did not stop the drift. This map lists
-    # known aliases per canonical key, in lookup priority order.
+    # ``notional_clipped_usd`` in cycle-1779210369, nested under a ``sizing``
+    # sub-dict in cycle-1779223256) instead of the canonical ``clipped_notional``
+    # / ``notional_usd`` the Lead's ``_decision_notional`` reads. Doctrine alone
+    # (PR #46) did not stop the drift. This map lists known aliases per
+    # canonical key, in lookup priority order; aliases are searched both at
+    # ``gate_results`` top level and inside the nested ``sizing`` sub-dict.
     _NOTIONAL_ALIASES: ClassVar[dict[str, tuple[str, ...]]] = {
         "clipped_notional": (
             "clipped_notional_usd",
@@ -105,6 +107,7 @@ class Decision(BaseModel):
             "final_notional_usd",
             "clipped_notional_usd",
             "notional_clipped_usd",
+            "proposed_notional_usd",
         ),
     }
 
@@ -126,20 +129,34 @@ class Decision(BaseModel):
 
         Canonical wins over alias if both are present and positive. Zero or
         non-numeric values are not hoisted (the Lead reads positive-only).
+        Aliases are searched first at ``gate_results`` top level, then inside
+        the nested ``sizing`` sub-dict; top-level matches take precedence so
+        a misplaced top-level value still wins over a stale nested copy.
         Non-dict input passes through untouched (Pydantic will raise on
         type mismatch downstream).
         """
         if not isinstance(v, dict):
             return v
+        sources = [v]
+        sizing = v.get("sizing")
+        if isinstance(sizing, dict):
+            sources.append(sizing)
         for canonical, aliases in cls._NOTIONAL_ALIASES.items():
             if cls._has_positive_number(v.get(canonical)):
                 continue
-            for alias in aliases:
-                value = v.get(alias)
-                if cls._has_positive_number(value):
-                    v[canonical] = value
-                    break
+            hoisted = cls._first_positive(sources, aliases)
+            if hoisted is not None:
+                v[canonical] = hoisted
         return v
+
+    @classmethod
+    def _first_positive(cls, sources: list[dict[str, Any]], keys: tuple[str, ...]) -> float | None:
+        for source in sources:
+            for key in keys:
+                value = source.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                    return float(value)
+        return None
 
     @staticmethod
     def _has_positive_number(value: Any) -> bool:

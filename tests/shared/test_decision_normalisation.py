@@ -115,3 +115,76 @@ def test_alias_hoist_preserves_other_keys() -> None:
     assert d.gate_results["clipped_notional"] == 168.47
     assert d.gate_results["kill_switch"] == {"passed": True}
     assert d.gate_results["edge_threshold"] == {"passed": True, "edge": 0.06}
+
+
+def test_nested_sizing_final_notional_usd_is_hoisted() -> None:
+    """cycle-1779223256: risk-execution nested the notional under sizing.*."""
+    d = _decision({"sizing": {"final_notional_usd": 619.99}})
+    assert d.gate_results["clipped_notional"] == 619.99
+    assert d.gate_results["notional_usd"] == 619.99
+
+
+def test_nested_sizing_proposed_notional_usd_hoists_to_notional_usd() -> None:
+    """A pre-clip-only nested key should still surface as notional_usd."""
+    d = _decision({"sizing": {"proposed_notional_usd": 200.0}})
+    assert d.gate_results["notional_usd"] == 200.0
+    assert "clipped_notional" not in d.gate_results
+
+
+def test_top_level_alias_wins_over_nested_sizing() -> None:
+    d = _decision(
+        {
+            "final_notional_usd": 100.0,
+            "sizing": {"final_notional_usd": 999.0},
+        }
+    )
+    assert d.gate_results["clipped_notional"] == 100.0
+    assert d.gate_results["notional_usd"] == 100.0
+
+
+def test_canonical_wins_over_nested_sizing() -> None:
+    d = _decision(
+        {
+            "clipped_notional": 50.0,
+            "notional_usd": 50.0,
+            "sizing": {"final_notional_usd": 999.0},
+        }
+    )
+    assert d.gate_results["clipped_notional"] == 50.0
+    assert d.gate_results["notional_usd"] == 50.0
+
+
+def test_cycle_1779223256_regression() -> None:
+    """Full sizing sub-dict shape emitted by risk-execution in cycle-1779223256."""
+    d = _decision(
+        {
+            "sizing": {
+                "side": "no",
+                "cap_usd": 1000.0,
+                "raw_usd": 620.0,
+                "abs_edge": 0.155,
+                "base_usd": 200.0,
+                "edge_ratio": 3.1,
+                "clipped_by_gate": False,
+                "final_notional_usd": 619.99,
+                "proposed_notional_usd": 619.99,
+            },
+            "kill_switch": {"passed": True, "reason": "kill_switch inactive"},
+        }
+    )
+    assert d.gate_results["clipped_notional"] == 619.99
+    assert d.gate_results["notional_usd"] == 619.99
+    # Original sizing sub-dict must remain intact for audit/forensics.
+    assert d.gate_results["sizing"]["final_notional_usd"] == 619.99
+    assert d.gate_results["sizing"]["proposed_notional_usd"] == 619.99
+
+
+def test_nested_sizing_zero_value_is_not_hoisted() -> None:
+    d = _decision({"sizing": {"final_notional_usd": 0}})
+    assert "clipped_notional" not in d.gate_results
+    assert "notional_usd" not in d.gate_results
+
+
+def test_non_dict_sizing_is_ignored() -> None:
+    d = _decision({"sizing": "string-not-dict", "final_notional_usd": 50.0})
+    assert d.gate_results["clipped_notional"] == 50.0
