@@ -69,8 +69,8 @@ def _book(market_id: str = "0xa") -> Orderbook:
         best_bid=0.4,
         best_ask=0.5,
         mid=0.45,
-        depth_bid_1pct=200,
-        depth_ask_1pct=200,
+        depth_bid_1pct=500,
+        depth_ask_1pct=500,
         timestamp=_now(),
     )
 

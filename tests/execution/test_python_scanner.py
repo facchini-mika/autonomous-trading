@@ -75,7 +75,7 @@ def _market(
 def _orderbook(
     market_id: str,
     *,
-    depth: float = 200.0,
+    depth: float = 500.0,
     spread: float = 0.05,
     bid: float = 0.45,
 ) -> Orderbook:
@@ -131,10 +131,42 @@ def test_filters_low_liquidity() -> None:
     """Markets with depth below the floor are dropped."""
     markets = [_market("0xa"), _market("0xb")]
     orderbooks = {
-        "0xa": _orderbook("0xa", depth=200.0),
-        "0xb": _orderbook("0xb", depth=50.0),  # below floor 100
+        "0xa": _orderbook("0xa", depth=500.0),
+        "0xb": _orderbook("0xb", depth=50.0),  # 50 * mid 0.475 = 24 USD, below 100 floor
     }
     out = _python_scanner(_task(raw_markets=markets, raw_orderbooks=orderbooks), clock=_NOW)
+    assert [m.market_id for m in out.universe.markets] == ["0xa"]
+
+
+def test_drops_when_contract_depth_below_usd_floor() -> None:
+    # depth_*_1pct is contracts, floor is USD: 500 contracts * mid 0.10 = 50 USD < 100.
+    market = _market("0xa", ttr=timedelta(days=5))
+    book = Orderbook(
+        market_id="0xa",
+        best_bid=0.095,
+        best_ask=0.105,
+        mid=0.10,
+        depth_bid_1pct=500,
+        depth_ask_1pct=500,
+        timestamp=_NOW,
+    )
+    out = _python_scanner(_task(raw_markets=[market], raw_orderbooks={"0xa": book}), clock=_NOW)
+    assert out.universe.markets == []
+
+
+def test_keeps_when_contract_depth_clears_usd_floor_via_high_mid() -> None:
+    # 200 contracts * mid 0.80 = 160 USD >= 100.
+    market = _market("0xa", ttr=timedelta(days=5))
+    book = Orderbook(
+        market_id="0xa",
+        best_bid=0.795,
+        best_ask=0.805,
+        mid=0.80,
+        depth_bid_1pct=200,
+        depth_ask_1pct=200,
+        timestamp=_NOW,
+    )
+    out = _python_scanner(_task(raw_markets=[market], raw_orderbooks={"0xa": book}), clock=_NOW)
     assert [m.market_id for m in out.universe.markets] == ["0xa"]
 
 
@@ -178,9 +210,9 @@ def test_held_markets_appear_first_then_descending_score() -> None:
         _market("0xheld", ttr=timedelta(days=10)),
     ]
     orderbooks = {
-        "0xlow": _orderbook("0xlow", depth=150.0),
-        "0xhigh": _orderbook("0xhigh", depth=500.0),
-        "0xheld": _orderbook("0xheld", depth=200.0),
+        "0xlow": _orderbook("0xlow", depth=300.0),
+        "0xhigh": _orderbook("0xhigh", depth=800.0),
+        "0xheld": _orderbook("0xheld", depth=500.0),
     }
     out = _python_scanner(
         _task(raw_markets=markets, raw_orderbooks=orderbooks, held_market_ids=["0xheld"]),
@@ -194,15 +226,15 @@ def test_held_markets_appear_first_then_descending_score() -> None:
 
 def test_soft_boost_multiplier_for_soon_resolving_markets() -> None:
     """Markets within ``soon_resolve_threshold_days`` get their score multiplied."""
-    # "0xfar" has higher liquidity but resolves >7d out → score = 200 * 1.0 = 200
-    # "0xsoon" has lower liquidity but resolves <7d → score = 150 * 1.5 = 225 → wins
+    # "0xfar" has higher liquidity but resolves >7d out → score = 500 * 1.0 = 500
+    # "0xsoon" has lower liquidity but resolves <7d → score = 400 * 1.5 = 600 → wins
     markets = [
         _market("0xfar", ttr=timedelta(days=10)),
         _market("0xsoon", ttr=timedelta(days=3)),
     ]
     orderbooks = {
-        "0xfar": _orderbook("0xfar", depth=200.0),
-        "0xsoon": _orderbook("0xsoon", depth=150.0),
+        "0xfar": _orderbook("0xfar", depth=500.0),
+        "0xsoon": _orderbook("0xsoon", depth=400.0),
     }
     out = _python_scanner(_task(raw_markets=markets, raw_orderbooks=orderbooks), clock=_NOW)
     assert [m.market_id for m in out.universe.markets] == ["0xsoon", "0xfar"]

@@ -261,13 +261,15 @@ def _universe_drop_reason(
         return "orderbook_missing"
     ttr = market.end_date - clock
     spread = orderbook.best_ask - orderbook.best_bid
-    min_depth = min(orderbook.depth_bid_1pct, orderbook.depth_ask_1pct)
+    # depth_*_1pct is in contracts; Polymarket outcome tokens settle at $0-$1,
+    # so notional USD = contracts * price.
+    min_depth_notional = min(orderbook.depth_bid_1pct, orderbook.depth_ask_1pct) * orderbook.mid
     has_dispute = metadata is not None and bool(metadata.dispute_history)
     checks: list[tuple[bool, str]] = [
         (market.status != "open", "status_not_open"),
         (ttr < min_ttr, "ttr_below_min"),
         (ttr > max_ttr, "ttr_above_max"),
-        (min_depth < min_depth_1pct_usd, "liquidity_below_floor"),
+        (min_depth_notional < min_depth_1pct_usd, "liquidity_below_floor"),
         (spread > max_spread, "spread_above_ceiling"),
         (
             market.ambiguity_score is not None and market.ambiguity_score > _AMBIGUITY_CEILING,
