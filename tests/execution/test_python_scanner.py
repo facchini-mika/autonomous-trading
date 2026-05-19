@@ -311,3 +311,73 @@ def test_kill_switch_passes_through() -> None:
     """``kill_switch_active`` is mirrored from task to portfolio."""
     out = _python_scanner(_task(raw_markets=[], kill_switch_active=True), clock=_NOW)
     assert out.portfolio_state.kill_switch_active is True
+
+
+def test_logs_per_drop_with_reason_and_aggregate(capsys: pytest.CaptureFixture[str]) -> None:
+    """Each dropped market must emit a ``scanner_drop`` info line with its
+    reason; the closing ``scanner_python_bypass_done`` line carries the
+    per-reason aggregate so operators can scan a cycle's TTR/liquidity
+    health at a glance instead of grepping individual events.
+
+    Before this change the Python scanner silently discarded 49/50 markets
+    per cycle (live data from cycle-1779210369) — no per-drop logging, just
+    `kept_count=1, candidate_count=50`. That was opaque enough that the
+    operator could not tell whether the filter was working as intended.
+    """
+    import json
+
+    markets = [
+        _market("0xttr-long").model_copy(update={"end_date": _NOW + timedelta(days=200)}),
+        _market("0xspread").model_copy(update={}),  # spread tweak below via orderbook
+        _market("0xkeep"),
+    ]
+    orderbooks = {
+        "0xttr-long": _orderbook("0xttr-long"),
+        "0xspread": _orderbook("0xspread", spread=0.15),
+        "0xkeep": _orderbook("0xkeep"),
+    }
+    task = _task(raw_markets=markets, raw_orderbooks=orderbooks)
+    out = _python_scanner(task, clock=_NOW)
+
+    assert [m.market_id for m in out.universe.markets] == ["0xkeep"]
+
+    captured = capsys.readouterr()
+    log_lines = [json.loads(line) for line in captured.out.splitlines() if line.strip()]
+    drops = [line for line in log_lines if line.get("event") == "scanner_drop"]
+    assert {d["market_id"] for d in drops} == {"0xttr-long", "0xspread"}
+    assert {d["reason"] for d in drops} == {"ttr_above_max", "spread_above_ceiling"}
+    # Per-drop log must carry forensic fields, not just the bare reason.
+    for drop in drops:
+        assert "end_date" in drop
+        assert "depth_bid_1pct" in drop
+
+    aggregate = next(line for line in log_lines if line.get("event") == "scanner_python_bypass_done")
+    assert aggregate["dropped_reasons"] == {"ttr_above_max": 1, "spread_above_ceiling": 1}
+    assert aggregate["kept_count"] == 1
+
+
+def test_dispute_history_emits_drop_reason(capsys: pytest.CaptureFixture[str]) -> None:
+    """Dispute-history drop now flows through ``_universe_drop_reason`` —
+    it shows up in the per-drop log and the dropped_reasons aggregate
+    instead of being a silent ``continue`` branch in the scanner."""
+    import json
+
+    markets = [_market("0xa")]
+    metadata = {
+        "0xa": MarketMetadata(
+            market_id="0xa",
+            resolution_criteria="...",
+            implied_probability_yes=0.5,
+            dispute_history="resolved against majority on 2025-12",
+        ),
+    }
+    out = _python_scanner(_task(raw_markets=markets, raw_metadata=metadata), clock=_NOW)
+    assert out.universe.markets == []
+
+    captured = capsys.readouterr()
+    log_lines = [json.loads(line) for line in captured.out.splitlines() if line.strip()]
+    drops = [line for line in log_lines if line.get("event") == "scanner_drop"]
+    assert len(drops) == 1
+    assert drops[0]["reason"] == "dispute_history"
+    aggregate = next(line for line in log_lines if line.get("event") == "scanner_python_bypass_done")
+    assert aggregate["dropped_reasons"] == {"dispute_history": 1}

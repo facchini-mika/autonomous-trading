@@ -243,6 +243,7 @@ def _universe_drop_reason(
     *,
     market: Market,
     orderbook: Orderbook | None,
+    metadata: MarketMetadata | None,
     min_ttr: timedelta,
     max_ttr: timedelta,
     min_depth_1pct_usd: float,
@@ -260,6 +261,7 @@ def _universe_drop_reason(
     ttr = market.end_date - clock
     spread = orderbook.best_ask - orderbook.best_bid
     min_depth = min(orderbook.depth_bid_1pct, orderbook.depth_ask_1pct)
+    has_dispute = metadata is not None and bool(metadata.dispute_history)
     checks: list[tuple[bool, str]] = [
         (market.status != "open", "status_not_open"),
         (ttr < min_ttr, "ttr_below_min"),
@@ -270,6 +272,7 @@ def _universe_drop_reason(
             market.ambiguity_score is not None and market.ambiguity_score > _AMBIGUITY_CEILING,
             "ambiguity_above_ceiling",
         ),
+        (has_dispute, "dispute_history"),
     ]
     for failed, reason in checks:
         if failed:
@@ -290,16 +293,17 @@ def _python_scanner(task: ScannerReviewerTask, *, clock: datetime) -> ScannerRev
     max_ttr = timedelta(days=task.thresholds.max_ttr_days)
 
     survivors: list[Market] = []
+    dropped_reasons: dict[str, int] = {}
     for market in task.raw_markets:
         if market.market_id in held_ids:
             survivors.append(market)
             continue
         orderbook = task.raw_orderbooks.get(market.market_id)
-        if orderbook is None:
-            continue
+        metadata = task.raw_metadata.get(market.market_id)
         reason = _universe_drop_reason(
             market=market,
             orderbook=orderbook,
+            metadata=metadata,
             min_ttr=min_ttr,
             max_ttr=max_ttr,
             min_depth_1pct_usd=task.thresholds.min_depth_1pct_usd,
@@ -307,9 +311,15 @@ def _python_scanner(task: ScannerReviewerTask, *, clock: datetime) -> ScannerRev
             clock=clock,
         )
         if reason is not None:
-            continue
-        metadata = task.raw_metadata.get(market.market_id)
-        if metadata is not None and metadata.dispute_history:
+            dropped_reasons[reason] = dropped_reasons.get(reason, 0) + 1
+            logger.info(
+                "scanner_drop",
+                market_id=market.market_id,
+                reason=reason,
+                end_date=market.end_date.isoformat(),
+                depth_bid_1pct=orderbook.depth_bid_1pct if orderbook is not None else None,
+                depth_ask_1pct=orderbook.depth_ask_1pct if orderbook is not None else None,
+            )
             continue
         survivors.append(market)
 
@@ -348,6 +358,7 @@ def _python_scanner(task: ScannerReviewerTask, *, clock: datetime) -> ScannerRev
         kept_count=len(truncated),
         candidate_count=len(task.raw_markets),
         held_count=len(held_markets),
+        dropped_reasons=dropped_reasons,
     )
     return ScannerReviewerOutput(universe=universe, portfolio_state=portfolio)
 
