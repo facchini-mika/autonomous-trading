@@ -20,6 +20,7 @@ from shared.models import (
     CashBalance,
     Decision,
     Market,
+    MarketMetadata,
     Orderbook,
     OrderResult,
     PortfolioState,
@@ -60,6 +61,38 @@ def _orderbook(market_id: str = "0xa") -> Orderbook:
         depth_ask_1pct=200,
         timestamp=_now(),
     )
+
+
+def _primed_adapter(market_id: str = "0xa") -> FakeAdapter:
+    """FakeAdapter with one market+orderbook pre-loaded so the Lead's pre-fetch
+    populates ``raw_orderbooks[market_id]`` — required since ``_decision_to_order``
+    now reads the order's marketable price from the orderbook. Market end_date
+    is pushed 7 days out so the universe pre-filter (MIN_TIME_TO_RESOLUTION_HOURS,
+    MAX_TIME_TO_RESOLUTION_DAYS) keeps it; spread tightened below MAX_SPREAD."""
+    from datetime import timedelta
+
+    fake = FakeAdapter()
+    fake.markets[market_id] = Market(
+        market_id=market_id,
+        condition_id=market_id,
+        slug="m",
+        title="M",
+        category="x",
+        end_date=_now() + timedelta(days=7),
+        status="open",
+        created_at=_now(),
+        last_seen=_now(),
+    )
+    fake.orderbooks[market_id] = Orderbook(
+        market_id=market_id,
+        best_bid=0.48,
+        best_ask=0.52,
+        mid=0.50,
+        depth_bid_1pct=2000,
+        depth_ask_1pct=2000,
+        timestamp=_now(),
+    )
+    return fake
 
 
 def _portfolio() -> PortfolioState:
@@ -252,7 +285,7 @@ def test_decision_notional_silent_for_skip_actions(mocker: MockerFixture) -> Non
 
 
 def test_bootstrap_places_order_only_for_trade_decisions() -> None:
-    fake = FakeAdapter()
+    fake = _primed_adapter()
     bootstrap_team(
         settings=Settings(),
         adapter=fake,
@@ -315,7 +348,7 @@ def test_bootstrap_places_order_when_risk_emits_alias_keys() -> None:
         )
         return RiskExecutionOutput(decisions=[decision])
 
-    fake = FakeAdapter()
+    fake = _primed_adapter()
     bootstrap_team(
         settings=Settings(),
         adapter=fake,
@@ -411,15 +444,41 @@ def test_default_trading_mode_is_paper_e2e() -> None:
     assert settings.TRADING_MODE == "paper"
     placed: list[Any] = []
 
+    from datetime import timedelta
+
     class _Adapter:
         def get_markets(self, *, limit: int) -> list[Market]:
-            return []
+            return [
+                Market(
+                    market_id="0xa",
+                    condition_id="0xa",
+                    slug="m",
+                    title="M",
+                    category="x",
+                    end_date=_now() + timedelta(days=7),
+                    status="open",
+                    created_at=_now(),
+                    last_seen=_now(),
+                )
+            ]
 
         def get_orderbook(self, market_id: str) -> Orderbook:
-            return _orderbook(market_id)
+            return Orderbook(
+                market_id=market_id,
+                best_bid=0.48,
+                best_ask=0.52,
+                mid=0.50,
+                depth_bid_1pct=2000,
+                depth_ask_1pct=2000,
+                timestamp=_now(),
+            )
 
-        def get_metadata(self, market_id: str):
-            return None
+        def get_metadata(self, market_id: str) -> MarketMetadata:
+            return MarketMetadata(
+                market_id=market_id,
+                resolution_criteria="test",
+                implied_probability_yes=0.5,
+            )
 
         def get_resolution(self, market_id: str):
             return None

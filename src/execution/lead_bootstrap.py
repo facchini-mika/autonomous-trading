@@ -16,7 +16,7 @@ import json
 from collections.abc import Callable  # noqa: TC003
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -194,6 +194,7 @@ def bootstrap_team(
     trades = _place_orders_and_collect_trades(
         adapter=adapter,
         decisions=decisions,
+        orderbooks=cast("dict[str, Orderbook]", universe_inputs["raw_orderbooks"]),
         cycle_id=cycle_id,
         now=now,
     )
@@ -503,13 +504,26 @@ def _persist_equity_snapshot(
         )
 
 
-def _decision_to_order(decision: Decision, *, cycle_id: str) -> Order | None:
+def _decision_to_order(decision: Decision, *, cycle_id: str, orderbook: Orderbook | None) -> Order | None:
     edge_sign = decision.p_consensus - decision.q_market
     side = "yes" if edge_sign > 0 else "no"
     notional = _decision_notional(decision)
     if notional <= 0:
         return None
-    price = decision.q_market if side == "yes" else (1.0 - decision.q_market)
+    # Marketable FAK pricing per specs/trading.md §5: BUY YES lifts the ask,
+    # SELL YES / BUY-NO hits the bid. ``q_market`` is a mid-of-book consensus
+    # quote — using it as the FAK limit causes silent 0-fill rejects whenever
+    # the book has any spread (cycle-1779224664 demonstrated this with both
+    # passing decisions rejected).
+    if orderbook is None:
+        logger.warning(
+            "order_skipped_no_orderbook",
+            decision_id=str(decision.id),
+            market_id=decision.market_id,
+            cycle_id=cycle_id,
+        )
+        return None
+    price = orderbook.best_ask if side == "yes" else orderbook.best_bid
     if price <= 0 or price >= 1:
         return None
     size = notional / price
@@ -1047,10 +1061,15 @@ def _place_orders_and_collect_trades(
     *,
     adapter: PredictionMarketAdapter,
     decisions: list[Decision],
+    orderbooks: dict[str, Orderbook],
     cycle_id: str,
     now: datetime,
 ) -> list[Trade]:
     """Submit each ``trade`` decision through the adapter and collect Trade rows.
+
+    ``orderbooks`` is the per-cycle snapshot the Lead pre-fetched; it
+    supplies the marketable price (best_ask / best_bid) used to size the
+    FAK limit. A missing entry is treated as "do not place" and logged.
 
     The adapter (Polymarket-real or PaperTrading wrapper) handles
     venue-side persistence (``paper_trades`` table for paper-mode). We
@@ -1063,7 +1082,7 @@ def _place_orders_and_collect_trades(
     for decision in decisions:
         if decision.action != "trade":
             continue
-        order = _decision_to_order(decision, cycle_id=cycle_id)
+        order = _decision_to_order(decision, cycle_id=cycle_id, orderbook=orderbooks.get(decision.market_id))
         if order is None:
             continue
         with with_decision(decision.id):

@@ -466,11 +466,16 @@ def test_place_orders_collects_trades_and_skips_non_trade_decisions() -> None:
             created_at=_now(),
         ),
     ]
-    trades = _place_orders_and_collect_trades(adapter=fake, decisions=decisions, cycle_id="cycle-test", now=_now())
+    orderbooks = {"0xa": _book("0xa"), "0xb": _book("0xb")}
+    trades = _place_orders_and_collect_trades(
+        adapter=fake, decisions=decisions, orderbooks=orderbooks, cycle_id="cycle-test", now=_now()
+    )
     assert len(trades) == 1
     assert trades[0].market_id == "0xa"
     assert trades[0].status == "filled"
     assert len(fake.placed_orders) == 1
+    # Marketable FAK pricing: BUY YES at best_ask, not at q_market mid.
+    assert fake.placed_orders[0].price == _book("0xa").best_ask
 
 
 def test_place_orders_skips_rejected_orders() -> None:
@@ -508,8 +513,101 @@ def test_place_orders_skips_rejected_orders() -> None:
 
     adapter = _RejectingAdapter()
     decisions = [_decision()]
-    trades = _place_orders_and_collect_trades(adapter=adapter, decisions=decisions, cycle_id="cycle-test", now=_now())
+    trades = _place_orders_and_collect_trades(
+        adapter=adapter,
+        decisions=decisions,
+        orderbooks={"0xa": _book("0xa")},
+        cycle_id="cycle-test",
+        now=_now(),
+    )
     assert trades == []
+
+
+def test_place_orders_buy_yes_uses_best_ask_not_q_market() -> None:
+    """Spec §5 + cycle-1779224664 regression: BUY YES limit must be best_ask, not q_market mid."""
+    fake = FakeAdapter()
+    # p_consensus=0.72, q_market=0.595 → edge_sign>0 → BUY YES.
+    decision = Decision(
+        cycle_id="cycle-test",
+        market_id="0xa",
+        p_consensus=0.72,
+        q_market=0.595,
+        edge=0.125,
+        gate_results={"clipped_notional": 500.0, "notional_usd": 500.0},
+        action="trade",
+        rationale="positive edge",
+        created_at=_now(),
+    )
+    orderbook = Orderbook(
+        market_id="0xa",
+        best_bid=0.59,
+        best_ask=0.61,
+        mid=0.60,
+        depth_bid_1pct=2000,
+        depth_ask_1pct=2000,
+        timestamp=_now(),
+    )
+    trades = _place_orders_and_collect_trades(
+        adapter=fake,
+        decisions=[decision],
+        orderbooks={"0xa": orderbook},
+        cycle_id="cycle-test",
+        now=_now(),
+    )
+    assert len(trades) == 1
+    assert fake.placed_orders[0].side == "yes"
+    assert fake.placed_orders[0].price == 0.61  # best_ask, not q_market=0.595
+
+
+def test_place_orders_buy_no_uses_best_bid_not_one_minus_q_market() -> None:
+    """Cycle-1779224664 Pratt regression: side='no' must take best_bid, not 1-q_market."""
+    fake = FakeAdapter()
+    # p_consensus=0.08 (low), q_market=0.255 → edge_sign<0 → side='no'.
+    decision = Decision(
+        cycle_id="cycle-test",
+        market_id="0xa",
+        p_consensus=0.08,
+        q_market=0.255,
+        edge=-0.175,
+        gate_results={"clipped_notional": 700.0, "notional_usd": 700.0},
+        action="trade",
+        rationale="negative edge",
+        created_at=_now(),
+    )
+    orderbook = Orderbook(
+        market_id="0xa",
+        best_bid=0.24,
+        best_ask=0.27,
+        mid=0.255,
+        depth_bid_1pct=3000,
+        depth_ask_1pct=3000,
+        timestamp=_now(),
+    )
+    trades = _place_orders_and_collect_trades(
+        adapter=fake,
+        decisions=[decision],
+        orderbooks={"0xa": orderbook},
+        cycle_id="cycle-test",
+        now=_now(),
+    )
+    assert len(trades) == 1
+    assert fake.placed_orders[0].side == "no"
+    # best_bid=0.24, NOT 1-q_market=0.745 (which would be the wrong book side).
+    assert fake.placed_orders[0].price == 0.24
+
+
+def test_place_orders_skips_when_orderbook_missing() -> None:
+    fake = FakeAdapter()
+    decisions = [_decision(market_id="0xa")]
+    trades = _place_orders_and_collect_trades(
+        adapter=fake,
+        decisions=decisions,
+        orderbooks={},  # No book for "0xa".
+        cycle_id="cycle-test",
+        now=_now(),
+    )
+    assert trades == []
+    assert fake.placed_orders == []
 
 
 def test_persist_agent_notes_calls_manage_notes_for_each_entry() -> None:
