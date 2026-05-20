@@ -23,6 +23,62 @@ Every PR that touches one of the following must have an entry here:
 
 ---
 
+## 2026-05-20 — CI hardening: coverage spec gates, trufflehog pin, dependabot, audit-log gate
+
+- **Category:** CI / Branch-protection (no `src/risk/**` touch, but the
+  required-checks list and the spec §11 enforcement surface change).
+- **PR:** _pending_
+- **Description:** Closes four gaps in the workflow layer at once.
+  (1) Coverage spec §11 was only half-enforced — the existing
+  `risk-coverage.yml` (kept the 100 % gate on `src/risk/`) is renamed to
+  `coverage.yml` and now runs three sequential `pytest --cov-fail-under`
+  steps: `src/risk/` 100 %, `src/execution/` floor 87 % (catch-up to
+  ≥ 90 % per §11 tracked below), `src/shared/` + `src/research/` ≥ 80 %.
+  Concurrency group added (parity with `ci.yml`).
+  (2) `ci.yml` pins `trufflesecurity/trufflehog@main` → `@v3.95.3`
+  (floating ref → tag pin; supply-chain hardening).
+  (3) `ci.yml` adds `workflow_dispatch:` so the operator can rerun CI
+  from the GitHub UI without an empty commit.
+  (4) New `.github/dependabot.yml` enables weekly `pip` (uv.lock) and
+  monthly `github-actions` PRs, grouped by minor/patch to reduce noise.
+  Pre-real_capital hygiene; CVEs in `web3` / `py-clob-client` /
+  `eth-account` / `anthropic` SDK would otherwise sit silently in
+  `uv.lock`.
+  (5) New `audit-log-required.yml` required check blocks PRs that
+  touch `src/risk/**` or `src/shared/config/settings.py` without a new
+  `AUDIT_LOG.md` entry; mechanises the previously discipline-only
+  reviewer rule from CLAUDE.md.
+  (6) `specs/engineering.md §8` (line 155) updated to reflect the
+  full 10-check required list and the new `audit-log-required` gate.
+- **Risk:**
+  - **Self-block on the new audit-log gate**: a trivial `src/risk/` fix
+    that forgets an AUDIT_LOG entry blocks itself. Accepted by design
+    (single-operator audit-trail is now mechanical).
+  - **Coverage floor is below spec target** for `src/execution/` (87 %
+    vs ≥ 90 %). Main contributor: `src/execution/run_evaluation.py` at
+    43 % (Tier-1 evaluation paths, reached only via
+    `tests/e2e/test_paper_cycle.py` which depends on DATABASE_URL).
+    Floor prevents regression; the spec target stays in §11 as the soll-
+    Wert, not relaxed.
+  - **Dependabot PR storm** on first run is possible. Mitigation:
+    grouped minor/patch + open-PR limits (5 + 3).
+- **Mitigation / rollout:**
+  - Branch-protection update (drop `risk-coverage`, add `coverage` +
+    `audit-log-required`) executed post-merge via `gh api PATCH`. If
+    the PATCH is skipped, `risk-coverage` will be a missing required
+    check and Folge-PRs self-block. Operator runbook: see PR body.
+  - Follow-up task: raise `src/execution/` `--cov-fail-under` to 90 by
+    adding tests for `run_evaluation.py`, `outcome_math.py`,
+    `gamma_client.py`. Tracked here as the canonical pointer.
+- **Cross-references:**
+  - Spec §11 (coverage thresholds), §8 (branch protection), §3
+    (`src/risk/` protection).
+  - CLAUDE.md "Reviewer rule" and "No-go list".
+  - Memory `project_trading_cycle_heartbeat_missing.md` — heartbeat
+    monitor is a separate workflow PR (out of scope here).
+
+---
+
 ## 2026-05-20 — Align specs with Python-Lead runtime; drop dead Agent-Teams config
 
 - **Category:** Docs + dead-config cleanup (no `src/`, `infra/`, or

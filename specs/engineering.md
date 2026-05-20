@@ -152,7 +152,7 @@ Personal/transient → `CLAUDE.local.md` (gitignored).
 - **`gh` CLI** required locally — token-cheaper for AI use.
 - **Branch protection on `main`:**
   - `required_approving_review_count: 0` — single-operator project; GitHub forbids self-approval, so the platform-enforced approval count must be 0 for any PR to merge. Risk-sensitivity is enforced via the audit-log self-review pattern instead (see below).
-  - Required status checks: `lint` (ruff), `type-check` (mypy --strict), `gitleaks`, `trufflehog` from Phase 1; `pytest` + `import-linter` + `src/risk/`-100%-coverage from Phase 3.
+  - Required status checks: `lint` (ruff), `type-check` (mypy --strict), `gitleaks`, `trufflehog` from Phase 1; `pytest` + `import-linter` + per-module `coverage` (`src/risk/` 100%, `src/execution/` floor at the current % with target ≥ 90% per §11, `src/shared/` + `src/research/` ≥ 80%) from Phase 3; `alembic-smoketest` + `e2e-paper-cycle` from Phase 5; `audit-log-required` from Phase 6 (blocks PRs touching `src/risk/**` or `src/shared/config/settings.py` without a new `AUDIT_LOG.md` entry).
   - `enforce_admins: true`, no direct pushes, no force-push, no deletions.
 - **Single-operator audit pattern.** The operator is both author and reviewer. For any PR touching `src/risk/**`, `MAX_CAPITAL_EUR`, or flipping `TRADING_MODE`, an `AUDIT_LOG.md` entry is mandatory and must document: what changed, what could go wrong, why it's still safe. CI cannot enforce the audit entry; the operator's discipline does. The audit log is the second-review trail. If a second human operator ever joins, raise `required_approving_review_count` to ≥1 and require their approval on the same set of paths.
 

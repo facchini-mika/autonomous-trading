@@ -1,0 +1,61 @@
+name: audit-log-required
+
+# Required check (post-merge): blocks any PR that touches src/risk/** or
+# src/shared/config/settings.py (incl. MAX_CAPITAL_EUR / TRADING_MODE)
+# without adding a new entry to AUDIT_LOG.md.
+#
+# Per CLAUDE.md "Reviewer rule" and specs/engineering.md §3/§8 the audit
+# log is this project's only second-review trail (single-operator setup,
+# GitHub-enforced approval count is 0). Operator discipline used to be
+# the sole enforcement — this workflow mechanises it.
+#
+# Self-block is a feature: a trivial src/risk/ fix still needs a one-line
+# AUDIT_LOG entry. Workaround: amend a commit that adds the entry.
+
+on:
+  pull_request:
+    paths:
+      - "src/risk/**"
+      - "src/shared/config/settings.py"
+      - "AUDIT_LOG.md"
+
+jobs:
+  audit-log-required:
+    name: audit-log-required
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check AUDIT_LOG.md gained new lines when risk-sensitive paths changed
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          echo "Diff base: $base"
+          echo "Diff head: $head"
+
+          changed=$(git diff --name-only "$base" "$head")
+          echo "Files changed in this PR:"
+          echo "$changed"
+
+          risk_touched=$(echo "$changed" | grep -E '^(src/risk/|src/shared/config/settings\.py$)' || true)
+          if [ -z "$risk_touched" ]; then
+            echo "::notice::No risk-sensitive files touched; AUDIT_LOG check is a no-op."
+            exit 0
+          fi
+
+          echo "::notice::Risk-sensitive paths touched:"
+          echo "$risk_touched"
+
+          audit_added=$(git diff "$base" "$head" -- AUDIT_LOG.md | awk '/^\+[^+]/ {print}' || true)
+          if [ -z "$audit_added" ]; then
+            echo "::error::PR touches risk-sensitive paths but AUDIT_LOG.md has no new lines."
+            echo "::error::Per CLAUDE.md 'Reviewer rule' and specs/engineering.md §3 §8, an AUDIT_LOG entry is mandatory."
+            echo "::error::Add an entry with Description / Risk / Mitigation before merging."
+            exit 1
+          fi
+
+          echo "AUDIT_LOG.md additions in this PR (preview):"
+          echo "$audit_added" | head -30
