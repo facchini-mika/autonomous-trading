@@ -8,7 +8,7 @@ The Tier-1 evaluation block. Owns: ground-truth ingestion on resolved Polymarket
 
 ## MVP scope (this version of the doc)
 
-- **There is NO Trade Evaluation Team in MVP.** No `evaluator` agent, no subagents, no Claude Code Agent Team. Outcome ingestion is a deterministic Python script — no LLM, no Anthropic / OpenAI dependency.
+- **There is NO Trade Evaluation Team in MVP.** No `evaluator` agent, no subagents, no multi-agent runtime. Outcome ingestion is a deterministic Python script — no LLM, no Anthropic / OpenAI dependency.
 - **One job: write ground truth on resolved markets.** `outcome`, `realized_pnl`, position-status closes. Idempotent on `(prediction_id, market_id)`.
 - **Cadence: cron every 5–10 min** (central settings). Polymarket UMA-oracle resolution takes hours-to-days; sub-minute polling is wasted budget.
 - **Lessons generation lives in `optimization.md §1`** — that file's daily script reads the rows this file writes, then emits `lessons` rows. Clean separation: this file = outcome math, that file = surprise heuristics + lessons.
@@ -126,7 +126,7 @@ There is **no automated CI gate** that blocks the promotion — the operator own
 
 Deferred until MVP is stable. Each item is a future expansion of one of the §1–§5 sections; consistent with `engineering.md §13` and `optimization.md §5`.
 
-### Trade Evaluation Team (Claude Code Agent Team)
+### Trade Evaluation Team (multi-agent Tier-1)
 
 The full Tier-1 architecture this file used to describe:
 
@@ -135,8 +135,8 @@ The full Tier-1 architecture this file used to describe:
   - `outcome-fetcher` — queries Gamma for resolved markets in the window.
   - `pnl-aggregator` — computes realized PnL per fill from `trades` rows.
   - `agent-performance-updater` — refreshes `agent_performance` rolling stats.
-- **Permission mode:** standard (no `--dangerously-skip-permissions`). Hung prompts time out; next tick recovers cleanly.
-- **Same authority boundary as MVP** (read-only Gamma, no signing keys, ground-truth-only writes), but enforced per Claude-Code-permission-mode in addition to the Postgres role.
+- **Permission mode:** standard. Hung prompts time out; next tick recovers cleanly.
+- **Same authority boundary as MVP** (read-only Gamma, no signing keys, ground-truth-only writes), enforced by the Postgres role.
 
 ### Per-agent attribution
 
@@ -166,16 +166,16 @@ In MVP only **Net PnL > 0 monthly** is the reported gate (`trading.md §1`); the
 
 The semantic feedback loop in the architecture diagram. MVP form is trivial (outcomes → `optimization.md §1` lessons → next cycle's prompt critical-learning section). Post-MVP form has many channels:
 
-| Artifact | Written by | Read by Trading Team |
+| Artifact | Written by | Read by Trading Cycle |
 |---|---|---|
 | `predictions.outcome` + `realized_pnl` | This file (Tier 1) | `agent_performance` → `meta-allocator` weekly rebalance |
 | `lesson` (raw observation) | Tier-2 evaluator (post-MVP) — in MVP, by `optimization.md §1` daily script | Surfaced via critical-learning section of per-cycle prompt |
 | `pattern` (curated) | Tier-2 `pattern-miner` weekly | Top-K patterns injected into critical-learning section |
-| `operating_doctrine` revision | Tier-2 `strategy-optimizer` proposes; operator merges | At every Trading-Team boot |
-| `cycle_plan` | Trading-Team Lead at cycle close | Next cycle's Lead at boot (already MVP per `trading.md §2`) |
+| `operating_doctrine` revision | Tier-2 `strategy-optimizer` proposes; operator merges | At every Trading-Cycle boot |
+| `cycle_plan` | Trading-Cycle Lead at cycle close | Next cycle's Lead at boot (already MVP per `trading.md §2`) |
 | `agent_performance` rebalance | `meta-allocator` weekly | Per-agent sizing caps consumed by `risk-engine` |
 
-**Critical property** (MVP and post-MVP): the Strategy Update Loop never changes code or prompts directly — all semantic feedback flows through *data structures the Trading Team reads on its next boot*. Code/prompt changes go through Git PRs (`engineering.md §8` / `optimization.md`).
+**Critical property** (MVP and post-MVP): the Strategy Update Loop never changes code or prompts directly — all semantic feedback flows through *data structures the Trading Cycle reads on its next boot*. Code/prompt changes go through Git PRs (`engineering.md §8` / `optimization.md`).
 
 ### Reporting Cadence
 

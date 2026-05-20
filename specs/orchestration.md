@@ -1,16 +1,16 @@
 # Orchestration — Runtime Topology
 
-How the MVP system runs at runtime — what processes exist, on what schedule, how they interact, and which one is actually a Claude Code Agent Team. Owns: the per-process inventory, the Trading Team's lifecycle and bootstrap, the memory split between in-process short-term state and Postgres long-term state, and the failure-handling shape that follows from "fresh team per cycle."
+How the MVP system runs at runtime — what processes exist, on what schedule, how they interact, and how each is structured. Owns: the per-process inventory, the Trading Cycle's lifecycle and bootstrap, the memory split between in-process short-term state and Postgres long-term state, and the failure-handling shape that follows from "fresh process per cycle."
 
-**What lives here:** the runtime topology and process inventory. **What does not live here:** what the Trading Team's members do (`trading.md`), schemas (`data_infrastructure.md §1`), risk limits + hooks + central settings (`engineering.md`), Tier-1 outcome math (`trading_feedback.md`), Tier-2 self-improvement loop (`optimization.md`).
+**What lives here:** the runtime topology and process inventory. **What does not live here:** what the Trading Cycle's members do (`trading.md`), schemas (`data_infrastructure.md §1`), risk limits + hooks + central settings (`engineering.md`), Tier-1 outcome math (`trading_feedback.md`), Tier-2 self-improvement loop (`optimization.md`).
 
 ---
 
 ## MVP scope (this version of the doc)
 
-- **Exactly one Claude Code Agent Team** in MVP — the Trading Cycle (Lead + 3 members per `trading.md §2`). Everything else that used to be a "team" in the full architecture is either a deterministic Python script (Tier-1 / Tier-2) or deferred entirely.
-- **Two deterministic Python scripts**: outcome ingestion (`trading_feedback.md §1`) and the daily lessons summary (`optimization.md §1`). Triggered by cron, no LLM, no Agent-Team overhead.
-- **No three-team architecture in MVP** — no Trade Evaluation Team as a Claude Code Agent Team, no Code Evaluation Team, no `meta-allocator`, no 7-persona ensemble, no subagent fan-out per member.
+- **Exactly one trading cycle process** in MVP — a deterministic Python Lead plus 2 LLM subagents per `trading.md §2`. Everything else that used to be a "team" in the full architecture is either a deterministic Python script (Tier-1 / Tier-2) or deferred entirely.
+- **Two deterministic Python scripts**: outcome ingestion (`trading_feedback.md §1`) and the daily lessons summary (`optimization.md §1`). Triggered by cron, no LLM, no per-cycle orchestration overhead.
+- **No three-team architecture in MVP** — no Trade Evaluation Team, no Code Evaluation Team, no `meta-allocator`, no 7-persona ensemble, no subagent fan-out per member.
 - **Three Postgres roles** for the three runtime processes (cycle / outcome-ingestion / lessons-summary) — the load-bearing authority-boundary mechanism in MVP because real_capital is in scope from day 1.
 - **Memory split** is two layers (short-term in-process, long-term Postgres) — the 10-layer taxonomy is post-MVP.
 - **Everything else is post-MVP** — see §7 *Weiterer Ausbau*. Consistent with `engineering.md §13`.
@@ -23,7 +23,7 @@ Three independent processes. Decoupled scheduling — a stuck process cannot blo
 
 | Process | Schedule | Type | Purpose | Spec owner |
 |---|---|---|---|---|
-| **Trading Cycle** | every ~12 min (cron) | Claude Code Agent Team (Lead + 3 members) | Decide what to trade, place orders | `trading.md` |
+| **Trading Cycle** | every 30 min (cron) | Python-Lead + 2 LLM subagents (headless `claude -p`) | Decide what to trade, place orders | `trading.md` |
 | **Outcome Ingestion** | every ~5–10 min (cron) | Deterministic Python script (no LLM) | Write `outcome` + `realized_pnl` on resolved Polymarket markets | `trading_feedback.md §1` |
 | **Lessons Summary** | daily (cron) | Deterministic Python script (no LLM) | Emit `lessons` rows from recently-resolved predictions via surprise heuristic | `optimization.md §1` |
 
@@ -41,51 +41,40 @@ A failed run on any process is a non-event — no orders placed, no state mutate
 
 ---
 
-## 2. Trading Team (the only Agent Team in MVP)
+## 2. Trading Cycle (process topology)
 
-The Trading Cycle = **one fresh Claude Code Agent Team per cycle**. Every cron tick starts a new `claude` process; the Lead boots the team, runs one cycle (per `trading.md §5`), calls `clean up the team`, and exits. The next scheduled tick starts a brand-new process with no shared in-process state.
+The Trading Cycle = **one fresh Python process per cron tick**. Every cron tick runs `bash infra/scripts/run_cycle.sh trading_cycle`, which sources `.env`, applies a `timeout 1800` wrapper, and execs `uv run python -m execution.run_cycle`. The Lead runs one cycle (per `trading.md §5`), persists artifacts, and exits. The next scheduled tick starts a brand-new process with no shared in-process state.
 
 **Topology** (full member detail in `trading.md §2`):
-- **Lead** — drives cycle clock, runs the deterministic `_python_scanner` (fetches top-K liquid Polymarket markets + builds `PortfolioState`), spawns the two LLM members, persists artifacts, writes `cycle_plan`, calls `clean up the team`. Never executes orders.
+- **Lead** (`execution.lead_bootstrap`, deterministic Python) — drives cycle clock, runs the `_python_scanner` (fetches top-K liquid Polymarket markets + builds `PortfolioState`), spawns the two LLM members as headless `claude -p` subagents via `execution.subagent_runner`, persists artifacts, writes `cycle_plan`. Never executes orders.
 - **`trading-agent`** — mispricing analysis with `web_search`; outputs `Prediction[]`.
 - **`risk-execution`** — applies `src/risk/` gates, sizes, places paper or signed CLOB order.
 
-LLM member definitions live in `.claude/agents/{trading-agent,risk-execution}.md`. Team spec source-of-truth: `.claude/teams/trading-team.spec.json`. The historic `scanner-reviewer` LLM agent was removed 2026-05-19 (see AUDIT_LOG); its responsibilities now live in Lead-internal Python (`execution.lead_bootstrap._python_scanner`).
+LLM member definitions live in `.claude/agents/{trading-agent,risk-execution}.md`. `execution.subagent_runner` invokes them directly via `claude -p`. The historic `scanner-reviewer` LLM agent was removed 2026-05-19 (see AUDIT_LOG); its responsibilities now live in Lead-internal Python (`execution.lead_bootstrap._python_scanner`).
 
-**Why fresh-team-per-cycle.** The design rule *"memory is the only coupling between cycles"* is enforced by construction — a bad cycle cannot poison the next, memory leaks are physically impossible, Claude Code version upgrades pick up at the next cycle naturally. Cloud-doc constraints (no session resumption, fixed Lead, one team per session) all become non-issues because every cycle starts a fresh session anyway. Cost: ~5–30s boot per cycle, < 5% of the 12-min period and entirely before edge-time-sensitive work.
+**Why fresh-process-per-cycle.** The design rule *"memory is the only coupling between cycles"* is enforced by construction — a bad cycle cannot poison the next, memory leaks are physically impossible, Claude Code version upgrades pick up at the next cycle naturally. Cost: ~5–30s boot per cycle, < 5% of the 30-min period and entirely before edge-time-sensitive work.
 
 **Bootstrap (single command per cycle, run by cron):**
 
 ```bash
-# CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 lives in .claude/settings.json (engineering.md §9).
-claude --teammate-mode in-process \
-       --dangerously-skip-permissions \
-       -p "Bring up the trading-team per .claude/teams/trading-team.spec.json.
-           Run one decision cycle per trading.md §5.
-           On completion, run 'clean up the team' and exit."
+# Cron entry (infra/cron/trading_cycle.cron):
+*/30 * * * * cd <repo> && bash infra/scripts/run_cycle.sh trading_cycle
+
+# Which sources .env, applies `timeout 1800`, and execs:
+uv run python -m execution.run_cycle
 ```
 
-`--dangerously-skip-permissions` is unavoidable for unattended operation. Safety in this mode comes **exclusively** from `engineering.md §1` risk gates, `engineering.md §3` capital gate, `engineering.md §2` kill switch, and `engineering.md §9` hooks — the permission system is no longer a defense layer. Blast radius of any one cycle is bounded by these gates plus the cycle's ~12-min lifetime.
+Unattended operation safety comes from `engineering.md §1` risk gates + `engineering.md §3` capital gate + `engineering.md §2` kill switch. The Python-Lead never calls Polymarket directly — every order flows through `risk-execution`'s gates. Blast radius of any one cycle is bounded by these gates plus the 30-min cycle lifetime.
 
 **Operational pre-conditions (binding):**
-- `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in `.claude/settings.json`.
-- Claude Code version pinned in `infra/` (e.g. via Docker image digest or a pinned `.claude-code-version` file). Floating `latest` tags are forbidden — a Claude Code release can change Agent-Teams behavior.
-- The cycle's spawn prompt instructs the Lead to call `clean up the team` before exit. The `Stop` hook (`engineering.md §9`) asserts cleanup happened.
-- The next cycle's `SessionStart` hook (`engineering.md §9`) sweeps any stale `~/.claude/teams/{team-name}/` directory left by a crashed prior cycle before spawning the new team.
-- Team config (`~/.claude/teams/{team-name}/config.json`) is runtime state, written by Claude Code, **never manually edited** (Cloud-doc warning). The team-spec source-of-truth lives in `.claude/teams/trading-team.spec.json` in the repo and is read at boot time.
+- `infra/scripts/run_cycle.sh` is the cron entry point — it sources `.env`, applies a `timeout 1800` wrapper, and dispatches to `execution.run_cycle`.
+- Claude Code version pinned in `infra/.claude-code-version` (consumed by `subagent_runner` when spawning headless subagents). Floating `latest` tags are forbidden.
+- `WALLET_PASSPHRASE` available via env (consumed by `KeyProvider`; `os.environ`-read, not via pydantic-settings).
+- Postgres schema + roles initialized (`infra/sql/00_roles.sql`, `alembic upgrade head`).
 
-**Hooks** (full set in `engineering.md §9`):
-- Production-cycle: `SessionStart` (janitor), `TaskCreated` (schema-validate), `TaskCompleted` (artifact-validate via Pydantic), `Stop` (cleanup-assertion).
-- Dev-session hooks fire here too because hooks are global to the `.claude/settings.json`.
+**Subagent output validation.** The cycle runs as a plain Python process — no Claude-Code session, no session-scoped hooks. `execution.subagent_runner` validates LLM-output artifacts inline against `shared.models.tasks` Pydantic types before the Lead consumes them. The hooks under `.claude/hooks/` are scoped to interactive Claude-Code sessions (dev work in this repo) — full set in `engineering.md §9`.
 
-**Cloud-doc constraints** (all trivially satisfied):
-- Subagents may not spawn further teams — irrelevant in MVP, no member uses subagents.
-- Lead is fixed for the team's lifetime — and the team's lifetime is exactly one cycle, so this is moot.
-- No nested teams — no member tries to bring up a sub-team.
-- No session resumption — every cycle is a fresh session by construction.
-- One team per session — each `claude` process owns exactly one team.
-
-**Versioning.** Team-spec changes (member roster, system prompts, subagent definitions) go through normal PRs against `.claude/agents/` and `.claude/teams/trading-team.spec.json` (`engineering.md §8` branch protection). If a Claude Code release breaks the team, exactly one cycle fails before the operator pins back to a known-good version; paper-mode catches breaking changes before real_capital cycles see them.
+**Versioning.** Subagent definition changes (system prompts, tool allow-lists) go through normal PRs against `.claude/agents/{trading-agent,risk-execution}.md` (`engineering.md §8` branch protection). Lead-side changes go through normal PRs against `src/execution/`. A Claude Code release breaking subagent invocation surfaces at the next cycle; paper-mode catches breaking changes before real_capital cycles see them.
 
 ---
 
@@ -111,9 +100,9 @@ Schemas: `data_infrastructure.md §1`.
 
 ```
                             ┌──────────────────┐
-        cron 12 min   ────► │  Trading Cycle   │ ──► claude --dangerously-skip-permissions
-                            │  (Agent Team:    │     (Lead + 3 members; trading.md §2)
-                            │   Lead + 3)      │
+        cron */30     ────► │  Trading Cycle   │ ──► uv run python -m execution.run_cycle
+                            │  (Python-Lead +  │     (Lead + 2 LLM subagents via claude -p;
+                            │   2 LLM subag.)  │      trading.md §2)
                             └────┬─────────────┘
                                  │ role=trading_cycle
                                  │ SELECT all + INSERT/UPDATE on
@@ -149,10 +138,9 @@ Three processes, three Postgres roles, no shared in-process state. The Polymarke
 
 ## 5. Versioning & Pin
 
-- **Claude Code version pinned** in `infra/` (e.g. `infra/.claude-code-version` or pinned in a Docker base image). No floating `latest` tags.
-- **Team-spec source-of-truth:** `.claude/teams/trading-team.spec.json` (committed). Never edit `~/.claude/teams/{team-name}/config.json` directly — that's runtime state, regenerated each cycle.
-- **Member definitions:** `.claude/agents/{trading-agent,risk-execution}.md`. Per-member system prompt + tool allow-list.
-- **Spec changes** = PRs against the above three locations; `engineering.md §8` branch protection applies. If a change touches `src/risk/` or `MAX_CAPITAL_EUR`, the ≥ 2-human rule kicks in.
+- **Claude Code version pinned** in `infra/.claude-code-version` (consumed by `subagent_runner` when spawning headless `claude -p` subagents). No floating `latest` tags.
+- **Subagent definitions:** `.claude/agents/{trading-agent,risk-execution}.md` — per-member system prompt + tool allow-list. Loaded directly by `execution.subagent_runner`.
+- **Spec changes** = PRs against the above two locations (plus `src/execution/` for Lead-side changes); `engineering.md §8` branch protection applies. If a change touches `src/risk/` or `MAX_CAPITAL_EUR`, the ≥ 2-human rule kicks in.
 
 ---
 
@@ -161,8 +149,8 @@ Three processes, three Postgres roles, no shared in-process state. The Polymarke
 | Failure | Behavior |
 |---|---|
 | Cycle process crashes / cron miss | Non-event. No orders placed. Next scheduled tick runs cleanly. Idempotency on the order side (`engineering.md §1` solvency gate + internal idempotency keys) prevents duplicate orders if a partial run resumes. |
-| Lead hangs (e.g. Anthropic API outage) | Killed by scheduler timeout (`cron` + `timeout` wrapper, default cycle period + 60s grace). Stale `~/.claude/teams/` left behind is swept by the next cycle's `SessionStart` janitor. |
-| Member returns malformed artifact | `TaskCompleted` hook (`engineering.md §9`) Pydantic-validates and forces retry on schema mismatch. After repeated failure, the cycle aborts; no orders placed; next cycle runs. |
+| Lead hangs (e.g. Anthropic API outage) | Killed by scheduler timeout (`cron` + `timeout 1800` wrapper). Idempotency keys on the order side prevent duplicate orders if a partial run resumes. |
+| Member returns malformed artifact | `execution.subagent_runner` Pydantic-validates the subagent output against `shared.models.tasks` and forces retry on schema mismatch. After repeated failure, the cycle aborts; no orders placed; next cycle runs. |
 | Outcome-ingestion or lessons-summary script crashes | Non-fatal. Idempotent, picks up from `system_state.last_outcome_ingestion_at` (or equivalent for lessons). Next cron tick runs. |
 | Postgres outage | All three processes fail fast on connect. Operator alerted via standard structured-log alerting (`data_infrastructure.md §3`). No state corruption. |
 
@@ -175,11 +163,11 @@ There is no automatic recovery beyond "next cron tick"; that is by design — it
 Deferred until MVP is stable. Each item is a future expansion of one of the §1–§6 sections; consistent with `engineering.md §13`.
 
 ### Three-team architecture (extends §1)
-- **Trade Evaluation Team** (Tier 1) as a Claude Code Agent Team running every 1 min — replaces today's MVP outcome-ingestion script with `evaluator` + 3 subagents (`outcome-fetcher`, `pnl-aggregator`, `agent-performance-updater`). Owned by `trading_feedback.md §6 Weiterer Ausbau`.
-- **Code Evaluation Team** (Tier 2) as scheduled hourly / daily / weekly Claude Code Agent Team batches — replaces today's MVP daily lessons-summary script with the 6-role roster (`risk-auditor`, `pattern-miner`, `strategy-optimizer`, `strategy-explorer`, `prior-art-scout`, `meta-reviewer`). Owned by `optimization.md §5 Weiterer Ausbau`.
+- **Trade Evaluation Team** (Tier 1) as a multi-agent runtime running every 1 min — replaces today's MVP outcome-ingestion script with `evaluator` + 3 subagents (`outcome-fetcher`, `pnl-aggregator`, `agent-performance-updater`). Owned by `trading_feedback.md §6 Weiterer Ausbau`.
+- **Code Evaluation Team** (Tier 2) as scheduled hourly / daily / weekly multi-agent batches — replaces today's MVP daily lessons-summary script with the 6-role roster (`risk-auditor`, `pattern-miner`, `strategy-optimizer`, `strategy-explorer`, `prior-art-scout`, `meta-reviewer`). Owned by `optimization.md §5 Weiterer Ausbau`.
 - These are added when the operator-manual-review loop has accumulated enough signal to justify automation, and only then.
 
-### Multi-agent ensemble inside the Trading Team (extends §2)
+### Multi-agent ensemble inside the Trading Cycle (extends §2)
 - 7-persona heterogeneous roster (`base-rate-bayesian`, `news-synthesizer`, `domain-router`, `historical-analogue`, `contrarian-skeptic`, `microstructure-reader`, `red-team-adversary`) — owned by `trading.md §8 Weiterer Ausbau`.
 - Aggregator member combining per-agent `p_raw` into `p_consensus` with disagreement metric.
 - Per-agent capital allocation managed by `meta-allocator` (post-MVP service).
@@ -216,8 +204,8 @@ Deferred until MVP is stable. Each item is a future expansion of one of the §1�
 - Today (MVP): no auto-monitor-only mode; the operator decides what to do after a failed cycle.
 
 ### Hook + permission expansions (extends §2)
-- `TeammateIdle` hook — if member idles 3× on the same task, abort cycle and emit alert (no kill-switch trip — single bad cycle is non-fatal). Today's MVP set in `engineering.md §9` does not include this.
-- Permission-mode boundaries refined per off-cycle team (read-only Tier-1, no-CLOB Tier-2, etc.).
+- Subagent-idle watchdog — if a `claude -p` subagent stalls 3× on the same task, abort cycle and emit alert (no kill-switch trip — single bad cycle is non-fatal). Today's MVP set in `engineering.md §9` does not include this.
+- Permission-mode boundaries refined per off-cycle process (read-only Tier-1, no-CLOB Tier-2, etc.).
 
 ### Versioning + rollback intricacies (extends §5)
 - Image-digest pinning (Docker) instead of pinned-version-file.
@@ -227,10 +215,10 @@ Deferred until MVP is stable. Each item is a future expansion of one of the §1�
 
 ## See also
 
-- `trading.md §2` — Trading Team member topology, single-agent context.
+- `trading.md §2` — Trading Cycle member topology, single-agent context.
 - `trading_feedback.md §1` + §2 — Outcome-Ingestion script + authority boundary.
 - `optimization.md §1` + §2 — Lessons-Summary script + authority boundary.
-- `engineering.md §9` — full hook set (dev + production-cycle).
+- `engineering.md §9` — full hook set (interactive dev-session + Task-validation guards).
 - `engineering.md §13` — master post-MVP deferral list (this file's §7 is consistent with it).
 - `data_infrastructure.md §1` — schemas (`predictions`, `decisions`, `trades`, `paper_trades`, `positions`, `cycle_plan`, `notes`, `lessons`, `system_state`).
 - `engineering.md §4` — `TRADING_MODE` flag governance.

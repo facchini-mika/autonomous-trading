@@ -16,7 +16,7 @@ Phase 0  →  Coding Standards Layer        (CLAUDE.md, pyproject.toml, pre-comm
 Phase 1  →  Git/GitHub Layer              (Branch Protection, CI Gates, AUDIT_LOG)
 Phase 2  →  Claude Code Config Layer      (settings.json, 9 Hooks, Agent-Skelette, Team-Spec)
 Phase 3  →  Foundation Code (sequenziell) (Settings, Models, Risk, Schema, Adapter-Protocol)
-Phase 4  →  4 PARALLELE Streams           (Adapters / outcome_ingestion / lessons_summary / Trading-Team-Wiring)
+Phase 4  →  4 PARALLELE Streams           (Adapters / outcome_ingestion / lessons_summary / Trading-Cycle-Wiring)
 Phase 5  →  Integration                   (Cron-Wiring, Logging, E2E paper-cycle)
 Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter)
 ```
@@ -73,31 +73,27 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 
 ---
 
-## Phase 2 — Claude-Code-Config-Layer (Skills + Hooks)
+## Phase 2 — Claude-Code-Config-Layer (Dev-Session Hooks + Subagent Definitions)
 
-**Ziel:** `.claude/`-Layer aufgesetzt mit allen 9 Hooks, Agent-Skeletten und Team-Spec — Hook-Skripte teilweise Stubs, weil Pydantic-Models erst in Phase 3 existieren.
+**Ziel:** `.claude/`-Layer aufgesetzt: Dev-Session-Hooks, defensive Pydantic-Hooks für `Task`/`Agent`-Tool-Use, Subagent-Definitionen für `trading-agent` und `risk-execution` — Pydantic-Hooks teilweise Stubs, weil Models erst in Phase 3 existieren.
 
 **Files:**
-- `.claude/settings.json`: `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, alle 9 Hooks aus specs/engineering.md §9 registriert mit Pfad zu `.claude/hooks/*.py`.
+- `.claude/settings.json`: registriert die Hooks aus specs/engineering.md §9 mit Pfaden zu `.claude/hooks/*.py`.
 - `.claude/hooks/post_tool_use_edit.py` — ruff/mypy/pytest. Phase 2: nur ruff aktiv. Phase 3: scharf.
 - `.claude/hooks/pre_tool_use_bash.py` — blockt `rm -rf`, `git push --force`, `git reset --hard`, `.env*`-Writes. Sofort scharf.
 - `.claude/hooks/pre_tool_use_risk_edit.py` — blockt Edits unter `src/risk/**` außerhalb Plan-Mode. Sofort scharf.
 - `.claude/hooks/stop_gitleaks.py` — gitleaks auf staged diff. Sofort scharf.
 - `.claude/hooks/user_prompt_submit_realmoney.py` — Confirmation-Banner bei "live trade"/"echtes Kapital"/"real money". Sofort scharf.
-- `.claude/hooks/session_start_janitor.py` — sweept stale `~/.claude/teams/{team-name}/`-Dirs; parst Team-Spec.
-- `.claude/hooks/task_created_validate.py` — **Stub mit `try/except ImportError: sys.exit(0)`** in Phase 2; scharf in Phase 3.
+- `.claude/hooks/task_created_validate.py` — **Stub mit `try/except ImportError: sys.exit(0)`** in Phase 2; scharf in Phase 3 (Pydantic-Validate gegen `shared.models.tasks`).
 - `.claude/hooks/task_completed_validate.py` — **Stub** in Phase 2; scharf in Phase 3.
-- `.claude/hooks/stop_cleanup_assert.py` — prüft Marker-File von `clean up the team`. Sofort scharf.
-- `.claude/agents/scanner-reviewer.md` — Skelett: Rolle, Tool-Allow-List, Trigger.
 - `.claude/agents/trading-agent.md` — Skelett.
 - `.claude/agents/risk-execution.md` — Skelett.
-- `.claude/teams/trading-team.spec.json` — Lead + 3 Members, Member-Pfade, Cycle-Lifetime.
 
 **Lösung der Phase-2/3-Zirkularität:** Hook-Stubs für `task_created_validate` / `task_completed_validate` haben in Phase 2 einen `try: from shared.models import ...; except ImportError: sys.exit(0)`-Wrapper. Sobald `src/shared/models/` in Phase 3 existiert, wird der Wrapper als letzter Phase-3-Step durch echte Validation ersetzt. Keine separate „Hook-Aktivierungs-Phase" nötig.
 
 **Agent-Skelette vs. Stream D:** Skelette in Phase 2 enthalten Rolle + Tool-Allow-List + I/O-Beschreibung als Strings (kein Runtime-Import). Stream D in Phase 4 verfeinert die System-Prompts und ergänzt verbose Strategy-Doctrine. Keine Konflikte mit anderen Streams.
 
-**Exit:** `claude --teammate-mode in-process -p "Boot trading-team and exit"` läuft ohne Fehler; alle Hooks feuern bei Smoketest; kein Hook blockiert Standard-Workflows.
+**Exit:** `.claude/`-Config erkennt Hook-Skripte (`claude /hooks list`); kein Hook blockt Standard-Edit-/Bash-Workflows beim Smoketest.
 
 ---
 
@@ -107,7 +103,7 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 
 **Files (in dieser Reihenfolge committed):**
 
-1. `src/shared/config/settings.py` — Pydantic-Settings (Single Source of Truth, alle Tunables aus specs/engineering.md §10): `TRADING_MODE` (Default `paper`), `MAX_CAPITAL_EUR` (Default `0`), `EDGE_THRESHOLD=0.03`, `CYCLE_PERIOD_MIN=12`, `TOP_K_MARKETS=50`, `CONCENTRATION_CAP=0.15`, `CYCLE_CAP=0.25`, `LESSONS_TOP_K`, `LESSONS_LOOKBACK_DAYS`, `SURPRISE_THRESHOLD`, `WEB_SEARCH_TIMEOUT`, `AGENT_TIMEOUT`, `MARKET_SNAPSHOTS_RETENTION_DAYS=30`, `INFERENCE_LOG_RETENTION_DAYS=90`, `KEY_PROVIDER` (Default `"encrypted_file"`), `RECONCILIATION_DIFF_USD=0.50`, `SystemStateKey: Literal[...]`-Typ.
+1. `src/shared/config/settings.py` — Pydantic-Settings (Single Source of Truth, alle Tunables aus specs/engineering.md §10): `TRADING_MODE` (Default `paper`), `MAX_CAPITAL_EUR` (Default `0`), `EDGE_THRESHOLD=0.03`, `CYCLE_PERIOD_MIN=30`, `TOP_K_MARKETS=50`, `CONCENTRATION_CAP=0.15`, `CYCLE_CAP=0.25`, `LESSONS_TOP_K`, `LESSONS_LOOKBACK_DAYS`, `SURPRISE_THRESHOLD`, `WEB_SEARCH_TIMEOUT`, `AGENT_TIMEOUT`, `MARKET_SNAPSHOTS_RETENTION_DAYS=30`, `INFERENCE_LOG_RETENTION_DAYS=90`, `KEY_PROVIDER` (Default `"encrypted_file"`), `RECONCILIATION_DIFF_USD=0.50`, `SystemStateKey: Literal[...]`-Typ.
 2. `src/shared/models/__init__.py` und Pydantic-Modelle: `Market`, `Orderbook`, `MarketMetadata`, `Resolution`, `Position`, `CashBalance`, `Order`, `OrderResult`, `CancelResult`, `OrderStatus`, `Universe`, `PortfolioState`, `Prediction`, `Decision`, `Trade`, `CyclePlan`, `Note`, `Lesson`, `GateResult`.
 3. `src/shared/db.py` — `get_session(role: Literal["trading_cycle","outcome_ingestion","lessons_summary"]) -> Session`. Verbindungs-Pool, env-driven `DATABASE_URL_<ROLE>`.
 4. `src/shared/adapters/prediction_market.py` — `PredictionMarketAdapter` Protocol (read + write + EIP-712-Signing). **Keine Impl.**
@@ -183,10 +179,10 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 **Konsumiert:** Schnittstellen 1 (`SURPRISE_THRESHOLD`, `LESSONS_LOOKBACK_DAYS`), 4 (`Lesson`-Model), 6 (`lessons_summary`-Role mit nur INSERT auf `lessons`), 7, 8.
 **Tests:** Idempotenz auf `(prediction_id, day)`, Heuristik-Property-Test, Template-Determinismus (kein LLM-Output).
 
-### Stream D — Trading-Team-Wiring
+### Stream D — Trading-Cycle-Wiring
 
 **Files:**
-- `src/execution/lead_bootstrap.py` — Lead-Logik: Spec laden, Members spawnen, prev `cycle_plan` lesen, neue `cycle_plan`-Row schreiben, `clean up the team` aufrufen.
+- `src/execution/lead_bootstrap.py` — Lead-Logik: `_python_scanner` ausführen, Members als headless `claude -p`-Subprocesses spawnen (`execution.subagent_runner`), prev `cycle_plan` lesen, neue `cycle_plan`-Row schreiben.
 - `src/execution/cycle_plan.py` — deterministische Synthese (kein LLM-Call).
 - `src/execution/notes_tool.py` — `manage_notes` Tool für trading-agent (read/write/edit, LRU ≤ 50).
 - `src/research/prompts/trading_agent.md` — Strategy-Doctrine (Mispricing, Edge, web_search-Tool-Use), Step-by-Step-Protocol.
@@ -204,7 +200,7 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 ## Phase 5 — Integration
 
 - `infra/cron/trading_cycle.cron`, `infra/cron/outcome_ingestion.cron`, `infra/cron/lessons_summary.cron`.
-- `infra/scripts/run_cycle.sh` — `timeout`-Wrapper, env-load, claude-Bootstrap-Command.
+- `infra/scripts/run_cycle.sh` — `timeout 1800`-Wrapper, `.env`-Load, dispatches `trading_cycle` → `uv run python -m execution.run_cycle` (analog für `outcome_ingestion` und `lessons_summary`).
 - `tests/e2e/test_paper_cycle.py` — Postgres-Service-Container, FakeGamma + FakeCLOB, ein vollständiger Cycle, Assertions auf alle 11 Tabellen.
 - `structlog`-Wiring in alle drei Prozesse mit den per-line-Pflichtfeldern aus specs/data_infrastructure.md §3.
 - `docs/operations/first_cycle.md` — Runbook für Operator.
@@ -228,7 +224,7 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 
 - **Phase 0:** `uv sync && uv run ruff check . && uv run mypy --strict .` grün auf leerem Repo; pre-commit-Hooks aktiv.
 - **Phase 1:** Trivial-PR mit ADR mergt grün; Branch-Protection blockt direkten `main`-Push (Test); CODEOWNERS funktioniert (Test-PR auf `src/risk/`-Datei verlangt 2 Reviews).
-- **Phase 2:** `claude --teammate-mode in-process -p "..."` bootet Team ohne Crash; alle 9 Hooks feuern bei Smoketest; keine Hooks blockieren False-Positive.
+- **Phase 2:** Hooks aus `.claude/settings.json` sind durch `claude /hooks list` sichtbar; Smoketest auf `Bash`-Block (rm -rf), `Edit`-RiskGate (`src/risk/` ohne Plan-Mode) und `Stop`-Gitleaks (eingefügtes Test-Secret) zeigt Verhalten wie spezifiziert.
 - **Phase 3:** `pytest --cov=risk --cov-fail-under=100`, `alembic upgrade head && alembic downgrade base`, Protocol-Konformitätstest gegen FakeAdapter, `lint-imports` grün.
 - **Phase 4:** Alle Streams CI-grün; `test_default_trading_mode_is_paper` grün; Cross-Stream-Smoketest (Stream D + FakeAdapter; Stream B liest, was Stream D schrieb; Stream C liest, was Stream B schrieb).
 - **Phase 5:** `pytest tests/e2e/test_paper_cycle.py` grün; lokaler Cron-Tick erzeugt Rows in `predictions`/`decisions`/`paper_trades`/`cycle_plan`.

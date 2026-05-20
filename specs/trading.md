@@ -2,7 +2,7 @@
 
 The runtime that decides what to trade and places orders. One block of the four-block architecture (see `specs.md`).
 
-**What lives here:** the per-cycle Trading Team, the (single, MVP) trading agent, the strategy layer, the decision logic, and the per-trade gates as the trading layer sees them. **What does not live here:** runtime topology and team-mechanic details (`orchestration.md`), schemas + adapters + observability (`data_infrastructure.md`), risk-limit values + safety controls + repo conventions (`engineering.md`). Evaluation and learning loops are in `trading_feedback.md` (Tier 1) and `optimization.md` (Tier 2).
+**What lives here:** the per-cycle Trading topology, the (single, MVP) trading agent, the strategy layer, the decision logic, and the per-trade gates as the trading layer sees them. **What does not live here:** runtime topology and process-mechanic details (`orchestration.md`), schemas + adapters + observability (`data_infrastructure.md`), risk-limit values + safety controls + repo conventions (`engineering.md`). Evaluation and learning loops are in `trading_feedback.md` (Tier 1) and `optimization.md` (Tier 2).
 
 ---
 
@@ -11,7 +11,7 @@ The runtime that decides what to trade and places orders. One block of the four-
 - **Single strategy:** Mispricing — the only strategy in MVP.
 - **Single trading agent** (no 7-persona ensemble, no aggregator, no disagreement metric).
 - **Single research tool:** `web_search` (`src/research/skills/web_search.py`, OpenAI-backed). No `news_fetch`, no `historical_analogue_lookup`, no `related_market_scan` in MVP.
-- **Agent Team runtime from day 1** — fresh Claude Code Agent Team per cycle (Lead + 3 members). The cycle is not a single Python script.
+- **Python-Lead runtime from day 1** — fresh Python process per cron tick: deterministic Lead (`execution.lead_bootstrap`) + 2 LLM subagents spawned as headless `claude -p` subprocesses (`execution.subagent_runner`). The cycle is not a single monolithic script — the LLM members run in their own subprocesses with their own context windows.
 - **Minimal memory across cycles:** `notes` (per-agent LRU scratchpad) + `cycle_plan` (single active row, forward-looking handoff). No `beliefs`, no `operating_doctrine`, no position-thesis auto-flag in MVP.
 - **Universe scoping:** top-K most-liquid Polymarket binary markets per cycle (default K=50, central settings). Not the unfiltered universe — one agent doing web research per market needs focus.
 - **Real capital from day 1** is supported (`engineering.md §4`); paper is default.
@@ -27,9 +27,9 @@ Deploy capital on Polymarket binary prediction markets to generate risk-adjusted
 
 ---
 
-## 2. Agent Team (MVP topology)
+## 2. Trading Cycle Topology (MVP)
 
-The Trading Team = one fresh Claude Code Agent Team per cycle (~12 min cadence; full team-mechanics in `orchestration.md`). Lead + 2 LLM members; the universe filter is deterministic Python (no LLM). Clean separation of responsibilities so each member's context window stays focused.
+The Trading Cycle = one fresh Python process per cron tick (30-min cadence; full runtime topology in `orchestration.md §2`). A deterministic Python Lead (`execution.lead_bootstrap`) + 2 LLM members spawned as headless `claude -p` subagents. The universe filter is Lead-internal Python (no LLM). Clean separation of responsibilities so each member's context window stays focused.
 
 **Members (2 LLM agents + 1 deterministic Lead filter):**
 
@@ -39,9 +39,9 @@ The Trading Team = one fresh Claude Code Agent Team per cycle (~12 min cadence; 
 | `trading-agent` | Mispricing analysis with `web_search`. Forms `p_agent` per market, returns `Prediction(p_yes, reasoning, edge)`. | `Universe`, `PortfolioState`, `notes`, top-K `lessons`, prev-cycle `cycle_plan`, `web_search` tool | `Prediction[]` |
 | `risk-execution` | Applies risk gates from `src/risk/`, clips sizing, places order (paper OR real per `TRADING_MODE`). Combined because both deterministic. | `Prediction[]`, `PortfolioState`, `src/risk/` constants | `Decision[]` + `Trade[]` |
 
-**Lead** — drives cycle clock, spawns members, persists artifacts, writes a fresh `cycle_plan` row at cycle close, calls `clean up the team` before exit. Never executes orders directly.
+**Lead** (`execution.lead_bootstrap`, deterministic Python) — drives cycle clock, runs `_python_scanner`, spawns the 2 LLM members as headless `claude -p` subagents (`execution.subagent_runner`), persists artifacts, writes a fresh `cycle_plan` row at cycle close. Never executes orders directly.
 
-**Common contract.** Every member returns Pydantic-typed artifacts (`engineering.md §11`); the Lead validates via `TaskCompleted` hook (`engineering.md §9`) before downstream members consume.
+**Common contract.** Every member returns Pydantic-typed artifacts (`engineering.md §11`); `execution.subagent_runner` validates outputs against `shared.models.tasks` inline before the Lead consumes them.
 
 **Model.** Anthropic Claude Opus exclusively (latest pinned per release). All inference cloud-only — no self-hosted, on-prem, or locally-run models in any phase. The OpenAI dependency is for the `web_search` *tool only*, not for model inference.
 
@@ -58,7 +58,7 @@ The Trading Team = one fresh Claude Code Agent Team per cycle (~12 min cadence; 
 
 **Notes (per-agent scratchpad).** Single-agent in MVP, so just one `notes` table — no per-agent partitioning needed. Bounded LRU: max 50 × ~200 words. The `trading-agent` reads + writes via a `manage_notes` tool (read/write/edit). Schema: `data_infrastructure.md §1`.
 
-**Cycle plan (forward-looking handoff).** Single-row portfolio-level artifact written at the very end of each cycle by the Lead, read by the *next* cycle's Lead at boot. Solves the gap that fresh-team-per-cycle creates: the next process knows nothing about what the previous one was about to do. Fields: `next_priorities`, `holds_with_rationale`, `pending_settlements`, `opportunities_deferred`, `blockers`. The Lead synthesizes the plan deterministically from in-flight artifacts (no LLM call needed). Always exactly one active row. Schema: `data_infrastructure.md §1`.
+**Cycle plan (forward-looking handoff).** Single-row portfolio-level artifact written at the very end of each cycle by the Lead, read by the *next* cycle's Lead at boot. Solves the gap that fresh-process-per-cycle creates: the next process knows nothing about what the previous one was about to do. Fields: `next_priorities`, `holds_with_rationale`, `pending_settlements`, `opportunities_deferred`, `blockers`. The Lead synthesizes the plan deterministically from in-flight artifacts (no LLM call needed). Always exactly one active row. Schema: `data_infrastructure.md §1`.
 
 ---
 
@@ -85,13 +85,13 @@ The agent does not directly read `market_snapshots` time-series, raw Polymarket 
 
 ---
 
-## 5. Trading Loop (cycle period 12 min)
+## 5. Trading Loop (cycle period 30 min)
 
 Decision cycle (T = scheduler fire time). Four-stage spine (Prediction-Arena pattern): **Receive → Review → Analyze → Decide**. Boot first, cleanup last.
 
 | Step | T | Phase | Action |
 |---|---|---|---|
-| 0 | 0–15s | Boot | Scheduler starts a fresh `claude` process (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, `--dangerously-skip-permissions`). `SessionStart` hook sweeps stale `~/.claude/teams/` directories. Lead loads the team-spec, spawns the 3 members, reads previous `cycle_plan` from Postgres. |
+| 0 | 0–15s | Boot | Cron runs `bash infra/scripts/run_cycle.sh trading_cycle`, which sources `.env`, applies `timeout 1800`, and execs `uv run python -m execution.run_cycle`. The Lead reads the previous `cycle_plan` from Postgres. |
 | 1 | +15s | Receive | Lead's `_python_scanner` filters top-K liquid Polymarket markets → `Universe` (deterministic, no LLM). |
 | 2 | +25s | Review | Lead's `_python_scanner` builds `PortfolioState`: cash, positions, unrealized + realized PnL. Mark-to-market vs current best bid (PA convention; `trading_feedback.md §5`). |
 | 3 | +45s – +5m | Analyze | `trading-agent` runs inference per market (parallelism inside the agent's own session; `web_search` calls inline as needed). Output: `Prediction(p_yes, reasoning_blob, edge)` per scored market. Per-market timeout 60s. |
@@ -99,9 +99,9 @@ Decision cycle (T = scheduler fire time). Four-stage spine (Prediction-Arena pat
 | 5 | +6m | Decide | `risk-execution` applies the §6 gates in fixed order; clips sizing; rejects any trade that fails any gate. |
 | 6 | +7m | Decide | `risk-execution` places orders. **Marketable-limit with TIF=FAK** (Fill-And-Kill / IOC: any unfilled portion is cancelled immediately — no resting orders). Partial fills allowed and persisted as a single row at the actual filled size. **Paper mode:** simulated against top-of-book depth, written to `paper_trades`. **Real mode:** EIP-712-signed order to Polymarket CLOB with `OrderType.FAK` (`data_infrastructure.md §2`). Internal idempotency key on every order. |
 | 7 | +11m | Persist | Lead persists in-flight artifacts (`predictions`, `decisions`, `trades`/`paper_trades`) to long-term tables (`data_infrastructure.md §1`); writes any `notes` updates from the agent; **writes a fresh `cycle_plan` row** synthesized from the cycle's outputs. |
-| 8 | +11m55s | Cleanup | Lead calls `clean up the team`; `Stop` hook asserts cleanup happened; process exits. Next cycle is a brand-new `claude` process at the next scheduler tick. |
+| 8 | +11m55s | Cleanup | Lead writes the new `cycle_plan` row and the Python process exits cleanly. The next cycle is a brand-new process at the next cron tick. |
 
-The 12-min period is a central setting (`engineering.md §10`). A missed or failed cycle is a non-event — no orders placed, the next scheduled cycle runs cleanly.
+The 30-min period is a central setting (`CYCLE_PERIOD_MIN=30` in `src/shared/config/settings.py`; see `engineering.md §10`). A missed or failed cycle is a non-event — no orders placed, the next scheduled cycle runs cleanly.
 
 ---
 
@@ -185,7 +185,7 @@ Deferred until MVP is stable and a measured gap demands the addition. Each item 
 
 ## See also
 
-- `orchestration.md` — runtime topology, fresh-team-per-cycle mechanics, capital allocation (post-MVP elaborations).
+- `orchestration.md` — runtime topology, fresh-process-per-cycle mechanics, capital allocation (post-MVP elaborations).
 - `data_infrastructure.md` — schemas, prediction-market adapter, MVP single-tier storage, OpenAI web-search intake.
 - `engineering.md` — risk-limit values, safety controls, central settings, repo conventions, hooks (§9), `Weiterer Ausbau` master deferral list (§13).
 - `trading_feedback.md` — Tier 1 evaluation that writes outcomes; the upstream of the lessons that flow into this file's prompt context.

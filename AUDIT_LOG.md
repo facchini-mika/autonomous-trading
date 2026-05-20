@@ -23,6 +23,61 @@ Every PR that touches one of the following must have an entry here:
 
 ---
 
+## 2026-05-20 — Align specs with Python-Lead runtime; drop dead Agent-Teams config
+
+- **Category:** Docs + dead-config cleanup (no `src/`, `infra/`, or
+  `.claude/agents/` changes; the production runtime is untouched).
+- **PR:** _pending_
+- **Description:** Specs (`specs/*.md`) and `plan.md` were rewritten so
+  they describe the actually-implemented runtime — a deterministic
+  Python Lead (`execution.lead_bootstrap`) spawning two LLM members
+  (`trading-agent`, `risk-execution`) as headless `claude -p`
+  subprocesses via `execution.subagent_runner`. The cron entry runs
+  `infra/scripts/run_cycle.sh trading_cycle` → `uv run python -m
+  execution.run_cycle` on a 30-min cadence (`*/30`,
+  `CYCLE_PERIOD_MIN=30`). All references to the originally-planned
+  Claude Code "Agent Teams" engine (`--teammate-mode`,
+  `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, "Bring up the
+  trading-team", "clean up the team", `--dangerously-skip-permissions`
+  as cycle bootstrap, "fresh team per cycle", "Cloud-doc constraints",
+  `~/.claude/teams/{team-name}/`, 12-min cadence) were removed. The
+  spec history of the migration lives in this file only; the spec
+  files themselves now read as if the Python-Lead topology was always
+  the plan. Touched files: `specs/orchestration.md`, `specs/trading.md`,
+  `specs/engineering.md`, `specs/specs.md`, `specs/trading_feedback.md`,
+  `specs/data_infrastructure.md`, `specs/optimization.md`, `plan.md`.
+  Dead `.claude/` config was deleted in the same PR:
+  `.claude/teams/trading-team.spec.json` (never read at runtime;
+  superseded by direct `subagent_runner` loading of
+  `.claude/agents/*.md`), `.claude/hooks/session_start_janitor.py`
+  (No-op in the Python-Lead runtime — no `CLAUDE_TEAM_NAME` env, no
+  `~/.claude/teams/` directory), `.claude/hooks/stop_cleanup_assert.py`
+  (No-op — no `clean up the team` is ever called), the empty
+  `.claude/teams/` directory, the `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`
+  env entry in `.claude/settings.json`, and the `SessionStart` + the
+  `stop_cleanup_assert` hook-registrations in `.claude/settings.json`.
+  Defensive `task_created_validate.py` and `task_completed_validate.py`
+  hooks remain (they fire on any `Task`/`Agent`-tool use, not
+  Agent-Teams-specific).
+- **Risk:** None to the production runtime — every deleted hook and
+  config artefact was confirmed inert before deletion (no
+  `CLAUDE_TEAM_NAME` is ever set; no spec.json was loaded at runtime;
+  the `EXPERIMENTAL_AGENT_TEAMS` flag has no consumer outside the
+  abandoned Agent-Teams engine). The cross-check
+  `grep -rn "teammate-mode|EXPERIMENTAL_AGENT_TEAMS|clean up the
+  team|trading-team\.spec\.json" specs/ plan.md .claude/` returns no
+  hits after the edits. Slight docs-only risk: future contributors
+  reading old commit messages may find references to the Agent-Teams
+  bootstrap; this file is the canonical pointer that those references
+  are historical.
+- **Mitigation:** No mitigation needed; rollback is a plain `git
+  revert` (no runtime state was changed). Cross-reference: the
+  2026-05-19 `scanner-reviewer` removal (already documented below) is
+  the related architectural pivot — the Agent-Teams runtime was never
+  adopted in production; this cleanup makes the docs reflect that.
+
+---
+
 ## 2026-05-19 — Persistent idempotency store for place_order
 
 - **Category:** Pre-live safety (`src/shared/adapters/**`; `src/risk/`

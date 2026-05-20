@@ -9,7 +9,7 @@ Autonomes Trading auf Polymarket mit AI-Agenten. **Beide Modi ab Tag 1**: `paper
 ```mermaid
 flowchart LR
     %% MVP-aktuelle Komponenten (solid)
-    TradingCycle["Trading Cycle<br/>(Agent Team, ~12 min)<br/>Lead (incl. deterministic scanner)<br/>+ trading-agent + risk-execution"]
+    TradingCycle["Trading Cycle<br/>(Python-Lead, 30 min)<br/>Lead (deterministic scanner)<br/>+ trading-agent + risk-execution<br/>(headless claude -p subagents)"]
     Polymarket[Polymarket]
     OutcomeScript["outcome_ingestion.py<br/>(cron 5–10 min, no LLM)"]
     LessonsScript["lessons_summary.py<br/>(cron daily, no LLM)"]
@@ -53,7 +53,7 @@ flowchart LR
 
 | Job | Cadence | Type |
 |---|---|---|
-| Trading Cycle | ~12 min | Claude Code Agent Team (1 Lead + 3 Members) |
+| Trading Cycle | 30 min | Python-Lead + 2 LLM subagents (headless `claude -p`) |
 | Outcome Ingestion | 5–10 min | Python script, no LLM |
 | Lessons Summary | daily | Python script, no LLM |
 
@@ -70,8 +70,8 @@ Alle drei Jobs laufen via Cron, jeder als frischer Prozess. Authority-Boundary �
 
 | File | Owns (MVP) |
 |---|---|
-| [trading.md](./trading.md) | Per-cycle Trading Team (Lead + 3 Members), Mispricing-Strategie (3% edge), Edge-Berechnung, 3 per-Trade-Gates, Order-Placement (paper / EIP-712). Outlook: `§8`. |
-| [orchestration.md](./orchestration.md) | 1 Agent Team + 2 Python-Skripte + 3 Postgres-Rollen, Cycle-Bootstrap, Memory-Split (in-process vs. Postgres), Hooks-Wiring. |
+| [trading.md](./trading.md) | Per-cycle Trading topology (Python-Lead + 2 LLM subagents), Mispricing-Strategie (3% edge), Edge-Berechnung, 3 per-Trade-Gates, Order-Placement (paper / EIP-712). Outlook: `§8`. |
+| [orchestration.md](./orchestration.md) | 1 cycle process (Python-Lead) + 2 Python-Skripte + 3 Postgres-Rollen, Cycle-Bootstrap, Memory-Split (in-process vs. Postgres), Hooks-Wiring. |
 | [data_infrastructure.md](./data_infrastructure.md) | Postgres-16-Schemas, `PolymarketAdapter` (read + write + EIP-712), `PaperTradingAdapter`, Prometheus / Grafana / OTel. |
 | [engineering.md](./engineering.md) | Risk-Layer als protected code (100% Coverage, `import-linter`), Kill-Switch, EIP-712-Key-Handling (KMS / encrypted-at-rest), zentrale Settings, Hooks (Dev + Prod), Tech-Stack. Outlook: `§13`. |
 | [trading_feedback.md](./trading_feedback.md) | `outcome_ingestion.py`: idempotent Ground-Truth-Writer auf `predictions.outcome` / `realized_pnl`, read-only Gamma. Outlook: `§6` (Trade-Evaluation-Team). |

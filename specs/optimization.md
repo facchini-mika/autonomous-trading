@@ -125,7 +125,7 @@ The full multi-agent system that automates what the operator does manually in MV
   - `strategy-explorer` (**explore**) — proposes entirely new strategies, new trading agents, new market categories.
   - `prior-art-scout` — enforces OSS-first / prior-art-reuse on every proposal; feeds candidates to `strategy-explorer`.
   - `meta-reviewer` — arbitrates exploit vs. explore, ranks proposals, posts top-K to the operator queue.
-- **Runtime:** own Claude Code Agent Team (separate session, separate Lead, scheduled by cron / k8s `CronJob`), daily / weekly / monthly batches.
+- **Runtime:** own multi-agent process (separate Lead, scheduled by cron / k8s `CronJob`), daily / weekly / monthly batches.
 - **Per-batch authority boundary, separate Postgres role, no live-trading endpoint access.**
 - Implementation flow: `proposal` row → feature branch (`code-eval/YYYY-MM-DD-<slug>`) → committed code change → `gh pr create` → operator merge gate.
 
@@ -188,12 +188,12 @@ These are introduced together when the operator wants execution-strategy sophist
                                               [main branch updated]
                                                         │
                                                         ▼
-                                              [Next Trading-Team boot]
+                                              [Next Trading-Cycle boot]
                                               reads updated team-spec, agent prompts, settings
 ```
 
 - **Critical property:** never bypasses the operator. Every change flows through a Git PR.
-- **Critical property:** touches code, not live state. Effective at the next Trading-Team boot — bounded blast radius (at most one cycle runs with a bad merge before the next tick can pick up a revert).
+- **Critical property:** touches code, not live state. Effective at the next Trading-Cycle boot — bounded blast radius (at most one cycle runs with a bad merge before the next tick can pick up a revert).
 
 ### Checks and Balances (post-MVP detailed table)
 
