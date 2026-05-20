@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from execution import run_cycle as run_cycle_mod
+from execution.lead_bootstrap import CycleAbortedError
 from shared.config.settings import Settings
 from shared.models import (
     Decision,
@@ -19,6 +20,12 @@ from shared.models import (
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
+
+
+@pytest.fixture
+def heartbeat_stub(mocker: MockerFixture) -> MagicMock:
+    """Stub the success-path heartbeat so it never touches the real DB."""
+    return mocker.patch("execution.run_cycle._write_heartbeat")
 
 
 def _now() -> datetime:
@@ -73,7 +80,9 @@ def fake_subagent_outputs(mocker: MockerFixture) -> dict[str, Any]:
 def test_main_wires_factory_subagents_and_lead(
     fake_subagent_outputs: dict[str, Any],
     mocker: MockerFixture,
+    heartbeat_stub: MagicMock,
 ) -> None:
+    del heartbeat_stub
     fake_adapter = MagicMock()
     mocker.patch("execution.run_cycle.make_adapter", return_value=fake_adapter)
     mock_bootstrap = mocker.patch("execution.run_cycle.bootstrap_team")
@@ -101,7 +110,9 @@ def test_main_wires_factory_subagents_and_lead(
 def test_subagent_callables_dispatch_to_runner(
     fake_subagent_outputs: dict[str, Any],
     mocker: MockerFixture,
+    heartbeat_stub: MagicMock,
 ) -> None:
+    del heartbeat_stub
     mocker.patch("execution.run_cycle.make_adapter", return_value=MagicMock())
     captured_callables: dict[str, Any] = {}
 
@@ -122,8 +133,10 @@ def test_subagent_callables_dispatch_to_runner(
 def test_closures_forward_cycle_id_and_correlation_id(
     fake_subagent_outputs: dict[str, Any],
     mocker: MockerFixture,
+    heartbeat_stub: MagicMock,
 ) -> None:
     """Both LLM closures must forward task.cycle_id + the cycle's correlation_id."""
+    del heartbeat_stub
     mocker.patch("execution.run_cycle.make_adapter", return_value=MagicMock())
     captured_callables: dict[str, Any] = {}
 
@@ -156,7 +169,9 @@ def test_logs_correlation_id(
     fake_subagent_outputs: dict[str, Any],
     mocker: MockerFixture,
     capsys: pytest.CaptureFixture[str],
+    heartbeat_stub: MagicMock,
 ) -> None:
+    del heartbeat_stub
     mocker.patch("execution.run_cycle.make_adapter", return_value=MagicMock())
     mocker.patch(
         "execution.run_cycle.bootstrap_team",
@@ -172,3 +187,73 @@ def test_logs_correlation_id(
     assert "run_cycle_start" in captured.out
     assert "run_cycle_done" in captured.out
     assert "correlation_id" in captured.out
+
+
+def test_heartbeat_written_on_success(
+    fake_subagent_outputs: dict[str, Any],
+    mocker: MockerFixture,
+    heartbeat_stub: MagicMock,
+) -> None:
+    mocker.patch("execution.run_cycle.make_adapter", return_value=MagicMock())
+    mocker.patch(
+        "execution.run_cycle.bootstrap_team",
+        return_value=MagicMock(
+            cycle_id="cycle-1",
+            predictions=[],
+            decisions=[],
+            trades=[],
+        ),
+    )
+
+    assert run_cycle_mod.main() == 0
+    heartbeat_stub.assert_called_once()
+    factory_arg, ts_arg = heartbeat_stub.call_args.args
+    assert factory_arg is None
+    assert isinstance(ts_arg, datetime)
+    assert ts_arg.tzinfo is UTC
+
+
+def test_heartbeat_skipped_on_abort(
+    fake_subagent_outputs: dict[str, Any],
+    mocker: MockerFixture,
+    heartbeat_stub: MagicMock,
+) -> None:
+    mocker.patch("execution.run_cycle.make_adapter", return_value=MagicMock())
+    mocker.patch(
+        "execution.run_cycle.bootstrap_team",
+        side_effect=CycleAbortedError(
+            cycle_id="cycle-1",
+            stage="trading",
+            reason="budget",
+        ),
+    )
+
+    assert run_cycle_mod.main() == 2
+    heartbeat_stub.assert_not_called()
+
+
+def test_write_heartbeat_emits_upsert_with_canonical_key(
+    mocker: MockerFixture,
+) -> None:
+    """Helper writes the documented SQL shape against an injected factory."""
+    from contextlib import contextmanager
+
+    sessions: list[MagicMock] = []
+
+    @contextmanager
+    def factory() -> Any:
+        sess = MagicMock()
+        sessions.append(sess)
+        yield sess
+
+    ts = datetime(2026, 5, 20, 12, 0, tzinfo=UTC)
+    run_cycle_mod._write_heartbeat(factory, ts)
+
+    assert len(sessions) == 1
+    sql = str(sessions[0].execute.call_args.args[0])
+    params = sessions[0].execute.call_args.args[1]
+    assert "INSERT INTO system_state" in sql
+    assert "ON CONFLICT (key) DO UPDATE" in sql
+    assert params["k"] == run_cycle_mod.HIGH_WATER_MARK_KEY
+    assert params["k"] == "last_trading_cycle_at"
+    assert params["v"] == ts.isoformat()

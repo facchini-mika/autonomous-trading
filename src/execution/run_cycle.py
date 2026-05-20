@@ -9,13 +9,18 @@ from __future__ import annotations
 
 import sys
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Final
+
+from sqlalchemy import text
 
 from execution.decision_context import require_decision_id
 from execution.lead_bootstrap import CycleAbortedError, bootstrap_team
 from execution.subagent_runner import run_subagent
 from shared.adapters.factory import make_adapter
 from shared.config.settings import Settings
+from shared.db import get_session
 from shared.logging import bind, configure, get_logger
 from shared.models import (
     RiskExecutionOutput,
@@ -23,6 +28,14 @@ from shared.models import (
     TradingAgentOutput,
     TradingAgentTask,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from contextlib import AbstractContextManager
+
+    from sqlalchemy.orm import Session
+
+HIGH_WATER_MARK_KEY: Final = "last_trading_cycle_at"
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 AGENTS_DIR = REPO_ROOT / ".claude" / "agents"
@@ -87,6 +100,7 @@ def main() -> int:
             reason=exc.reason,
         )
         return 2
+    _write_heartbeat(None, datetime.now(UTC))
     logger.info(
         "run_cycle_done",
         cycle_id=artifacts.cycle_id,
@@ -100,6 +114,31 @@ def main() -> int:
 def _doctrine(name: str) -> Path | None:
     path = PROMPTS_DIR / name
     return path if path.exists() else None
+
+
+def _write_heartbeat(
+    factory: Callable[[], AbstractContextManager[Session]] | None,
+    ts: datetime,
+) -> None:
+    """Stamp `system_state.last_trading_cycle_at` after a successful cycle.
+
+    Mirrors the high-water-mark write pattern used by outcome_ingestion and
+    lessons_summary. Only invoked on the success path; an aborted cycle must
+    not advance the heartbeat.
+    """
+    actual = factory if factory is not None else (lambda: get_session("trading_cycle"))
+    with actual() as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO system_state (key, value, updated_at)
+                VALUES (:k, jsonb_build_object('ts', CAST(:v AS TEXT)), NOW())
+                ON CONFLICT (key) DO UPDATE
+                    SET value = EXCLUDED.value, updated_at = NOW()
+                """,
+            ),
+            {"k": HIGH_WATER_MARK_KEY, "v": ts.isoformat()},
+        )
 
 
 if __name__ == "__main__":

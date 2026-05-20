@@ -22,6 +22,7 @@ SystemStateKey = Literal[
     "last_outcome_ingestion_at",
     "last_lessons_summary_at",
     "last_evaluation_at",
+    "last_trading_cycle_at",
 ]
 
 
