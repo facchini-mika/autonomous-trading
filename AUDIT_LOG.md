@@ -1072,3 +1072,83 @@ Every PR that touches one of the following must have an entry here:
   reversible via `git revert` on a single PR. No data-model change, no
   migration, no risk-module change. Risk gates in `src/risk/**` are
   untouched.
+
+---
+
+## 2026-05-20 — Cron-Enable (paper mode, first scheduled cycle)
+
+- **Category:** First live paper cycle (Phase 6, cron). `TRADING_MODE`
+  remains `paper`; `MAX_CAPITAL_EUR` remains `0.0` (hardcoded `Final` in
+  `src/risk/capital_gate.py:17`). No code change merged — this entry
+  documents an operator action only.
+- **Commit SHA at enable:** `33944e1` (main).
+- **Description:** Installed user-level crontab on operator workstation
+  (`~/GitHub/autonomous_trading`) with four jobs:
+  `trading_cycle` (`*/12 * * * *`), `outcome_ingestion` (`0 * * * *`),
+  `lessons_summary` (`30 4 * * *`), `evaluation` (`5,20,35,50 * * * *`).
+  Generator `infra/scripts/gen_local_crontab.sh` was used for the first
+  three lines; the evaluation line was appended manually because the
+  generator intentionally excludes Tier-1 evaluation.
+  Pre-enable verification (manual smokes against post-#67/#68/#69/#70
+  `main`):
+    - `trading_cycle`: `cycle-1779278882` — 3 predictions → 3 decisions
+      → 3 paper trades, exit 0, $1.05 Anthropic + $0.98 OpenAI = $2.03,
+      6:21 min wall (≈3× baseline of `cycle-1779210369`).
+    - `outcome_ingestion`: 0 outcomes (no markets resolved since the
+      `2026-05-05T22:16:53Z` high-water mark), 0.3 s wall, ~$0.
+    - `run_evaluation`: `eval-1779279885` — 1 candidate, 1 resolved,
+      1 row in `agent_performance`, $0.11 Anthropic, 37 s wall.
+  First scheduled cron tick that produced data: `cycle-1779281283`
+  (12:48 UTC), 4 predictions → 4 decisions → 4 paper trades, $1.04
+  Anthropic + $0.80 OpenAI = $1.84, 6:47 min wall. First scheduled
+  `evaluation` tick `eval-1779281401` (12:50 UTC) produced 0 rows
+  (high-water mark already current). `outcome_ingestion` was not yet
+  scheduled at audit-write time.
+- **Risk:**
+  (1) **PATH gotcha** — initial crontab install (12:25 UTC) used the
+  raw `gen_local_crontab.sh` output without a `PATH=` directive; macOS
+  cron's minimal `/usr/bin:/bin` could not locate `uv` (`~/.local/bin`)
+  or `gtimeout` (`/opt/homebrew/bin`). First two scheduled ticks
+  (eval :35, trading :36) silently died with `command not found`
+  before any Python ran. Resolved by re-installing the crontab at
+  12:39 UTC with an explicit
+  `PATH=~/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`
+  line prepended. Generator does not emit this; follow-up PR open.
+  (2) **No heartbeat row.** `run_cycle.py` does not write
+  `system_state.last_trading_cycle_at` (other entry points do — see
+  `outcome_ingestion.py:38`, `evaluation_bootstrap.py:49`,
+  `lessons_summary.py:37`). External monitoring must use
+  `subagent_runs.started_at` or Prometheus `cycle_duration_seconds`
+  as a liveness signal. Mini-PR open.
+  (3) **No `cycles` table for status/idempotency at cycle scope.**
+  Spec'd in `~/.claude/plans/operator-local-plan.md` PR 2 but not
+  yet migrated. At the current ~6.5 min cycle wall, overlapping ticks
+  are unlikely under `*/12`; if wall ever crosses 12 min, two cycles
+  could race against the same markets. Wrapper retains a `gtimeout
+  1800` safety net.
+  (4) **P0 backlog items still open** — `Safety-Watchdog-Service`
+  (P0.1), `Drawdown Trip-Wires` (P0.2), `Alertmanager-Wiring` (P0.5)
+  per `backlog.md`. These remain blockers for any future `real_capital`
+  flip; for paper they are tolerable.
+  (5) **Cost run-rate.** First two cron-level cycles came in at
+  ≈ $1.84–$2.03 each (Anthropic + OpenAI). At `*/12` cadence that
+  projects to ≈ $220–$240/day. Within the $500 + $2500 credit grant
+  documented in the operator's notes; budget governance is the
+  per-cycle settings cap (`BUDGET_USD_TRADING=$5`, `BUDGET_USD_RISK=$1`),
+  not a daily ceiling.
+  (6) **AUDIT-LOG backlog for cycles 5/6/7** (per Memory
+  `project_phase6a_followups`) was not closed by this entry — those
+  three pre-cron paper smokes still lack their own AUDIT entries.
+- **Mitigation / rollback:** Paper-mode capital gate
+  (`capital_gate.py:30` enforces `MAX_CAPITAL_EUR=0.0` on any
+  `real_capital` order) and generator pre-flight guard
+  (`gen_local_crontab.sh` refuses to emit a crontab when `.env` has
+  `TRADING_MODE=real_capital`) jointly make it impossible for a single
+  config error to spend real funds. Rollback is `crontab -r`
+  (immediate, no in-flight wallet state to clean up because paper
+  mode never signs). Cron logs in `logs/{trading_cycle,
+  outcome_ingestion, lessons_summary, evaluation}.log`. Operator
+  commits to a daily DB spot-check
+  (`SELECT max(created_at) FROM paper_trades`,
+  `SELECT count(*) FROM subagent_runs WHERE started_at > now() -
+  interval '24 hours'`) until P0.1/P0.2/P0.5 ship.
