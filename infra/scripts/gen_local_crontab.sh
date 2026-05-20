@@ -34,7 +34,7 @@ cat <<EOF
 # Repo: $repo_root
 # Mode: paper (TRADING_MODE default; MAX_CAPITAL_EUR=0 hardcoded)
 # Uninstall: crontab -e and delete these lines, or crontab -r to clear all.
-*/12 * * * * cd $repo_root && bash infra/scripts/run_cycle.sh trading_cycle      >> logs/trading_cycle.log 2>&1
+*/30 * * * * cd $repo_root && bash infra/scripts/run_cycle.sh trading_cycle      >> logs/trading_cycle.log 2>&1
 0   * * * * cd $repo_root && bash infra/scripts/run_cycle.sh outcome_ingestion  >> logs/outcome_ingestion.log 2>&1
 30  4 * * * cd $repo_root && bash infra/scripts/run_cycle.sh lessons_summary    >> logs/lessons_summary.log 2>&1
 EOF

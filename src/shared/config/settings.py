@@ -50,7 +50,7 @@ class Settings(BaseSettings):
 
     # Strategy
     EDGE_THRESHOLD: float = 0.05
-    CYCLE_PERIOD_MIN: int = 12
+    CYCLE_PERIOD_MIN: int = 30
     TOP_K_MARKETS: int = 20
     # Polymarket's `sampling-markets` returns ~1000 markets per page, sorted by
     # internal reward incentive (not TTR or liquidity). Live measurement on
