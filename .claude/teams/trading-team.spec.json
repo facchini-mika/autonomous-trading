@@ -5,10 +5,6 @@
   },
   "members": [
     {
-      "agent": ".claude/agents/scanner-reviewer.md",
-      "role": "scanner-reviewer"
-    },
-    {
       "agent": ".claude/agents/trading-agent.md",
       "role": "trading-agent"
     },
@@ -17,5 +13,5 @@
       "role": "risk-execution"
     }
   ],
-  "cycle_lifetime_minutes": 12
+  "cycle_lifetime_minutes": 30
 }
