@@ -14,10 +14,12 @@ name: audit-log-required
 
 on:
   pull_request:
-    paths:
-      - "src/risk/**"
-      - "src/shared/config/settings.py"
-      - "AUDIT_LOG.md"
+
+# NOTE: this workflow is a required status check. A path-filtered
+# required check that does not fire on a given PR is treated as
+# "missing" by branch protection and permanently blocks the PR.
+# So this runs on every PR; the script body short-circuits to exit 0
+# when no risk-sensitive paths were touched.
 
 jobs:
   audit-log-required:

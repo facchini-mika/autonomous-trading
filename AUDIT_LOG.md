@@ -23,6 +23,16 @@ Every PR that touches one of the following must have an entry here:
 
 ---
 
+## 2026-05-20 — Fix: drop `paths:` filter from `audit-log-required` (was blocking all PRs)
+
+- **Category:** CI follow-up to #80 (no `src/risk/**` or `settings.py` touch; required-check workflow body only).
+- **PR:** _pending_
+- **Description:** `audit-log-required.yml` was registered as a required status check with a `paths:` filter (`src/risk/**`, `src/shared/config/settings.py`, `AUDIT_LOG.md`). GitHub treats a path-filtered required check that does not fire on a given PR as "missing", which permanently blocks the PR. First observed on the three Dependabot PRs (#81–#83) which only touch `.github/workflows/*.yml` and were all stuck at `mergeable: BLOCKED`. Fix: remove the `paths:` filter so the workflow runs on every PR; the existing script body already short-circuits to exit 0 when no risk-sensitive files were touched.
+- **Risk:** None — gate semantics unchanged (still blocks PRs touching `src/risk/**` or `settings.py` without an AUDIT_LOG entry). Slight CI cost: a 5-second job runs on every PR instead of only path-matching PRs. Acceptable.
+- **Mitigation:** Inline comment on the `on:` block warns future editors not to reintroduce the `paths:` filter while the workflow is still a required check.
+
+---
+
 ## 2026-05-20 — CI hardening: coverage spec gates, trufflehog pin, dependabot, audit-log gate
 
 - **Category:** CI / Branch-protection (no `src/risk/**` touch, but the
