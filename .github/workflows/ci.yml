@@ -15,7 +15,7 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
         with:
           version: "0.5.x"
@@ -33,7 +33,7 @@ jobs:
     name: type-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
         with:
           version: "0.5.x"
@@ -52,7 +52,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
@@ -63,7 +63,7 @@ jobs:
     name: trufflehog
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: TruffleHog scan
@@ -77,7 +77,7 @@ jobs:
     name: pytest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
         with:
           version: "0.5.x"
@@ -93,7 +93,7 @@ jobs:
     name: import-linter
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
         with:
           version: "0.5.x"
@@ -131,7 +131,7 @@ jobs:
       PGPASSWORD_OUTCOME_INGESTION: ci_outcome_ingestion
       PGPASSWORD_LESSONS_SUMMARY: ci_lessons_summary
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
         with:
           version: "0.5.x"
@@ -183,7 +183,7 @@ jobs:
       PGPASSWORD_OUTCOME_INGESTION: ci_outcome_ingestion
       PGPASSWORD_LESSONS_SUMMARY: ci_lessons_summary
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
         with:
           version: "0.5.x"
