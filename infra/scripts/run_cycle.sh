@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cron-invoked wrapper: load env, apply timeout, dispatch to one of the three
 # Phase-5 cycle entry points. Operator installs this via the .cron files in
-# infra/cron/. See docs/operations/first_cycle.md for the full runbook.
+# infra/cron/.
 #
 # Usage: run_cycle.sh {trading_cycle|outcome_ingestion|lessons_summary}
 
@@ -24,7 +24,7 @@ if [[ -f .env ]]; then
 fi
 
 # coreutils on Linux ships `timeout`; macOS users install via `brew install coreutils`
-# (gtimeout) — first_cycle.md documents the alias.
+# (gtimeout) and set TIMEOUT_BIN=gtimeout in the cron env.
 TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
 
 case "$cycle" in

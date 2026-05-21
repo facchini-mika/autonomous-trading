@@ -55,7 +55,6 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 - `.github/PULL_REQUEST_TEMPLATE.md` — Sections für Mode-Flip, `MAX_CAPITAL_EUR`-Touch, Reviewer-Count-Erinnerung, Kill-Criterion bei Strategy-Changes.
 - `.github/CODEOWNERS` — `src/risk/ @facchini-mika` (kombiniert mit Branch-Protection-"≥2 reviewers" erzwingt 2-Reviewer-Regel auf `src/risk/`).
 - `AUDIT_LOG.md` — append-only-Markdown, dokumentiert Mode-Flips + `MAX_CAPITAL_EUR`-Änderungen + erste Live-Paper-Cycles.
-- `docs/adr/0001-phasing.md` — ADR-Verzeichnis mit ersten Architekturentscheidungen.
 
 **Manuelle Operator-Steps (außerhalb Repo):**
 - `gh` CLI vorhanden + authentifiziert.
@@ -69,7 +68,7 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 
 **Single-Operator-Audit-Pattern:** GitHub erlaubt kein Self-Approval, daher steht Branch-Protection auf `required_approving_review_count: 0`. Risk-sensitive PRs (Touches `src/risk/**`, `MAX_CAPITAL_EUR` oder `TRADING_MODE`-Flip) verlangen einen `AUDIT_LOG.md`-Eintrag, der den Safety-Review des Operators dokumentiert (was ändert sich, was kann schiefgehen, warum trotzdem sicher). Der Audit-Log ist der Second-Review-Trail; CI kann ihn nicht erzwingen, Operator-Disziplin schon.
 
-**Exit:** Erster trivialer PR (ADR `0001-phasing.md`) gemerged, alle Gates grün, AUDIT_LOG-Initialeintrag.
+**Exit:** Erster trivialer PR gemerged, alle Gates grün, AUDIT_LOG-Initialeintrag.
 
 ---
 
@@ -203,7 +202,6 @@ Phase 6  →  First Live Paper Cycle        (real Polymarket-Read + PaperAdapter
 - `infra/scripts/run_cycle.sh` — `timeout 1800`-Wrapper, `.env`-Load, dispatches `trading_cycle` → `uv run python -m execution.run_cycle` (analog für `outcome_ingestion` und `lessons_summary`).
 - `tests/e2e/test_paper_cycle.py` — Postgres-Service-Container, FakeGamma + FakeCLOB, ein vollständiger Cycle, Assertions auf alle 11 Tabellen.
 - `structlog`-Wiring in alle drei Prozesse mit den per-line-Pflichtfeldern aus specs/data_infrastructure.md §3.
-- `docs/operations/first_cycle.md` — Runbook für Operator.
 - Optional: minimaler Prometheus-Exporter (`cycle_duration_seconds`, `decisions_total`, `trades_total`, `errors_total`, `equity_usd`, `kill_switch_active`).
 
 **Exit:** E2E-Test grün, alle drei Cron-Jobs lokal lauffähig, AUDIT_LOG enthält Phase-Abschluss-Eintrag, `MAX_CAPITAL_EUR=0`.
