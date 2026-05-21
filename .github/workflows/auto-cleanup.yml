@@ -41,7 +41,7 @@ jobs:
       scan_dirs: ${{ steps.scan_dirs.outputs.dirs }}
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v7
         with:
           version: "0.5.x"
           enable-cache: true
