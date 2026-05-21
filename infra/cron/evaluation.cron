@@ -1,7 +1,8 @@
-# Tier-1 Trade Evaluation Team — every 15 min on the :05 mark.
+# Tier-1 Trade Evaluation Team — hourly on the :05 mark.
 #
-# Spec (`trading_feedback.md §6`) suggests 1-min cadence; we run at 15-min
-# because there is nothing faster than `outcome_ingestion`'s 5-10 min sweep
-# to publish, and 1-min would burn ~2900 LLM cycles/day. Operator can tune.
+# Spec (`trading_feedback.md §6`) suggests 1-min cadence; we run hourly
+# because outcome_ingestion's sweep is hourly too (see outcome_ingestion.cron)
+# -- running more often is idle work, and 1-min would burn ~2900 cycles/day.
+# Operator can tune (Tier-1 is deterministic, no LLM, so cost is tiny).
 
-5,20,35,50 * * * * cd /opt/autonomous_trading && bash infra/scripts/run_evaluation.sh >> /var/log/autonomous_trading/evaluation.log 2>&1
+5 * * * * cd /opt/autonomous_trading && bash infra/scripts/run_evaluation.sh >> /var/log/autonomous_trading/evaluation.log 2>&1

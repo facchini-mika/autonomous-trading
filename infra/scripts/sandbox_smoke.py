@@ -76,8 +76,39 @@ YES_TOKEN_ID = "3013539403811813163586461171139661676605659442004160013266620836
 CONDITION_ID = "0x051ec4f9ba9fd59a2ea5d9f8259519cd411773eddeb5f10a6c26fde1f127ab68"
 
 
+def _abort_if_market_resolved(condition_id: str) -> None:
+    """Refuse to post if the target market has resolved.
+
+    Posting against a closed market is at best a silent CLOB reject and at
+    worst a stale-liquidity fill. Gamma is read-only and unauth'd, so the
+    check is cheap and runs before any signing happens. Any error reaching
+    Gamma is treated as fail-closed -- better to skip the smoke than blind-post.
+    """
+    url = f"https://gamma-api.polymarket.com/markets?condition_ids={condition_id}"
+    try:
+        resp: Any = _cffi_requests.Session(impersonate="chrome136").get(url, timeout=10)
+        resp.raise_for_status()
+        payload: Any = resp.json()
+    except Exception as exc:
+        sys.exit(f"FATAL: cannot reach Gamma to verify market freshness ({exc}); refusing to post blindly")
+
+    if not isinstance(payload, list) or not payload:
+        sys.exit(f"FATAL: Gamma returned no market for condition_id={condition_id}; check the ID is correct")
+
+    market = payload[0]
+    if market.get("closed"):
+        end = market.get("end_date_iso") or market.get("endDate") or "<unknown>"
+        sys.exit(
+            f"FATAL: market resolved on {end}. "
+            "Update YES_TOKEN_ID and CONDITION_ID in infra/scripts/sandbox_smoke.py before re-running.",
+        )
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    _abort_if_market_resolved(CONDITION_ID)
+
     settings = Settings(TRADING_MODE="real_capital")
     adapter = make_adapter(settings)
 
