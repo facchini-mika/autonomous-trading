@@ -615,3 +615,32 @@ def test_feedback_phase_receives_current_cycle_id(monkeypatch: pytest.MonkeyPatc
         clock=_now,
     )
     assert captured["cycle_id"] == artifacts.cycle_id
+
+
+def test_equity_snapshot_uses_injected_clock_for_duration() -> None:
+    """``duration_seconds`` must come from one clock source.
+
+    Regression: ``started_at`` came from the injected ``clock`` while
+    ``finished_at`` came from wall time, so a test with a fixed clock in the
+    past produced a duration that grew every day and overflowed the
+    ``Numeric(10, 3)`` column once the gap passed ~115 days.
+    """
+    captures: list[MagicMock] = []
+    fixed = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+
+    bootstrap_team(
+        settings=Settings(),
+        adapter=FakeAdapter(),
+        trading=_trading,
+        risk=_risk_factory("trade"),
+        session_factory=lambda: _capturing_factory(captures),
+        clock=lambda: fixed,
+    )
+
+    snapshot_inserts = [
+        c for sess in captures for c in sess.execute.call_args_list if "INSERT INTO equity_snapshots" in str(c.args[0])
+    ]
+    assert len(snapshot_inserts) == 1
+    params = snapshot_inserts[0].args[1]
+    assert params["time"] == fixed
+    assert params["duration"] == 0.0

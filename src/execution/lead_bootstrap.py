@@ -212,7 +212,10 @@ def bootstrap_team(
         cycle_id=cycle_id,
         portfolio=portfolio,
         started_at=now,
-        finished_at=_utcnow(),
+        # Same clock source as ``now``: mixing an injected clock with wall time
+        # made ``duration_seconds`` grow with the distance between the test's
+        # fixed clock and today, overflowing ``Numeric(10, 3)`` after ~115 days.
+        finished_at=(clock or _utcnow)(),
     )
 
     _team_cleanup(cycle_id=cycle_id)
