@@ -84,7 +84,7 @@ Every PR that touches one of the following must have an entry here:
   - Spec §11 (coverage thresholds), §8 (branch protection), §3
     (`src/risk/` protection).
   - CLAUDE.md "Reviewer rule" and "No-go list".
-  - Memory `project_trading_cycle_heartbeat_missing.md` — heartbeat
+  - Operator note `trading_cycle_heartbeat_missing` — heartbeat
     monitor is a separate workflow PR (out of scope here).
 
 ---
@@ -1150,7 +1150,7 @@ Every PR that touches one of the following must have an entry here:
 - **Mitigation / rollback:** The original OneDrive directory is still
   in place at the source path — readable, intact, can be deleted
   manually after the new copy has been validated in practice.
-  `~/.claude/jobs/<this-session>/{pr1-idempotency-store.patch,fix-notional.patch}`
+  operator-local patch files (`pr1-idempotency-store.patch`, `fix-notional.patch`)
   preserve the uncommitted-work snapshots for an additional safety
   margin until the operator confirms the new copy is healthy.
 - **Why we did it:** OneDrive's Files-On-Demand layer was making
@@ -1233,7 +1233,7 @@ Every PR that touches one of the following must have an entry here:
   (eval :35, trading :36) silently died with `command not found`
   before any Python ran. Resolved by re-installing the crontab at
   12:39 UTC with an explicit
-  `PATH=~/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`
+  `PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`
   line prepended. Generator does not emit this; follow-up PR open.
   (2) **No heartbeat row.** `run_cycle.py` does not write
   `system_state.last_trading_cycle_at` (other entry points do — see
@@ -1242,7 +1242,7 @@ Every PR that touches one of the following must have an entry here:
   `subagent_runs.started_at` or Prometheus `cycle_duration_seconds`
   as a liveness signal. Mini-PR open.
   (3) **No `cycles` table for status/idempotency at cycle scope.**
-  Spec'd in `~/.claude/plans/operator-local-plan.md` PR 2 but not
+  Spec'd in an operator-local plan note (PR 2) but not
   yet migrated. At the current ~6.5 min cycle wall, overlapping ticks
   are unlikely under `*/12`; if wall ever crosses 12 min, two cycles
   could race against the same markets. Wrapper retains a `gtimeout
@@ -1253,12 +1253,12 @@ Every PR that touches one of the following must have an entry here:
   flip; for paper they are tolerable.
   (5) **Cost run-rate.** First two cron-level cycles came in at
   ≈ $1.84–$2.03 each (Anthropic + OpenAI). At `*/12` cadence that
-  projects to ≈ $220–$240/day. Within the $500 + $2500 credit grant
-  documented in the operator's notes; budget governance is the
+  projects to ≈ $220–$240/day. Within the provider credit grants
+  tracked in the operator's notes; budget governance is the
   per-cycle settings cap (`BUDGET_USD_TRADING=$5`, `BUDGET_USD_RISK=$1`),
   not a daily ceiling.
-  (6) **AUDIT-LOG backlog for cycles 5/6/7** (per Memory
-  `project_phase6a_followups`) was not closed by this entry — those
+  (6) **AUDIT-LOG backlog for cycles 5/6/7** (per operator
+  notes) was not closed by this entry — those
   three pre-cron paper smokes still lack their own AUDIT entries.
 - **Mitigation / rollback:** Paper-mode capital gate
   (`capital_gate.py:30` enforces `MAX_CAPITAL_EUR=0.0` on any
@@ -1273,3 +1273,33 @@ Every PR that touches one of the following must have an entry here:
   (`SELECT max(created_at) FROM paper_trades`,
   `SELECT count(*) FROM subagent_runs WHERE started_at > now() -
   interval '24 hours'`) until P0.1/P0.2/P0.5 ship.
+
+---
+
+## 2026-09-21 — Public-release redaction of personal identifiers
+
+- **Category:** Documentation / operator privacy. No code, config, or
+  schema change. `TRADING_MODE` remains `paper`; `MAX_CAPITAL_EUR`
+  remains `0.0`.
+- **PR:** `chore: public-release prep (README, LICENSE, PII redaction)`.
+- **Description:** In preparation for publishing a public mirror of this
+  repository, personal identifiers were removed from committed
+  documentation. This is the one deliberate exception to the
+  append-only rule above, limited to identifiers and not to any
+  substantive content. Redacted: the operator's test-wallet address,
+  the sandbox-smoke order ID, settlement transaction hash and block
+  numbers (Phase 6a entry); absolute home-directory paths in the
+  OneDrive-move and cron-enable entries; references to operator-local
+  memory notes and plan files; the operator's private e-mail in
+  `pyproject.toml` and full name in ADR 0001. Added `README.md`,
+  `LICENSE` (MIT) and `SECURITY.md`. The public mirror is built from
+  a history-rewritten clone (author e-mail mapped to the GitHub noreply
+  address, same literal replacements applied to every commit); this
+  private origin repository keeps its unmodified history.
+- **Risk:** None to the live system. Loss of forensic detail for the
+  Phase 6a sandbox smoke (tx hash, block numbers) in the public copy;
+  the operator retains the original values in the private origin
+  repository and in the wallet's on-chain history.
+- **Mitigation / rollback:** Revert the PR to restore the original
+  entries in the private repository. The public mirror is a separate
+  repository and can be deleted without affecting this one.

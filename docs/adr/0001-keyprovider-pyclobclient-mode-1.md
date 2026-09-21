@@ -2,7 +2,7 @@
 
 **Status:** Accepted (Phase 4a)
 **Date:** 2026-05-02
-**Decider:** Single operator (facchini-mika)
+**Decider:** Single operator (@facchini-mika)
 
 ## Context
 
